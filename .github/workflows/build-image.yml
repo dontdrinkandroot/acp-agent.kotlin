@@ -1,0 +1,68 @@
+name: Build Docker image
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+    packages: write
+
+env:
+    IMAGE: ghcr.io/dontdrinkandroot/acp-agent.kotlin
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            -   name: Checkout
+                uses: actions/checkout@v4
+
+            -   name: Set up Docker Buildx
+                uses: docker/setup-buildx-action@v3
+
+            -   name: Login to GitHub Container Registry
+                uses: docker/login-action@v3
+                with:
+                    registry: ghcr.io
+                    username: ${{ github.actor }}
+                    password: ${{ secrets.GITHUB_TOKEN }}
+
+            -   name: Build and push
+                uses: docker/build-push-action@v6
+                with:
+                    context: .
+                    platforms: linux/amd64
+                    push: true
+                    tags: ${{ env.IMAGE }}:latest
+                      # GHA cache restores the last build's layers (including builder
+                      # stage layers, thanks to mode=max: the default "min" only exports
+                      # layers of the final image). The workflow only builds on main and
+                      # is serialized via concurrency, so the default per-ref cache scope
+                    # cannot collide with concurrent pushes.
+                    cache-from: type=gha
+                    cache-to: type=gha,mode=max
+
+            -   name: Prune old image versions (keep last 5)
+                shell: bash
+                env:
+                    GH_TOKEN: ${{ github.token }}
+                run: |
+                    versions="$(gh api "users/${{ github.repository_owner }}/packages/container/acp-agent.kotlin/versions" \
+                      --paginate \
+                      -q '.[] | select(.metadata.container.tags | index("latest") | not) | select(.created_at) | [.id, .created_at] | @tsv' \
+                      2>/dev/null || true)"
+                    if [ -z "$versions" ]; then
+                      echo "No old image versions to prune."
+                      exit 0
+                    fi
+                    echo "$versions" | sort -k2 -r | tail -n +6 | while IFS=$'\t' read -r id _; do
+                      echo "Deleting package version $id"
+                      gh api -X DELETE "users/${{ github.repository_owner }}/packages/container/acp-agent.kotlin/versions/$id" >/dev/null || true
+                    done

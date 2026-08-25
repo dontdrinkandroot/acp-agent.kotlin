@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+resolve_docker_bin() {
+    if [ -n "${DOCKER_BIN:-}" ]; then
+        printf '%s\n' "$DOCKER_BIN"
+        return 0
+    fi
+    if [ -x /usr/bin/docker ]; then
+        printf '%s\n' /usr/bin/docker
+    elif [ -x /usr/local/bin/docker ]; then
+        printf '%s\n' /usr/local/bin/docker
+    else
+        command -v docker || true
+    fi
+}
+
+docker_bin=$(resolve_docker_bin)
+if [ -z "$docker_bin" ]; then
+    printf '%s\n' 'Docker CLI not found. Set DOCKER_BIN to its absolute path.' >&2
+    exit 127
+fi
+
+image=ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest
+
+exec "$docker_bin" build --pull -t "$image" "$script_dir"
