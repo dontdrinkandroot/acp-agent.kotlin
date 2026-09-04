@@ -33,7 +33,8 @@ public class GlobTool : AgentTool {
         arguments["root"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val root = arguments["root"]?.jsonPrimitive?.content ?: context.cwd
+        val rawRoot = arguments["root"]?.jsonPrimitive?.content ?: context.cwd
+        val root = absoluteToolPath(context.cwd, rawRoot)
         val pattern = arguments["pattern"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'pattern'", true)
         return runCatching {
             val regex = globToRegex(pattern)
@@ -50,6 +51,12 @@ public class GlobTool : AgentTool {
     }
 }
 
+/**
+ * Walks [dir] recursively, visiting files. Symlinks are deliberately skipped
+ * (both files and directories): kotlinx-io follows links by default, so a link
+ * inside the search root could otherwise smuggle reads or listings outside the
+ * project the permission flow approved.
+ */
 internal fun walk(
     fs: FileSystem,
     dir: Path,
@@ -59,6 +66,7 @@ internal fun walk(
     if (depth > 64) return
     val entries = runCatching { fs.list(dir) }.getOrNull() ?: return
     for (entry in entries) {
+        if (isSymbolicLink(entry)) continue
         val meta = fs.metadataOrNull(entry)
         if (meta?.isDirectory == true) {
             walk(fs, entry, depth + 1, visit)
@@ -67,6 +75,9 @@ internal fun walk(
         }
     }
 }
+
+private fun isSymbolicLink(path: Path): Boolean =
+    runCatching { java.nio.file.Files.isSymbolicLink(java.nio.file.Path.of(path.toString())) }.getOrDefault(false)
 
 internal fun globToRegex(glob: String): Regex {
     val sb = StringBuilder("^")

@@ -65,171 +65,113 @@ Config comes from environment variables:
   the automatic provider routing, see Features)
 - `FS_PROXY_ENABLED` (default enabled; `0` uses the local store even when the
   client advertises fs capabilities, see Features)
+- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
+  after this many seconds, killing the whole process tree, see Features)
 ## Features
 
-- **ACP agent lifecycle**: `initialize` -> `session/new` (random session id) ->
+- **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
   `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
-  persisted record); `session/cancel` relies on coroutine cancellation.
-- **Session persistence**: sessions persist to
-  `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback
-  `~/.local/state`), atomically written (temp file + move) on every completed
-  prompt turn (END_TURN / MAX_TURN_REQUESTS) and on mode changes. The record (`agent/SessionRecord.kt`) covers history
-  (Koog `OpenAIMessage` wire types,
-  serialized by the shared `llmWireJson`), mode, title (derived from the first
-  user message, truncated to 72 code points) and a last-activity timestamp.
-  Persist and delete share a `persistMutex` so a delete can never interleave
-  with an in-flight persist and resurrect the record; persistence failures are
-  logged to stderr and never fail the turn. Client-supplied session ids are
-  format-checked (`isValidSessionId`: `sess_` + 16 lowercase hex digits, exactly
-  what `randomSessionId` mints) before they reach the store, so traversal or
-  separators in `session/load`/`resume`/`delete` are rejected with invalid-params.
-- **Session restore**: `initialize` advertises `loadSession: true` plus
-  `sessionCapabilities.list/delete/resume`. `session/load` restores a session (reconnecting MCP servers, replaying
-  history as `user_message_chunk` /
-  `agent_message_chunk` / pending `tool_call` + completed `tool_call_update`
-  updates; replay is emitted from `AgentSession.postInitialize()`, i.e. after
-  the load response - an SDK hook limitation, so clients receive it slightly
-  later than the response). `session/resume` restores without replay.
-  `session/list` filters by cwd and sorts most recent first (corrupt records are
-  skipped). A request cwd mismatch, unknown/invalid ids and double-loads are
-  invalid-params errors; a corrupt record maps to an internal error.
-- **Agent loop**: per prompt, up to 20 LLM iterations; assistant text is streamed to the
-  client as `AgentMessageChunk` as it arrives; streamed tool-call deltas are merged;
-  executed tool results are appended to the history as tool messages; stops on
-  `END_TURN` (no tool call requested) or at the cap (`MAX_TURN_REQUESTS`).
-- **Session modes (plan/build/bash)** - read-only `plan` default; `build` enables edits;
-  `bash` adds the bash tool. Tools carry `modes`; `ToolRegistry.availableForMode(mode)`
-  and `disabledInMode(name, mode)` give the mode-aware "disabled in current mode" error.
-  The mode-aware system prompt is rebuilt per turn; `todayProvider` (via
-  `java.time.LocalDate`) and `cwd` are injected per session, and the build
-  commit hash (see below) appears as `Agent build: <sha>[-dirty]` so the agent
-  (and by extension the user) can tell which build it is running. Config option: a single
-  `mode` select (`category: mode`, live `currentValue`); `session/set_config_option` +
-  legacy `session/set_mode` handled; both emit `current_mode_update` + full
-  `config_option_update`; unknown -> invalid-params error.
-- **Build hash**: the `generateGitProperties` Gradle task writes
-  `git.properties` (`git.commit=<short sha>` or `<sha>-dirty` when the working
-  tree is not clean, `unknown` outside a git checkout) into the main resources
-  (wired via `sourceSets.main.resources.srcDir`); `BuildInfo.kt` (root package)
-  reads it from the classpath. Docker builds have no `.git` (`.dockerignore`),
-  so the hash is injected as the `GIT_SHA` build-arg (Dockerfile `ARG` ->
-  env var honored first by `build.gradle.kts`): `build-docker` computes short
-  sha + `-dirty` from the working tree, `build-image.yml` from the checkout.
-- **Model + reasoning config options**: `session/new`/`load`/`resume` fetch the
-  OpenRouter model feed (`GET /models`, `llm/LlmModels.kt` wire types; filtered to
-  tool-capable text-output models, sorted by id; fetch failure fails session creation, as
-  in the Go agent). Sessions carry a per-session `model` (default: env
-  `OPENROUTER_MODEL`) and `reasoning` effort (`category: thought_level`, from each
-  model's `reasoning` block; `supported_efforts` empty -> gateway levels
-  max..minimal; `mandatory` models drop the `none` option; `none` maps to omitting the
-  request field). `session/set_config_option` (`model`/`reasoning`) + legacy
-  `session/set_model` handled; a model switch resets reasoning to the new model's
-  default; every change emits `current_mode_update` + full `config_option_update` and
-  persists. The chat request carries `reasoning: {effort: "..."}` (own request wire
-  type in `LlmClient`, not a Koog model).
-- **Plan updates**: the `update_plan` tool (`tools/PlanTool.kt`, kind `think`, non-mutating,
-  available in every mode) emits ACP `PlanUpdate` updates for the client UI and stores the
-  entries on the session for persistence; entries are decoded into the SDK's typed
-  `PlanEntry` (strict enum validation - a deliberate deviation from the Go raw-string
-  passthrough); replay appends the plan update after the history replay.
-- **Usage indicator**: after a completed model call the agent emits a `usage_update`
-  (`used` = prompt tokens of that call, `size` = the model's `context_length`); skipped
-  when the model reports no usage or context length. During an active prompt the SDK
-  client routes session updates into the prompt event flow, not the operations
-  `notify` callback.
-- **Tools**: local file tools (`read`/`write`/`edit`/`list`/`glob`/`grep`, kotlinx-io)
-  plus `bash` (`ProcessBuilder`) and `update_plan` (`tools/PlanTool.kt`), registered in
-  `Main.kt` and copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`)
-  into the same registry. `read_file`/`write_file`/`edit_file` operate on a
-  per-session `tools/FileStore.kt` backend - the ACP client's fs proxy (`fs/read_text_file`/`fs/write_text_file`,
-  unsaved editor state + reviewable diffs)
-  when the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not
-  `0`, otherwise a local store; `list_dir`/`glob`/`grep` always read the local disk (electing the local store even when
-  a proxy is active, since ACP has no client-side
-  listing/search).
-- **Permissions (path-aware)**: path-scoped file tools (`read_file`, `write_file`,
-  `edit_file`, and the `root` of `glob`/`grep`/`list_dir`) run without asking while
-  they stay inside the session working directory; anything that reaches outside the
-  project - reads and writes alike - and any non-path mutating tool (`bash`) asks via
-  `session/request_permission`. In-project writes are further gated by mode (write
-  tools only exist in build/bash; plan is read-only). The containment check (`isWithin`/`resolveAgainstSessionCwd` in
-  `tools/Containment.kt`) is symlink-safe
-  and resolves relative paths against the session cwd. `allow_always`/`reject_always`
-  persist per session in `AgentSessionImpl.permanentPermissions` (keyed by tool name);
-  `allow_once`/`reject_once` apply to a single call.
-- **MCP consumption**: MCP servers come exclusively from the client's
-  `session/new` `mcpServers`; all three transports work on JVM (see Recipes).
-  `initialize` advertises `mcpCapabilities.http/sse` accordingly.
-- **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API; text deltas are
-  relayed immediately (no buffering), tool calls are merged from streamed deltas, and
-  provider reasoning deltas (`delta.reasoning`) are relayed as `agent_thought_chunk`
-  without being persisted to history. Every streamed `agent_message_chunk`,
-  `agent_thought_chunk` and replayed chunk carries a per-content-block `messageId`
-  (UUID, minted fresh per LLM iteration and shared by all deltas of one
-  block within that iteration) so clients group deltas into one message
-  instead of one bubble per delta; the UUID format follows the ACP
-  message-id contract (`MessageId` doc: clients and agents MUST use UUID
-  format) and the IntelliJ client groups thought deltas by it. The e2e pins
-  this at the decoded-object AND raw-wire level (per-iteration distinctness,
-  UUID format). Every request carries app attribution headers (`HTTP-Referer` +
-  `X-OpenRouter-Title`, see openrouter.ai/docs/app-attribution).
+  record); `session/cancel` is coroutine cancellation. Sessions persist to
+  `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
+  atomically (temp + move) on every completed turn and mode/config change. The record
+  (`agent/SessionRecord.kt`) holds history (Koog `OpenAIMessage` wire types via the shared
+  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning and plan.
+  Persist and delete share a `persistMutex` so a delete never resurrects the file; failures log
+  to stderr and never fail the turn. Client-supplied ids are format-checked (`isValidSessionId`)
+  so traversal/separators never reach the filesystem. Session creation (and restore) closes any
+  already-opened MCP connections and the `LlmClient` when the model feed fetch fails.
+- **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
+  `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
+  `tool_call` + completed `tool_call_update`, plan) from `postInitialize()` - after the load
+  response (SDK hook limitation); `session/resume` restores without replay. `session/list`
+  filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
+  double-loads are invalid-params; corrupt records are internal errors.
+- **Agent loop**: up to 20 LLM iterations per prompt; text streamed as `AgentMessageChunk`,
+  tool-call deltas merged, results appended to history; stops on `END_TURN` (no tool call) or
+  `MAX_TURN_REQUESTS`. Tool calls run sequentially.
+- **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
+  the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
+  and produce the "disabled in current mode" error. The mode-aware system prompt is rebuilt per
+  turn with `cwd`, today's date and `Agent build: <sha>[-dirty]`. A `mode` config option
+  (`session/set_config_option` + legacy `set_mode`) emits `current_mode_update` +
+  `config_option_update`; unknown -> invalid-params.
+- **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
+  `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
+  `GIT_SHA` build-arg (no `.git` in the build context).
+- **Model + reasoning options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed
+  (`llm/LlmModels.kt`: tool-capable text-output models, sorted; failure fails session creation).
+  Per-session `model` (default `OPENROUTER_MODEL`) and `reasoning` effort
+  (`category: thought_level`; empty `supported_efforts` -> gateway levels max..minimal;
+  mandatory models drop `none`; `none` omits the request field). Model switches reset reasoning;
+  changes emit updates and persist. The chat request carries `reasoning: {effort}` (own wire
+  type in `LlmClient`, not Koog).
+- **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
+  `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
+  `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough).
+- **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
+  `size` = model `context_length`); skipped when either is missing. During an active prompt the
+  SDK routes session updates into the prompt event flow, not the `notify` callback.
+- **Tools**: `read/write/edit/list/glob/grep` (kotlinx-io) + `bash` (killed after
+  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `update_plan`, registered in `Main.kt`,
+  copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
+  collision with a local tool is ignored with a warning - locals can never be shadowed. All
+  path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
+  is the one the permission check approved); `list_dir`/`glob`/`grep` skip symlinks (kotlinx-io
+  follows them by default, which could smuggle reads outside the project). `read/write/edit`
+  use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
+  the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
+  local store; listing/search always use the local disk (ACP has no client-side search).
+- **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
+  anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
+  `session/request_permission` (all MCP tools are treated as mutating, so they always prompt).
+  In-project writes are further gated by mode (plan is read-only). The containment check
+  (`tools/Containment.kt`) is symlink-safe and resolves relative paths against the session cwd.
+  `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
+  `reject_once` apply once.
+- **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
+  all three transports work on JVM (see Recipes); `initialize` advertises
+  `mcpCapabilities.http/sse`.
+- **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
+  see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
+  relayed as `agent_thought_chunk` (not persisted). HTTP error statuses, `{"error": ...}`
+  stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
+  so a failed or truncated turn fails loudly instead of executing partial tool calls or
+  emitting an empty END_TURN.
+  Every `agent_message_chunk`/`agent_thought_chunk` carries a per-content-block UUID
+  `messageId` (fresh per LLM iteration) so clients group deltas into one message; pinned e2e at
+  the decoded-object and raw-wire level. Requests carry app attribution headers (`HTTP-Referer`
+  + `X-OpenRouter-Title`).
 - **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
-  disables) every chat request carries a `provider` object: `sort: "throughput"` plus
-  `max_price.completion` = the median completion price (USD per million tokens, standard
-  median, all provider endpoints of the selected model via
-  `GET /models/{author}/{slug}/endpoints`, `providerrouting/ProviderRouting.kt`, lazy
-  per-model cache). Fail-open: a fetch/parse failure or an empty endpoints feed omits the
-  `provider` field entirely so transient errors never break a turn; disabled routing
-  never fetches endpoints.
-- **Prompt capabilities + multimodal prompts**: `initialize` advertises
-  `promptCapabilities` (`image` + `embeddedContext`, no `audio`). Prompt content blocks
-  are converted per session model (`contentBlocksToLlmContentTopLevel` in
-  `agent/AgentSessionImpl.kt`): plain text stays a flat string; an `image` block becomes
-  a base64 `image_url` data URI (mime default `image/png`) when the selected model's
-  `architecture.input_modalities` lists image, otherwise it degrades to a text
-  placeholder; text `resource` blocks are inlined as `Resource <uri>:\n<text>`, blob
-  resources and `audio` degrade to placeholders, and `resource_link` renders as a
-  markdown link.
-- **Project instructions (AGENTS.md)**: `<session cwd>/AGENTS.md` is read directly from
-  disk on every prompt turn and injected into the system prompt as a
-  `## Project Instructions (from AGENTS.md)` section (re-read per turn, so mid-session
-  edits apply); a missing file is silently ignored, other read errors are logged and
-  never fail the turn (`agent/AgentsMd.kt`).
-- **`$/cancel_request`**: the SDK's `Protocol` handles both directions natively (an
-  inbound `$/cancel_request` cancels the pending incoming request; cancellation of an
-  outbound request auto-sends `$/cancel_request` and waits briefly for a graceful
-  CANCELLED response). A cancelled `session/request_permission` therefore dismisses the
-  client's permission prompt. `AgentSessionImpl.shouldAllow` rethrows
-  `CancellationException` instead of swallowing it into a bogus "Permission denied".
-- **Docker sandbox**: the agent image is CI-built (`.github/workflows/build-image.yml`,
-  on push to `main` and manual dispatch) and published to
-  `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest` (linux/amd64; the 5 newest
-  non-`latest` versions are kept, older ones pruned via `gh api` in the same workflow).
-  The multi-stage `Dockerfile` builds the agent in a pinned `eclipse-temurin:25-jdk`
-  stage (`installDist`; a `/root/.gradle` BuildKit cache mount keeps rebuilds
-  incremental and `--no-daemon` avoids a lingering daemon). `installDist` copies
-  Gradle-cache jars verbatim with mode 600 (root-owned in the builder), so the
-  builder `chmod`s the install dir world-readable before the `COPY` (a `doLast` hook
-  on `installDist` in `build.gradle.kts` normalizes perms at the source) - the
-  non-root runtime user must be able to read the jars. It then copies it into the
-  generic toolchain base `ghcr.io/dontdrinkandroot/dev:latest` (user `dev`, OpenJDK 25,
-  XDG env, full toolchain for the agent's `bash` tool; the git `[user]` identity
-  fallback goes to `/etc/gitconfig` because the tmpfs home shadows the image). The
-  `ddr-acp-agent-docker` launcher runs the agent in a hardened container: pulls
-  `:latest` at launch (stderr; falls back to a local image or hints at `./build-docker`),
-  `--skip-pull` forces the local image; `development` docker network by default,
-  non-root user matching host UID/GID, `--cap-drop=ALL` + `no-new-privileges`,
-  read-only rootfs (relax with `ACP_DOCKER_RW_ROOTFS=1`), tmpfs `/tmp` and
-  `/home/dev` (`ACP_DOCKER_HOME_VOLUME` switches the home to a named volume); host
-  tool caches (uv, pip, composer, yarn, huggingface, npm, gradle, maven, cargo, go,
-  nuget, pub, pnpm) shared in so builds reuse downloads (`ACP_DOCKER_MOUNT_CACHES=0`
-  disables); the host session state dir (`$XDG_STATE_HOME/ddr-acp-agent`, default
-  `~/.local/state/ddr-acp-agent`) is always shared rw so sessions survive the
-  ephemeral tmpfs home; `OPENROUTER_*` + `FS_PROXY_ENABLED` are forwarded as env-only;
-  a host `.env.local` is masked; host git identity is forwarded as env. Extras:
-  `ACP_DOCKER_NETWORK`, `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
-  build locally with `./build-docker` (tags the same name). Launcher output is
-  stderr-only — the ACP protocol travels over the container stdin/stdout.
+  disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
+  median endpoint completion price}` (USD per million tokens,
+  `providerrouting/ProviderRouting.kt`, lazy per-model cache); fail-open: fetch/parse failure
+  or empty feed omits the `provider` field; disabled routing never fetches endpoints.
+- **Prompt capabilities**: advertises `image` + `embeddedContext` (no `audio`). Image blocks
+  become base64 data URIs (mime default `image/png`) only when the model's
+  `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
+  are inlined as `Resource <uri>:\n<text>`, blob/audio degrade to placeholders,
+  `resource_link` renders as a markdown link (`contentBlocksToLlmContentTopLevel` in
+  `agent/AgentSessionImpl.kt`).
+- **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
+  `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
+  missing file ignored, read errors logged and never fail the turn (`agent/AgentsMd.kt`).
+- **`$/cancel_request`**: handled natively by the SDK in both directions; a cancelled
+  `session/request_permission` dismisses the client's prompt, and `shouldAllow` rethrows
+  `CancellationException` instead of swallowing it into a bogus "Permission denied". A
+  cancelled turn also terminates a running bash command (interruptible wait +
+  process-tree kill), so `session/cancel` does not leave orphans behind.
+- **Docker sandbox**: CI-built (`build-image.yml`) image on
+  `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
+  builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
+  The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
+  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
+  home (`ACP_DOCKER_HOME_VOLUME` -> named volume), non-root user matching host UID/GID,
+  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables), host session state
+  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_BASH_TIMEOUT_SECONDS` forwarded,
+  host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
+  `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
+  `./build-docker`. Launcher output is stderr-only - ACP travels over the container
+  stdin/stdout.
 
 ## Layout
 

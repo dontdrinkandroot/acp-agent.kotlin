@@ -134,6 +134,82 @@ class FileToolsTest {
         val result = GlobTool().execute(buildJsonObject { put("root", "/nonexistent-root"); put("pattern", "*") }, context("/tmp"))
         assertTrue(result.isError)
     }
+
+    @Test
+    fun `relative paths are resolved against the session cwd not the process cwd`() = runBlocking {
+        val dir = tmpDir()
+        val write = WriteFileTool().execute(
+            buildJsonObject { put("path", "sub/a.txt"); put("content", "x") },
+            context(dir),
+        )
+        assertFalse(write.isError, write.text)
+        assertTrue(
+            SystemFileSystem.exists(Path("$dir/sub/a.txt")),
+            "file must be written under the session cwd, not the process cwd",
+        )
+
+        val read = ReadFileTool().execute(buildJsonObject { put("path", "sub/a.txt") }, context(dir))
+        assertFalse(read.isError, read.text)
+        assertEquals("x", read.text)
+
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", "sub/a.txt"); put("old_string", "x"); put("new_string", "y") },
+            context(dir),
+        )
+        assertFalse(edit.isError, edit.text)
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", ".") }, context(dir))
+        assertFalse(list.isError, list.text)
+        assertTrue(list.text.split("\n").contains("sub"), list.text)
+
+        val glob = GlobTool().execute(buildJsonObject { put("root", "."); put("pattern", "**/*.txt") }, context(dir))
+        assertFalse(glob.isError, glob.text)
+        assertTrue(glob.text.contains("sub/a.txt"), glob.text)
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", "."); put("pattern", "y") }, context(dir))
+        assertFalse(grep.isError, grep.text)
+        assertTrue(grep.text.contains("sub/a.txt:1:y"), grep.text)
+    }
+
+    @Test
+    fun `glob and grep do not follow symlinks out of the search root`() = runBlocking {
+        val base = tmpDir()
+        val project = "$base/project"
+        val outside = "$base/outside"
+        SystemFileSystem.createDirectories(Path(project))
+        SystemFileSystem.createDirectories(Path(outside))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$project/real.txt"); put("content", "real") },
+            context(project),
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$outside/secret.txt"); put("content", "secret") },
+            context(project),
+        )
+        java.nio.file.Files.createSymbolicLink(
+            java.nio.file.Path.of("$project/linkdir"),
+            java.nio.file.Path.of(outside),
+        )
+        java.nio.file.Files.createSymbolicLink(
+            java.nio.file.Path.of("$project/leak.txt"),
+            java.nio.file.Path.of("$outside/secret.txt"),
+        )
+
+        val glob = GlobTool().execute(
+            buildJsonObject { put("root", project); put("pattern", "**/*") },
+            context(project),
+        )
+        assertFalse(glob.isError, glob.text)
+        assertFalse(glob.text.contains("secret"), "glob must not escape via symlinks: ${glob.text}")
+        assertTrue(glob.text.contains("real.txt"), glob.text)
+
+        val grep = GrepTool().execute(
+            buildJsonObject { put("root", project); put("pattern", "secret") },
+            context(project),
+        )
+        assertFalse(grep.isError, grep.text)
+        assertFalse(grep.text.contains("secret.txt"), "grep must not read through symlinks: ${grep.text}")
+    }
 }
 
 class GlobRegexTest {

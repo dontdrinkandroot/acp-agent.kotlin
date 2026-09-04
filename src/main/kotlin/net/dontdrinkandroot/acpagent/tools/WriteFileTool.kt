@@ -32,7 +32,8 @@ public class WriteFileTool : AgentTool {
         arguments["path"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val path = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val path = absoluteToolPath(context.cwd, rawPath)
         val content = arguments["content"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'content'", true)
         return runCatching {
             context.fileStore.writeFile(path, content)

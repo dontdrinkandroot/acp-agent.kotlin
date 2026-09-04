@@ -19,6 +19,7 @@ public class ToolContext internal constructor(
     val sessionId: com.agentclientprotocol.model.SessionId,
     val updatePlan: suspend (List<PlanEntry>) -> Unit = {},
     internal val fileStore: FileStore = LocalFileStore(),
+    internal val bashTimeoutSeconds: Int = 600,
 ) {
     public val hasClient: Boolean get() = client != null
 }

@@ -61,7 +61,16 @@ public fun runAgent(args: Array<String>) {
             val connection = connectMcpServer(server, createMcpClientInfo())
             runCatching { connection.listTools() }
                 .onSuccess { tools ->
-                    tools.forEach { tool -> registry.register(McpTool(connection, tool)) }
+                    tools.forEach { tool ->
+                        if (registry.get(tool.name) == null) {
+                            registry.register(McpTool(connection, tool))
+                        } else {
+                            logger.warn {
+                                "MCP server ${server.name} tool \"${tool.name}\" collides with an existing " +
+                                        "tool and is ignored; local tools cannot be shadowed by MCP tools"
+                            }
+                        }
+                    }
                 }
                 .onFailure { failure ->
                     runCatching { connection.close() }
@@ -81,7 +90,15 @@ public fun runAgent(args: Array<String>) {
             baseUrl = config.openRouterBaseUrl,
             model = config.openRouterModel,
         )
-        val models = llm.fetchModels()
+        val models = try {
+            llm.fetchModels()
+        } catch (e: Exception) {
+            // The session never comes into existence, so the closeResources
+            // closure of AgentSessionImpl can never run: close what was opened.
+            connections.forEach { connection -> runCatching { connection.close() } }
+            llm.close()
+            throw e
+        }
         return AgentSessionImpl(
             sessionId = sessionId,
             cwd = restored?.cwd ?: parameters.cwd,

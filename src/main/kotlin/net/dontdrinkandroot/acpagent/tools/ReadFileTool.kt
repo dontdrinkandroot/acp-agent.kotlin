@@ -35,7 +35,8 @@ public class ReadFileTool : AgentTool {
         arguments["path"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val path = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val path = absoluteToolPath(context.cwd, rawPath)
         val line = arguments["line"]?.jsonPrimitive?.longOrNull
         val limit = arguments["limit"]?.jsonPrimitive?.longOrNull
         return runCatching {

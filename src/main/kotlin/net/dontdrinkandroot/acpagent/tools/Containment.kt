@@ -19,6 +19,19 @@ internal fun resolveAgainstSessionCwd(sessionCwd: String, path: String): Path? {
 }
 
 /**
+ * Converts a tool-supplied path into an absolute path against the session
+ * working directory, leaving absolute paths untouched. Unlike
+ * [resolveAgainstSessionCwd] this does not touch the filesystem: it is meant
+ * for the actual file I/O, where the path must be used as given (symlink
+ * resolution is the containment check's job).
+ */
+internal fun absoluteToolPath(sessionCwd: String, path: String): String {
+    val raw = Paths.get(path)
+    return if (raw.isAbsolute) raw.normalize().toString()
+    else Paths.get(sessionCwd).resolve(raw).normalize().toString()
+}
+
+/**
  * Reports whether the (resolved) [path] lies inside the session working
  * directory. Symlinks on both sides are resolved so links escaping the
  * directory are detected; the final component may not exist yet (e.g. a file

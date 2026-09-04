@@ -25,7 +25,8 @@ public class ListDirTool : AgentTool {
         arguments["path"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val path = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val path = absoluteToolPath(context.cwd, rawPath)
         return runCatching {
             val fs = SystemFileSystem
             val dir = Path(path)

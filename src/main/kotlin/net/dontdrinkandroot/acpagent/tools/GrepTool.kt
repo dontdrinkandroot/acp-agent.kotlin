@@ -38,7 +38,8 @@ public class GrepTool : AgentTool {
         arguments["root"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val root = arguments["root"]?.jsonPrimitive?.content ?: context.cwd
+        val rawRoot = arguments["root"]?.jsonPrimitive?.content ?: context.cwd
+        val root = absoluteToolPath(context.cwd, rawRoot)
         val pattern = arguments["pattern"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'pattern'", true)
         val glob = arguments["glob"]?.jsonPrimitive?.content
         return runCatching {

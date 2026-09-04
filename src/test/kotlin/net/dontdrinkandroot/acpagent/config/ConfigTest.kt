@@ -74,4 +74,36 @@ class ConfigParseTest {
         )
     }
 
+    @Test
+    fun `bash timeout defaults to 600 seconds`() {
+        assertEquals(
+            600,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).bashTimeoutSeconds,
+        )
+        assertEquals(
+            42,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "42"))
+                .bashTimeoutSeconds,
+        )
+    }
+
+    @Test
+    fun `bash timeout clamps to at least one second`() {
+        assertEquals(
+            1,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "0"))
+                .bashTimeoutSeconds,
+        )
+        assertEquals(
+            1,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "-5"))
+                .bashTimeoutSeconds,
+        )
+        assertEquals(
+            600,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "garbage"))
+                .bashTimeoutSeconds,
+        )
+    }
+
 }

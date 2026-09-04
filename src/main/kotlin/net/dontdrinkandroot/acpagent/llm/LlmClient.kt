@@ -13,10 +13,18 @@ import io.ktor.utils.io.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 private const val CHAT_COMPLETIONS_PATH = "chat/completions"
 private const val MODELS_PATH = "models"
 private const val STREAM_END_EVENT = "[DONE]"
+
+/**
+ * Raised when OpenRouter answers with an HTTP error status or an error object
+ * inside the stream. Carries the server-provided message so the turn fails
+ * with a diagnostic the user can act on instead of an empty or cryptic reply.
+ */
+public class LlmException(message: String) : Exception(message)
 
 /**
  * App attribution: OpenRouter shows usage in Logs/rankings under this app.
@@ -95,19 +103,46 @@ public class LlmClient(
         client.preparePost(CHAT_COMPLETIONS_PATH) {
             setBody(body)
         }.execute { response ->
+            if (response.status.value !in 200..299) {
+                val detail = response.bodyAsText().take(500)
+                throw LlmException("chat completion failed: HTTP ${response.status.value}: $detail")
+            }
             val reader = response.bodyAsChannel()
             val current = StringBuilder()
+            var completed = false
             var line: String?
             while (true) {
                 line = reader.readLine()
                 if (line == null) break
                 when {
-                    line.isBlank() -> flushEvent(current)?.let { emit(it) }
+                    line.isBlank() -> {
+                        val data = current.toString().trim()
+                        if (data == STREAM_END_EVENT) {
+                            completed = true
+                            current.setLength(0)
+                        } else {
+                            flushEvent(current)?.let { event ->
+                                if (event.choices.any { it.finishReason != null }) completed = true
+                                emit(event)
+                            }
+                        }
+                    }
+
                     line.startsWith(":") -> Unit
                     line.startsWith("data:") -> current.append(line.removePrefix("data:").trim())
                 }
             }
-            flushEvent(current)?.let { emit(it) }
+            flushEvent(current)?.let { event ->
+                if (event.choices.any { it.finishReason != null }) completed = true
+                emit(event)
+            }
+            if (!completed) {
+                // The connection dropped before the [DONE] sentinel or a
+                // finish_reason: the accumulated deltas are incomplete. Fail
+                // loudly instead of executing truncated tool calls or emitting
+                // an empty END_TURN for a dead stream.
+                throw LlmException("chat completion stream ended unexpectedly before [DONE]")
+            }
         }
     }
 
@@ -116,8 +151,12 @@ public class LlmClient(
      * output are returned, sorted by id.
      */
     internal suspend fun fetchModels(): List<OpenRouterModel> {
-        val response: OpenRouterModelsResponse = json.decodeFromString(client.get(MODELS_PATH).bodyAsText())
-        return response.data
+        val response = client.get(MODELS_PATH)
+        if (response.status.value !in 200..299) {
+            throw LlmException("fetch models failed: HTTP ${response.status.value}: ${response.bodyAsText().take(500)}")
+        }
+        val models: OpenRouterModelsResponse = json.decodeFromString(response.bodyAsText())
+        return models.data
             .filter {
                 "tools" in it.supportedParameters && "text" in (it.architecture?.outputModalities ?: emptyList())
             }
@@ -131,12 +170,14 @@ public class LlmClient(
     internal suspend fun fetchEndpoints(modelId: String): List<Double> {
         val response = client.get("models/$modelId/endpoints")
         if (response.status.value != 200) {
-            error("fetch endpoints: HTTP ${response.status.value}: ${response.bodyAsText().take(500)}")
+            throw LlmException(
+                "fetch endpoints failed: HTTP ${response.status.value}: ${response.bodyAsText().take(500)}"
+            )
         }
         val payload: OpenRouterEndpointsResponse = json.decodeFromString(response.bodyAsText())
         return payload.data.endpoints.map { endpoint ->
             endpoint.pricing.completion.toDoubleOrNull()
-                ?: error("fetch endpoints: invalid completion price \"${endpoint.pricing.completion}\"")
+                ?: throw LlmException("fetch endpoints: invalid completion price \"${endpoint.pricing.completion}\"")
         }
     }
 
@@ -144,7 +185,21 @@ public class LlmClient(
         val data = current.toString().trim()
         current.setLength(0)
         if (data.isEmpty() || data == STREAM_END_EVENT) return null
-        return json.decodeFromString(data)
+        val errorObject = runCatching {
+            json.parseToJsonElement(data) as? JsonObject
+        }.getOrNull()
+            ?.get("error") as? JsonObject
+        if (errorObject != null) {
+            val message = (errorObject["message"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                ?: errorObject.toString()
+            throw LlmException("OpenRouter stream error: $message")
+        }
+        val response = json.decodeFromString<OpenRouterChatCompletionStreamResponse>(data)
+        response.choices.firstOrNull { it.error != null }?.let { choice ->
+            val message = choice.error?.message?.takeIf { it.isNotBlank() } ?: choice.error.toString()
+            throw LlmException("OpenRouter stream error: $message")
+        }
+        return response
     }
 
     public fun close() {

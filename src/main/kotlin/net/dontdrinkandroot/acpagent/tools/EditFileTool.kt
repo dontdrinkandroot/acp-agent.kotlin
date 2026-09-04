@@ -37,9 +37,11 @@ public class EditFileTool : AgentTool {
         arguments["path"]?.jsonPrimitive?.content
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val path = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val path = absoluteToolPath(context.cwd, rawPath)
         val oldString =
             arguments["old_string"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'old_string'", true)
+        if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)
         val newString = arguments["new_string"]?.jsonPrimitive?.content ?: ""
 
         return runCatching {

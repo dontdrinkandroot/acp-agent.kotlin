@@ -484,6 +484,7 @@ internal class AgentSessionImpl(
             sessionId = sessionId,
             updatePlan = { entries -> setPlan(entries, client) },
             fileStore = selectFileStore(client, clientCapabilities, sessionId, config.fsProxyEnabled),
+            bashTimeoutSeconds = config.bashTimeoutSeconds,
         )
 
         var iterations = 0
@@ -619,9 +620,13 @@ internal class AgentSessionImpl(
                     continue
                 }
 
-                val result = runCatching {
+                val result = try {
                     tool.execute(parseArguments(call.arguments), toolContext)
-                }.getOrElse { ToolResult("Tool ${tool.name} failed: ${it.message}", true) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    ToolResult("Tool ${tool.name} failed: ${e.message}", true)
+                }
 
                 emit(
                     Event.SessionUpdateEvent(
