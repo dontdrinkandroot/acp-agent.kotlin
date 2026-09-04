@@ -3,6 +3,11 @@ FROM eclipse-temurin:25-jdk AS builder
 
 WORKDIR /src
 
+# The build context excludes .git, so the commit hash is injected via build-arg
+# (see build-docker and build-image.yml). Gradle reads it from the env and falls
+# back to "unknown" when unset.
+ARG GIT_SHA=unknown
+
 COPY gradlew gradlew.bat ./
 COPY gradle/wrapper/ ./gradle/wrapper/
 COPY settings.gradle.kts build.gradle.kts gradle.properties ./
@@ -13,7 +18,7 @@ COPY src/ ./src/
 # and compilation are incremental across rebuilds (CI and local builds alike).
 # --no-daemon keeps the throwaway builder from leaving a lingering daemon.
 RUN --mount=type=cache,target=/root/.gradle,sharing=locked \
-    ./gradlew --no-daemon --quiet installDist
+    GIT_SHA=$GIT_SHA ./gradlew --no-daemon --quiet installDist
 
 # installDist copies Gradle-cache jars (root-owned, mode 600 in the builder)
 # verbatim; make them world-readable so the non-root runtime user can read them.

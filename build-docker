@@ -25,4 +25,12 @@ fi
 
 image=ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest
 
-exec "$docker_bin" build --pull -t "$image" "$script_dir"
+# The build context has no .git (.dockerignore), so the commit hash the agent
+# reports in its system prompt is injected here. The working tree state matches
+# the context contents, so a non-clean tree is flagged.
+git_sha=$(git -C "$script_dir" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if [ "$git_sha" != unknown ] && [ -n "$(git -C "$script_dir" status --porcelain 2>/dev/null)" ]; then
+    git_sha="$git_sha-dirty"
+fi
+
+exec "$docker_bin" build --pull --build-arg "GIT_SHA=$git_sha" -t "$image" "$script_dir"

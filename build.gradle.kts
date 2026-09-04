@@ -1,3 +1,4 @@
+import java.io.File
 plugins {
     kotlin("jvm") version "2.4.10"
     kotlin("plugin.serialization") version "2.4.10"
@@ -6,6 +7,36 @@ plugins {
 
 group = "org.example"
 version = "0.1.0-SNAPSHOT"
+
+val gitCommit: String = System.getenv("GIT_SHA")
+    ?: runCatching {
+        providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+            .standardOutput.asText.get().trim()
+    }.getOrNull()
+    ?: "unknown"
+
+val gitVersion: String = if (gitCommit != "unknown" && gitCommit != System.getenv("GIT_SHA") && runCatching {
+        providers.exec { commandLine("git", "status", "--porcelain") }
+            .standardOutput.asText.get().isNotBlank()
+    }.getOrDefault(false)
+) {
+    "$gitCommit-dirty"
+} else {
+    gitCommit
+}
+
+val generateGitProperties = tasks.register("generateGitProperties") {
+    val commit = gitVersion
+    val outputDir = layout.buildDirectory.dir("generated/git-properties")
+    outputs.dir(outputDir)
+    inputs.property("gitCommit", commit)
+    doLast {
+        val dir = outputDir.get().asFile.apply { mkdirs() }
+        File(dir, "git.properties").writeText("git.commit=$commit\n")
+    }
+}
+
+sourceSets.main.get().resources.srcDir(generateGitProperties)
 
 repositories {
     mavenCentral()

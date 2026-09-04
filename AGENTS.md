@@ -41,6 +41,9 @@ banner-suppressing API.
 ```bash
 ./gradlew compileKotlin          # compile main (fastest loop)
 ./gradlew installDist            # produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin
+./ddr-acp-agent                  # run the agent directly (no docker); auto-rebuilds via
+                                 # installDist when src/ or the build scripts are newer
+                                 # than the binary, then execs the installDist launcher
 ./gradlew test                   # unit tests + black-box e2e (drives installDist launcher)
 ./gradlew test --tests "net.dontdrinkandroot.acpagent.llm.LlmRequestTest"   # single test class (re-links installDist; IDE-only runs may use a stale binary - see Pitfalls)
 ./gradlew build                  # assemble + test
@@ -98,10 +101,20 @@ Config comes from environment variables:
   `bash` adds the bash tool. Tools carry `modes`; `ToolRegistry.availableForMode(mode)`
   and `disabledInMode(name, mode)` give the mode-aware "disabled in current mode" error.
   The mode-aware system prompt is rebuilt per turn; `todayProvider` (via
-  `java.time.LocalDate`) and `cwd` are injected per session. Config option: a single
+  `java.time.LocalDate`) and `cwd` are injected per session, and the build
+  commit hash (see below) appears as `Agent build: <sha>[-dirty]` so the agent
+  (and by extension the user) can tell which build it is running. Config option: a single
   `mode` select (`category: mode`, live `currentValue`); `session/set_config_option` +
   legacy `session/set_mode` handled; both emit `current_mode_update` + full
   `config_option_update`; unknown -> invalid-params error.
+- **Build hash**: the `generateGitProperties` Gradle task writes
+  `git.properties` (`git.commit=<short sha>` or `<sha>-dirty` when the working
+  tree is not clean, `unknown` outside a git checkout) into the main resources
+  (wired via `sourceSets.main.resources.srcDir`); `BuildInfo.kt` (root package)
+  reads it from the classpath. Docker builds have no `.git` (`.dockerignore`),
+  so the hash is injected as the `GIT_SHA` build-arg (Dockerfile `ARG` ->
+  env var honored first by `build.gradle.kts`): `build-docker` computes short
+  sha + `-dirty` from the working tree, `build-image.yml` from the checkout.
 - **Model + reasoning config options**: `session/new`/`load`/`resume` fetch the
   OpenRouter model feed (`GET /models`, `llm/LlmModels.kt` wire types; filtered to
   tool-capable text-output models, sorted by id; fetch failure fails session creation, as
@@ -150,7 +163,15 @@ Config comes from environment variables:
 - **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API; text deltas are
   relayed immediately (no buffering), tool calls are merged from streamed deltas, and
   provider reasoning deltas (`delta.reasoning`) are relayed as `agent_thought_chunk`
-  without being persisted to history. Every request carries app attribution headers (`HTTP-Referer` +
+  without being persisted to history. Every streamed `agent_message_chunk`,
+  `agent_thought_chunk` and replayed chunk carries a per-content-block `messageId`
+  (UUID, minted fresh per LLM iteration and shared by all deltas of one
+  block within that iteration) so clients group deltas into one message
+  instead of one bubble per delta; the UUID format follows the ACP
+  message-id contract (`MessageId` doc: clients and agents MUST use UUID
+  format) and the IntelliJ client groups thought deltas by it. The e2e pins
+  this at the decoded-object AND raw-wire level (per-iteration distinctness,
+  UUID format). Every request carries app attribution headers (`HTTP-Referer` +
   `X-OpenRouter-Title`, see openrouter.ai/docs/app-attribution).
 - **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
   disables) every chat request carries a `provider` object: `sort: "throughput"` plus
@@ -217,6 +238,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     Main.kt                          # `main` (logging setup) + `runAgent`: registry, session
                                      # factory (AgentSessionFactory: create/restore), store
                                      # wiring, transport, isoDateToday
+    BuildInfo.kt                     # build commit hash from git.properties (classpath)
     config/Config.kt                 # env config (OPENROUTER_*, FS_PROXY_ENABLED)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON)
@@ -248,6 +270,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/GrepTool.kt                # grep tool (local disk)
 src/test/kotlin/                              # unit tests + black-box E2eConformanceTest
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
+ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
+                                        # sources are newer than the installDist binary, then
+                                        # execs it; embedded Gradle stdout is redirected to stderr
 ddr-acp-agent-docker                    # docker launcher: sandboxed `docker run` for the agent
 build-docker                            # local image build script (tags
                                         # ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest)
@@ -273,7 +298,8 @@ advertising (`promptCapabilities` image/embeddedContext + `mcpCapabilities` http
 AGENTS.md injection and multimodal prompt conversion (image data URI + inlined
 resource), the `$/cancel_request` dismissal of a stuck permission prompt, the auto
 provider routing (`provider` object with median cap, fail-open on endpoints error,
-disabled via env), and path-aware permissions + the client fs proxy (in-project
+disabled via env), the system prompt's `Agent build:` hash round-tripped from the
+classpath `git.properties`, and path-aware permissions + the client fs proxy (in-project
 read/write without a prompt, out-of-project read prompts, proxy disabled via
 `FS_PROXY_ENABLED=0` falls back to the local store). Plus a **persistence scenario
 across three agent restarts** (`session/list` ->
@@ -282,6 +308,9 @@ All existing scenarios must pass **unchanged**.
 Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
 build the image with `./build-docker` and smoke-test by piping an `initialize` request into
 `OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC response on stdout).
+Direct launcher: validate with `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the same
+way via `./ddr-acp-agent` (keep stdin open briefly after the request - closing it immediately races
+the transport teardown and swallows the response).
 
 **Koog upgrade checklist**: on every Koog version bump, re-verify the three hand-rolled
 surfaces against the new version (see the "No more Koog" bullet under Boundaries) and

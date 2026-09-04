@@ -47,7 +47,7 @@ public class GrepTool : AgentTool {
             val fs = SystemFileSystem
             val base = Path(root)
             if (!fs.exists(base)) return@runCatching ToolResult("Root not found: $root", true)
-            val results = mutableListOf<String>()
+            val results = mutableListOf<Triple<String, Int, String>>()
             walk(fs, base, 0) { f ->
                 if (fileFilter != null) {
                     val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
@@ -58,12 +58,16 @@ public class GrepTool : AgentTool {
                     val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
                     content.split('\n').forEachIndexed { idx, line ->
                         if (regex.containsMatchIn(line)) {
-                            results += "$rel:${idx + 1}:$line"
+                            results += Triple(rel, idx + 1, line)
                         }
                     }
                 }
             }
-            ToolResult(results.take(500).joinToString("\n").ifEmpty { "No matches" })
+            val matches = results
+                .sortedWith(compareBy({ it.first }, { it.second }))
+                .take(500)
+                .map { "${it.first}:${it.second}:${it.third}" }
+            ToolResult(matches.joinToString("\n").ifEmpty { "No matches" })
         }.getOrElse { ToolResult("Grep failed: ${it.message}", true) }
     }
 }

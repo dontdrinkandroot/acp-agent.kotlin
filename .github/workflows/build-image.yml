@@ -34,6 +34,13 @@ jobs:
                     username: ${{ github.actor }}
                     password: ${{ secrets.GITHUB_TOKEN }}
 
+            -   name: Resolve commit hash
+                id: git_sha
+                shell: bash
+                run: |
+                    sha="$(git rev-parse --short HEAD)"
+                    echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
             -   name: Build and push
                 uses: docker/build-push-action@v6
                 with:
@@ -41,6 +48,8 @@ jobs:
                     platforms: linux/amd64
                     push: true
                     tags: ${{ env.IMAGE }}:latest
+                    build-args: |
+                        GIT_SHA=${{ steps.git_sha.outputs.sha }}
                       # GHA cache restores the last build's layers (including builder
                       # stage layers, thanks to mode=max: the default "min" only exports
                       # layers of the final image). The workflow only builds on main and

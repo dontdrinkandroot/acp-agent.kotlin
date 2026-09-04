@@ -53,7 +53,7 @@ class E2eConformanceTest {
     fun `e2e wire conformance - initialize, session, tool call, permission, result`() = runBlocking {
         val tmpDir = Files.createTempDirectory("acp-agent-e2e").toFile()
         val targetFile = File(tmpDir, "phase4.txt")
-        val llmMock = MockOpenAiServer(targetFile.absolutePath)
+        val llmMock = MockOpenAiServer(targetFile.absolutePath, firstTurnStreamDeltas = true)
         llmMock.start()
         try {
             val process = startAgent(llmMock.port)
@@ -236,12 +236,14 @@ class E2eConformanceTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val writeMutex = Mutex()
         val stdoutReader = process.inputStream.bufferedReader()
+        val wireLines = Collections.synchronizedList(mutableListOf<String>())
         val transport = StdioTransport(
             scope,
             Dispatchers.IO,
             flow {
                 while (true) {
                     val line = stdoutReader.readLine() ?: break
+                    wireLines.add(line)
                     emit(line)
                 }
             }.flowOn(Dispatchers.IO),
@@ -405,13 +407,65 @@ class E2eConformanceTest {
             println("[ok] chat request carries reasoning effort; usage_update reports 42/16384")
 
             val thoughtChunks = updates.filterIsInstance<SessionUpdate.AgentThoughtChunk>()
-                .mapNotNull { (it.content as? ContentBlock.Text)?.text }
-                .joinToString("")
+                .filter { (it.content as? ContentBlock.Text)?.text?.isNotEmpty() == true }
             assertTrue(
-                thoughtChunks.contains("pondering the request"),
-                "expected agent_thought_chunk, got '$thoughtChunks'"
+                thoughtChunks.size >= 2,
+                "expected multiple agent_thought_chunk deltas, got ${thoughtChunks.size}"
             )
-            println("[ok] agent_thought_chunk relayed from reasoning deltas")
+            assertEquals(
+                "priming the writepondering the request",
+                thoughtChunks.mapNotNull { (it.content as ContentBlock.Text).text }.joinToString("")
+            )
+            val uuidRegex =
+                Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+            val thoughtIds = thoughtChunks.map { it.messageId?.value }
+            assertTrue(thoughtIds.isNotEmpty() && thoughtIds.all { it != null }, "thought chunks must carry a messageId")
+            thoughtIds.forEach { id ->
+                assertTrue(uuidRegex.matches(id!!), "messageId must be UUID format, got '$id'")
+            }
+            assertEquals(
+                2,
+                thoughtIds.distinct().size,
+                "each LLM iteration's thought block gets its own messageId, got $thoughtIds"
+            )
+            assertEquals(thoughtIds[1], thoughtIds[2], "iteration-2 thought deltas share one messageId")
+            assertNotEquals(thoughtIds[0], thoughtIds[1], "a fresh LLM iteration gets a fresh thought messageId")
+            println("[ok] agent_thought_chunk relayed from reasoning deltas, one messageId per iteration")
+
+            val textIds = updates.filterIsInstance<SessionUpdate.AgentMessageChunk>()
+                .map { it.messageId?.value }
+            assertTrue(textIds.isNotEmpty() && textIds.all { it != null }, "message chunks must carry a messageId")
+            textIds.forEach { id ->
+                assertTrue(uuidRegex.matches(id!!), "messageId must be UUID format, got '$id'")
+            }
+            assertEquals(
+                2,
+                textIds.distinct().size,
+                "each LLM iteration's text block gets its own messageId, got $textIds"
+            )
+            assertTrue(
+                thoughtIds.toSet().intersect(textIds.toSet()).isEmpty(),
+                "thought and text blocks use distinct messageIds",
+            )
+            println("[ok] agent_message_chunk deltas share one messageId per iteration")
+
+            val thoughtWireIds = wireLines.mapNotNull { line ->
+                val root = runCatching { Json.parseToJsonElement(line) }.getOrNull()?.jsonObject
+                    ?: return@mapNotNull null
+                val update = root["params"]?.jsonObject?.get("update")?.jsonObject ?: return@mapNotNull null
+                update.takeIf { it["sessionUpdate"]?.jsonPrimitive?.content == "agent_thought_chunk" }
+                    ?.get("messageId")?.jsonPrimitive?.content
+            }
+            assertTrue(
+                thoughtWireIds.size >= 3,
+                "expected raw agent_thought_chunk lines on the wire, got ${thoughtWireIds.size}",
+            )
+            thoughtWireIds.forEach { id ->
+                assertTrue(uuidRegex.matches(id), "wire messageId must be UUID format, got '$id'")
+            }
+            assertEquals(2, thoughtWireIds.distinct().size, "wire thought chunks must share per-iteration messageIds")
+            assertEquals(thoughtIds.toList(), thoughtWireIds.toList(), "wire messageIds must match the decoded ones")
+            println("[ok] raw session/update wire lines carry messageId on agent_thought_chunk")
 
             val headers = llmMock.lastRequestHeaders
             val referer =
@@ -425,6 +479,15 @@ class E2eConformanceTest {
             assertEquals("https://github.com/dontdrinkandroot/acp-agent.kotlin", referer)
             assertEquals("DdrAcpAgentKotlin", appTitle)
             println("[ok] attribution headers sent (HTTP-Referer + X-OpenRouter-Title)")
+
+            val buildCommit = Properties().apply {
+                E2eConformanceTest::class.java.getResourceAsStream("/git.properties")!!.use { load(it) }
+            }.getProperty("git.commit")
+            assertTrue(
+                llmMock.lastRequestBody?.contains("Agent build: $buildCommit") ?: false,
+                "expected the system prompt to carry the build hash, got: ${llmMock.lastRequestBody}",
+            )
+            println("[ok] system prompt carries the build hash ($buildCommit)")
         } finally {
             process.outputStream.close()
             protocol.close()
@@ -1175,6 +1238,7 @@ internal class MockOpenAiServer(
     private val imageSupport: Boolean = false,
     private val failEndpoints: Boolean = false,
     private val toolCall: MockToolCall? = null,
+    private val firstTurnStreamDeltas: Boolean = false,
 ) {
     val requestCount = AtomicInteger(0)
     var lastRequestBody: String? = null
@@ -1263,6 +1327,16 @@ internal class MockOpenAiServer(
     )
 
     private fun toolCallSse(name: String, arguments: JsonObject): String {
+        val firstTurnDeltas = if (firstTurnStreamDeltas) {
+            "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                "\"model\":\"test-model\"," +
+                    "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"priming the write\"},\"finish_reason\":null}]}\n\n" +
+                "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                "\"model\":\"test-model\"," +
+                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"writing the file\"},\"finish_reason\":null}]}\n\n"
+        } else {
+            ""
+        }
         val chunk = buildJsonObject {
             put("id", "chatcmpl-ph4-1")
             put("object", "chat.completion.chunk")
@@ -1305,7 +1379,8 @@ internal class MockOpenAiServer(
                 },
             )
         }
-        return "data: $chunk\n\n" +
+        return firstTurnDeltas +
+            "data: $chunk\n\n" +
             "data: {\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
             "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
             "data: [DONE]\n\n"
@@ -1381,12 +1456,22 @@ internal class MockOpenAiServer(
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                     "\"model\":\"test-model\"," +
-                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"pondering the request\"},\"finish_reason\":null}]}\n\n"
+                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"pondering \"},\"finish_reason\":null}]}\n\n"
+            )
+            append(
+                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                    "\"model\":\"test-model\"," +
+                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the request\"},\"finish_reason\":null}]}\n\n"
             )
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                         "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"phase4 done\"},\"finish_reason\":null}]}\n\n"
+                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"phase4 \"},\"finish_reason\":null}]}\n\n"
+            )
+            append(
+                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                        "\"model\":\"test-model\"," +
+                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n"
             )
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +

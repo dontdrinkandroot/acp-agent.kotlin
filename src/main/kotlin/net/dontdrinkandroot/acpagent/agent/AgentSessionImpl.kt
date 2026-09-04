@@ -20,11 +20,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.BuildInfo
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
+import java.util.UUID
 import kotlin.concurrent.Volatile
 
 internal class AgentSessionImpl(
@@ -55,6 +57,14 @@ internal class AgentSessionImpl(
      * cannot interleave with an in-flight persist and resurrect the record.
      */
     private val persistMutex = Mutex()
+
+    /**
+     * Mints a fresh [`MessageId`] for the message and thought chunks the agent
+     * streams to the client. All chunks that belong to the same content block
+     * share one id; a fresh id per block lets the client group streamed deltas
+     * into a single message. UUID format per the ACP message-id contract.
+     */
+    private fun newMessageId(): MessageId = MessageId(UUID.randomUUID().toString())
 
     @Volatile
     private var deleted = false
@@ -308,12 +318,12 @@ internal class AgentSessionImpl(
                 when (message) {
                     is OpenAIMessage.User ->
                         message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                            updates += SessionUpdate.UserMessageChunk(ContentBlock.Text(it))
+                            updates += SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId())
                         }
 
                     is OpenAIMessage.Assistant -> {
                         message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                            updates += SessionUpdate.AgentMessageChunk(ContentBlock.Text(it))
+                            updates += SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId())
                         }
                         message.toolCalls.orEmpty().forEach { call ->
                             val toolName = call.function?.name ?: ""
@@ -422,6 +432,7 @@ internal class AgentSessionImpl(
 
     private fun systemPrompt(mode: SessionModeId, instructions: AgentsInstructions?): String = buildString {
         appendLine("You are acp-agent, a fast and compact coding agent embedded in the user's IDE via the Agent Client Protocol.")
+        appendLine("Agent build: ${BuildInfo.commit}")
         appendLine()
         appendLine("Session working directory: $cwd")
         appendLine("Today's date: ${todayProvider()}")
@@ -451,6 +462,7 @@ internal class AgentSessionImpl(
                     "Do not call write tools even if offered."
     }
 
+    @OptIn(UnstableApi::class)
     override suspend fun prompt(content: List<ContentBlock>, _meta: JsonElement?): Flow<Event> = flow {
         val context = currentCoroutineContext()
         val client = runCatching { context.client }.getOrNull()
@@ -491,6 +503,8 @@ internal class AgentSessionImpl(
 
             val assistantText = StringBuilder()
             val toolCallAccum = mutableMapOf<Int, MutableStreamToolCall>()
+            val thoughtMessageId = newMessageId()
+            val textMessageId = newMessageId()
 
             llm.chatCompletion(
                 messages = messages,
@@ -502,11 +516,11 @@ internal class AgentSessionImpl(
                 chunk.usage?.let { usage = it }
                 chunk.choices.firstOrNull()?.let { choice ->
                     choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentThoughtChunk(ContentBlock.Text(reasoning))))
+                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentThoughtChunk(ContentBlock.Text(reasoning), thoughtMessageId)))
                     }
                     choice.delta.content?.let { text ->
                         assistantText.append(text)
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentMessageChunk(ContentBlock.Text(text))))
+                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentMessageChunk(ContentBlock.Text(text), textMessageId)))
                     }
                     choice.delta.toolCalls?.forEach { tc ->
                         val acc = toolCallAccum.getOrPut(tc.index) { MutableStreamToolCall() }
