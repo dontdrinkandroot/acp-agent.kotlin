@@ -186,7 +186,11 @@ Config comes from environment variables:
   non-`latest` versions are kept, older ones pruned via `gh api` in the same workflow).
   The multi-stage `Dockerfile` builds the agent in a pinned `eclipse-temurin:25-jdk`
   stage (`installDist`; a `/root/.gradle` BuildKit cache mount keeps rebuilds
-  incremental and `--no-daemon` avoids a lingering daemon) and copies it into the
+  incremental and `--no-daemon` avoids a lingering daemon). `installDist` copies
+  Gradle-cache jars verbatim with mode 600 (root-owned in the builder), so the
+  builder `chmod`s the install dir world-readable before the `COPY` (a `doLast` hook
+  on `installDist` in `build.gradle.kts` normalizes perms at the source) - the
+  non-root runtime user must be able to read the jars. It then copies it into the
   generic toolchain base `ghcr.io/dontdrinkandroot/dev:latest` (user `dev`, OpenJDK 25,
   XDG env, full toolchain for the agent's `bash` tool; the git `[user]` identity
   fallback goes to `/etc/gitconfig` because the tmpfs home shadows the image). The

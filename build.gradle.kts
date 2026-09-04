@@ -29,6 +29,13 @@ application {
     mainClass.set("net.dontdrinkandroot.acpagent.MainKt")
 }
 
+tasks.named<Sync>("installDist") {
+    val destination = layout.buildDirectory.file("install/acp-agent.kotlin").get().asFile
+    doLast {
+        destination.walkTopDown().forEach { it.setReadable(true, false) }
+    }
+}
+
 tasks.test {
     dependsOn("installDist")
     systemProperty(

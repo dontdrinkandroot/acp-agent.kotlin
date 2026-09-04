@@ -15,6 +15,11 @@ COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.gradle,sharing=locked \
     ./gradlew --no-daemon --quiet installDist
 
+# installDist copies Gradle-cache jars (root-owned, mode 600 in the builder)
+# verbatim; make them world-readable so the non-root runtime user can read them.
+
+RUN chmod -R a+rX /src/build/install/acp-agent.kotlin
+
 # Runtime base: the generic toolchain image from dontdrinkandroot/dev.docker
 # (user `dev`, home /home/dev, XDG env, /workspace, git defaults). It carries
 # OpenJDK 25 (the generated launcher resolves `java`) and the full toolchain the
