@@ -112,7 +112,13 @@ Config comes from environment variables:
   an omitted field stays unchanged, an empty-string `description` clears it; create rejects
   existing names and blank commands; delete/update reject unknown names. Writes are atomic
   (temp + move) and refuse to touch a corrupt/unparseable file; unknown entry fields
-  round-trip untouched.
+  round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
+  loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
+  `test` (full `test` suite), `test_class` (single class via `{args}`), `install_dist`
+  (relink the e2e launcher), `dependency_updates` (stable-only), `lint_scripts`
+  (`bash -n` + `shellcheck` on the launchers/build script) and `test_fsproxy`
+  (runs the fs-proxy e2e with `FS_PROXY_ENABLED` unset, so a leaked `=0` in the
+  environment cannot force the local store and break the scenario).
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
   `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
   `GIT_SHA` build-arg (no `.git` in the build context).

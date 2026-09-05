@@ -1,0 +1,30 @@
+{
+    "compile": {
+        "command": "./gradlew compileKotlin",
+        "description": "Compile main sources (fastest loop)"
+    },
+    "build": {
+        "command": "./gradlew build",
+        "description": "Compile + run all unit and black-box e2e tests"
+    },
+    "test": {
+        "command": "./gradlew test",
+        "description": "Run the full test suite"
+    },
+    "test_class": {
+        "command": "./gradlew test --tests \"{args}\"",
+        "description": "Run a single test class, e.g. LlmRequestTest (re-links installDist first)"
+    },
+    "install_dist": {
+        "command": "./gradlew installDist",
+        "description": "Produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
+    },
+    "dependency_updates": {
+        "command": "./gradlew dependencyUpdates -Drevision=release",
+        "description": "Report outdated dependencies (stable releases only)"
+    },
+    "lint_scripts": {
+        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker",
+        "description": "Validate launcher + build scripts"
+    }
+}
