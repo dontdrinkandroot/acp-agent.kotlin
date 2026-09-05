@@ -397,6 +397,14 @@ communicate that with the user so we can review them.
 - **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
+- **CIO engine request timeout**: the ktor CIO engine applies a default **15s aggregate
+  `requestTimeout`** over the whole HTTP call unless it is explicitly disabled
+  (`engine { requestTimeout = 0 }`). This silently kills any LLM chat completion
+  that streams or thinks for more than 15 seconds total (`Request timeout has
+  expired [url=..., request_timeout=unknown ms]` - it looks like a server error but
+  is client-side). Only requests made through the SSE plugin are exempt; setting
+  `Accept: text/event-stream` on a plain request is not enough. `LlmClient` disables
+  it and guards with a 120s socket idle timeout instead (`endpoint { socketTimeout }`).
 - **SDK session state reporting**: the SDK's `asModeState()` builds the session
   response from `defaultMode` + `availableModes` (not the live `currentMode`),
   so a restored session must set `defaultMode` to its persisted mode.

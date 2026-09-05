@@ -20,6 +20,14 @@ private const val MODELS_PATH = "models"
 private const val STREAM_END_EVENT = "[DONE]"
 
 /**
+ * Idle timeout between two data packets on the underlying socket, in
+ * milliseconds. A live SSE stream keeps sending data, so an active response
+ * never hits this; a server that goes silent for this long gets a loud
+ * failure instead of an infinite hang.
+ */
+private const val LLM_SOCKET_IDLE_TIMEOUT_MILLIS = 120_000L
+
+/**
  * Raised when OpenRouter answers with an HTTP error status or an error object
  * inside the stream. Carries the server-provided message so the turn fails
  * with a diagnostic the user can act on instead of an empty or cryptic reply.
@@ -74,6 +82,18 @@ public class LlmClient(
 ) {
     private val json = llmWireJson
     private val client = HttpClient(CIO) {
+        engine {
+            // The CIO engine's default `requestTimeout` is a 15s aggregate
+            // wall-clock deadline covering the whole HTTP call. Reasoning
+            // models and long tool loops routinely stream for longer than
+            // that, so it must not kill a live response; a dead stream is
+            // instead caught by the socket idle timeout below. 0 disables
+            // the aggregate timeout entirely.
+            requestTimeout = 0
+            endpoint {
+                socketTimeout = LLM_SOCKET_IDLE_TIMEOUT_MILLIS
+            }
+        }
         defaultRequest {
             url(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
             contentType(ContentType.Application.Json)
