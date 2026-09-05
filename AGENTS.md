@@ -223,7 +223,23 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/ListDirTool.kt             # list_dir tool (local disk)
     tools/GlobTool.kt                # glob tool + internal walk/globToRegex helpers (local disk)
     tools/GrepTool.kt                # grep tool (local disk)
-src/test/kotlin/                              # unit tests + black-box E2eConformanceTest
+src/test/kotlin/                              # unit tests + black-box e2e harness
+    net/dontdrinkandroot/acpagent/e2e/
+        E2eAgentTest.kt              # abstract base: process/stdio transport harness, temp-dir
+                                     # lifecycle (withE2eAgent), connect helpers, prompt helpers
+        MockOpenAiServer.kt          # mock OpenRouter server (SSE chunks, models + endpoints feed)
+                                     # + MockToolCall / pathArgs
+        ClientOperations.kt          # client session ops doubles: TestClientOperations
+                                     # (records requests/notifications, allow_once) +
+                                     # SuspendingPermissionOperations (stuck permission prompt)
+        E2eWireConformanceTest.kt    # initialize/session/config-option/prompt/tool-call/permission
+                                     # flow + UUIDv7 messageIds, usage_update, attribution headers
+        E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
+                                     # restarts + update_plan persistence/replay
+        E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt
+        E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
+        E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
+        E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
                                         # sources are newer than the installDist binary, then
@@ -245,7 +261,8 @@ build-docker                            # local image build script (tags
 
 ## Testing
 
-`./gradlew test` runs unit tests plus the **black-box e2e** harness (`E2eConformanceTest`), which drives the linked
+`./gradlew test` runs unit tests plus the **black-box e2e** harness (feature-area scenario classes in
+`net/dontdrinkandroot/acpagent/e2e` sharing the `E2eAgentTest` base), which drives the linked
 `installDist` launcher as a separate OS process with the **real official ACP SDK client** and a local mock OpenRouter
 server. It asserts the core wire flow (incl. model/reasoning switches, `update_plan`, the
 chat request's `reasoning` effort and the `usage_update` indicator), capability
@@ -355,7 +372,7 @@ communicate that with the user so we can review them.
   `explicitNulls = false`, `encodeDefaults = true`. Do not create a second `Json` for LLM
   wire-shaped data with different settings; `LlmRequestTest` pins the request shape and the
   session store reuses the same instance for persisted history.
-- **Stale e2e binary**: `E2eConformanceTest` drives the installed launcher, and `test`
+- **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
 - **SDK session state reporting**: the SDK's `asModeState()` builds the session
