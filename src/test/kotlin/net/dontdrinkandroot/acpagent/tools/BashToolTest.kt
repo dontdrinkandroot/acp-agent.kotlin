@@ -2,11 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -46,6 +42,14 @@ class BashToolTest {
     fun `missing command errors`() = runBlocking {
         val result = BashTool().execute(buildJsonObject {}, context)
         assertTrue(result.isError)
+    }
+
+    @Test
+    fun `title shows the command argument`() {
+        assertEquals(
+            "bash(command: ./gradlew test)",
+            BashTool().title(buildJsonObject { put("command", "./gradlew test") }),
+        )
     }
 
     @Test

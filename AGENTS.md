@@ -70,6 +70,7 @@ Config comes from environment variables:
   client advertises fs capabilities, see Features)
 - `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
   after this many seconds, killing the whole process tree, see Features)
+
 ## Features
 
 - **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
@@ -104,7 +105,9 @@ Config comes from environment variables:
   via `ProcessRunner`; the model's `args` are substituted for the first `{args}` placeholder,
   configs without the placeholder reject arguments. `mutating = true` so every `run` asks the
   user for permission regardless of mode; the config file is project-controlled (same trust
-  tier as AGENTS.md), so the resolved command shown in the prompt is the real gate.
+  tier as AGENTS.md), so the name + args shown in the permission prompt are the real gate (the resolved command itself
+  stays in `.ai/run.json`; see the tool-call title note under
+  Permissions).
   Configs are managed by explicit dedicated tools (`tools/RunConfigTools.kt`, also read from
   local disk): `list_run_configs` (read-only, every mode) and `create_run_config` /
   `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
@@ -151,7 +154,18 @@ Config comes from environment variables:
   In-project writes are further gated by mode (plan is read-only). The containment check
   (`tools/Containment.kt`) is symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
-  `reject_once` apply once.
+  `reject_once` apply once. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call in
+  permission prompts and progress - it ignores the `rawInput` field that carries the actual
+  arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with
+  meaningful arguments therefore override `AgentTool.title(arguments)` (hook in
+  `tools/Tool.kt`, default `null` = bare tool name) returning `formatToolTitle(name, args)`
+  - a `name(key: value, ...)` summary, gemini-cli style, arg part trimmed at 50 chars;
+    `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
+    implemented for `bash`, `run` and the run-config write tools; path tools only prompt for
+    out-of-project access and are untouched. **Revert path**: when JetBrains renders
+    `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
+    three call sites (`tool_call` notification, `request_permission`, load replay in
+    `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
   `mcpCapabilities.http/sse`.

@@ -2,21 +2,10 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.SessionConfigId
-import com.agentclientprotocol.model.SessionConfigOptionValue
-import com.agentclientprotocol.model.SessionModeId
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.ToolCallStatus
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.io.File
 import kotlin.test.Test
@@ -66,7 +55,12 @@ class E2eRunConfigCrudTest : E2eAgentTest() {
                 assertEndTurn(events)
 
                 assertEquals(1, ops.permissionRequests.size, "create_run_config is mutating and must ask permission")
-                assertEquals("create_run_config", ops.permissionRequests.single().title)
+                val permissionTitle = requireNotNull(ops.permissionRequests.single().title)
+                assertTrue(
+                    permissionTitle.startsWith("create_run_config(name: test, command: "),
+                    permissionTitle,
+                )
+                assertTrue(permissionTitle.endsWith("...)"), permissionTitle)
 
                 val runJson = File(projectDir, ".ai/run.json")
                 assertTrue(runJson.isFile, "create_run_config must persist .ai/run.json")

@@ -45,14 +45,14 @@ class E2eRunToolTest : E2eAgentTest() {
                 assertEndTurn(events)
 
                 assertEquals(1, ops.permissionRequests.size, "run is mutating and must ask permission")
-                assertEquals("run", ops.permissionRequests.single().title)
+                assertEquals("run(config: marker)", ops.permissionRequests.single().title)
                 val rawInput = ops.permissionRequests.single().rawInput as JsonObject
                 assertEquals("marker", (rawInput["config"] as JsonPrimitive).content)
 
                 val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
                 val toolCalls = updates.filterIsInstance<SessionUpdate.ToolCall>()
                 assertEquals(1, toolCalls.size)
-                assertEquals("run", toolCalls.single().title)
+                assertEquals("run(config: marker)", toolCalls.single().title)
                 assertEquals(ToolKind.EXECUTE, toolCalls.single().kind)
                 val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     .filter { it.toolCallId == toolCalls.single().toolCallId }

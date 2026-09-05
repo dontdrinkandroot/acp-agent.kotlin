@@ -327,12 +327,14 @@ internal class AgentSessionImpl(
                         }
                         message.toolCalls.orEmpty().forEach { call ->
                             val toolName = call.function?.name ?: ""
+                            val args = parseArguments(call.function?.arguments ?: "{}")
+                            val tool = toolRegistry.get(toolName)
                             updates += SessionUpdate.ToolCall(
                                 toolCallId = ToolCallId(call.id),
-                                title = toolName,
-                                kind = toolRegistry.get(toolName)?.kind ?: ToolKind.OTHER,
+                                title = tool?.title(args) ?: toolName,
+                                kind = tool?.kind ?: ToolKind.OTHER,
                                 status = ToolCallStatus.PENDING,
-                                rawInput = parseArguments(call.function?.arguments ?: "{}"),
+                                rawInput = args,
                             )
                         }
                     }
@@ -590,19 +592,20 @@ internal class AgentSessionImpl(
                     continue
                 }
 
+                val arguments = parseArguments(call.arguments)
                 emit(
                     Event.SessionUpdateEvent(
                         SessionUpdate.ToolCall(
                             toolCallId = toolCallId,
-                            title = tool.name,
+                            title = tool.title(arguments) ?: tool.name,
                             kind = tool.kind,
                             status = ToolCallStatus.IN_PROGRESS,
-                            rawInput = parseArguments(call.arguments),
+                            rawInput = arguments,
                         )
                     )
                 )
 
-                val allowed = shouldAllow(tool, client, toolCallId, call)
+                val allowed = shouldAllow(tool, client, toolCallId, arguments)
                 if (!allowed) {
                     val msg = "Permission denied for tool ${tool.name}"
                     emit(
@@ -656,9 +659,8 @@ internal class AgentSessionImpl(
         tool: AgentTool,
         client: com.agentclientprotocol.common.ClientSessionOperations?,
         toolCallId: ToolCallId,
-        call: StreamToolCall,
+        arguments: JsonObject,
     ): Boolean {
-        val arguments = parseArguments(call.arguments)
         if (!permissionNeeded(cwd, tool, arguments)) return true
         if (client == null) return true
         permanentPermissions[tool.name]?.let { return it }
@@ -682,7 +684,7 @@ internal class AgentSessionImpl(
         )
         val update = SessionUpdate.ToolCallUpdate(
             toolCallId = toolCallId,
-            title = tool.name,
+            title = tool.title(arguments) ?: tool.name,
             kind = tool.kind,
             status = ToolCallStatus.IN_PROGRESS,
             rawInput = arguments,

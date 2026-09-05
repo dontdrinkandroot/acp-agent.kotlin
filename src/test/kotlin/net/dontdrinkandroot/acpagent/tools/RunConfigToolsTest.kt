@@ -5,12 +5,9 @@ import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.SessionModeId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class RunConfigToolsTest {
 
@@ -170,6 +167,33 @@ class RunConfigToolsTest {
         assertEquals(expect, CreateRunConfigTool("/tmp").modes)
         assertEquals(expect, UpdateRunConfigTool("/tmp").modes)
         assertEquals(expect, DeleteRunConfigTool("/tmp").modes)
+    }
+
+    @Test
+    fun `titles show the write arguments`() {
+        assertEquals(
+            "create_run_config(name: test, command: echo hello, description: unit)",
+            CreateRunConfigTool("/tmp").title(
+                buildJsonObject {
+                    put("name", "test")
+                    put("command", "echo hello")
+                    put("description", "unit")
+                },
+            ),
+        )
+        assertEquals(
+            "update_run_config(name: test, command: echo new)",
+            UpdateRunConfigTool("/tmp").title(
+                buildJsonObject {
+                    put("name", "test")
+                    put("command", "echo new")
+                },
+            ),
+        )
+        assertEquals(
+            "delete_run_config(name: test)",
+            DeleteRunConfigTool("/tmp").title(buildJsonObject { put("name", "test") }),
+        )
     }
 
     @Test

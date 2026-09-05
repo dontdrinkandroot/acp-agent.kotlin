@@ -2,12 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.runInterruptible
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import java.util.concurrent.TimeUnit
 
@@ -79,6 +74,8 @@ public class BashTool : AgentTool {
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = listOf(SessionModeId("bash"))
+    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
+
     override val parameters: JsonObject = buildJsonObject {
         put("type", JsonPrimitive("object"))
         put("properties", buildJsonObject {

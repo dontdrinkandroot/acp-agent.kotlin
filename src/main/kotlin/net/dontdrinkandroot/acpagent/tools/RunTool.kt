@@ -211,6 +211,7 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = emptyList<SessionModeId>()
+    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override val parameters: JsonObject = buildJsonObject {
         put("type", JsonPrimitive("object"))

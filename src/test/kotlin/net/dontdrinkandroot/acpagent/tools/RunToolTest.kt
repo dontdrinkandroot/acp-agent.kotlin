@@ -40,6 +40,19 @@ class RunToolTest {
     }
 
     @Test
+    fun `title shows config and args without resolving the command`() {
+        assertEquals(
+            "run(config: test, args: --watch)",
+            RunTool(tempDir()).title(
+                buildJsonObject {
+                    put("config", "test")
+                    put("args", "--watch")
+                },
+            ),
+        )
+    }
+
+    @Test
     fun `malformed json returns empty list`() {
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
