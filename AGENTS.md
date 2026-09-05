@@ -20,6 +20,7 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 | Layer                  | Dependency                                                                            | Version                           |
 |------------------------|---------------------------------------------------------------------------------------|-----------------------------------|
 | Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.6) | 2.4.10                            |
+| Dep update check       | `io.github.ben-manes.versions.settings` (in `settings.gradle.kts`; `dependencyUpdates`) | 0.61.0                            |
 | ACP                    | `com.agentclientprotocol:acp`                                                         | 0.30.1                            |
 | MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                            |
 | HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                             |
@@ -47,6 +48,7 @@ banner-suppressing API.
 ./gradlew test                   # unit tests + black-box e2e (drives installDist launcher)
 ./gradlew test --tests "net.dontdrinkandroot.acpagent.llm.LlmRequestTest"   # single test class (re-links installDist; IDE-only runs may use a stale binary - see Pitfalls)
 ./gradlew build                  # assemble + test
+./gradlew dependencyUpdates      # report outdated deps + Gradle (settings plugin; `-Drevision=release` for stable-only)
 ```
 
 The launcher takes no args; env config only (`OPENROUTER_API_KEY` required).
