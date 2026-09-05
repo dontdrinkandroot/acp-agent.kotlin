@@ -98,6 +98,21 @@ Config comes from environment variables:
   turn with `cwd`, today's date and `Agent build: <sha>[-dirty]`. A `mode` config option
   (`session/set_config_option` + legacy `set_mode`) emits `current_mode_update` +
   `config_option_update`; unknown -> invalid-params.
+- **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
+  configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
+  read from local disk every access, fail-open like AGENTS.md). Commands are shell strings run
+  via `ProcessRunner`; the model's `args` are substituted for the first `{args}` placeholder,
+  configs without the placeholder reject arguments. `mutating = true` so every `run` asks the
+  user for permission regardless of mode; the config file is project-controlled (same trust
+  tier as AGENTS.md), so the resolved command shown in the prompt is the real gate.
+  Configs are managed by explicit dedicated tools (`tools/RunConfigTools.kt`, also read from
+  local disk): `list_run_configs` (read-only, every mode) and `create_run_config` /
+  `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
+  read-only). `update` is field-level - a blank `command` is always rejected (never cleared),
+  an omitted field stays unchanged, an empty-string `description` clears it; create rejects
+  existing names and blank commands; delete/update reject unknown names. Writes are atomic
+  (temp + move) and refuse to touch a corrupt/unparseable file; unknown entry fields
+  round-trip untouched.
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
   `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
   `GIT_SHA` build-arg (no `.git` in the build context).
@@ -217,6 +232,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
+    tools/RunTool.kt                 # run tool + run-config storage (load/create/update/delete, atomic write)
+    tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
     tools/ReadFileTool.kt            # read_file tool (via FileStore)
     tools/WriteFileTool.kt           # write_file tool (via FileStore)
     tools/EditFileTool.kt            # edit_file tool (via FileStore)
@@ -273,7 +290,12 @@ provider routing (`provider` object with median cap, fail-open on endpoints erro
 disabled via env), the system prompt's `Agent build:` hash round-tripped from the
 classpath `git.properties`, and path-aware permissions + the client fs proxy (in-project
 read/write without a prompt, out-of-project read prompts, proxy disabled via
-`FS_PROXY_ENABLED=0` falls back to the local store). Plus a **persistence scenario
+`FS_PROXY_ENABLED=0` falls back to the local store), the `run` tool
+(mutating permission prompt in plan mode, side effect verified on disk, unknown
+config fails loudly), and the run-config management tools (`create_run_config`
+persists `.ai/run.json` after a build-mode permission prompt; in plan mode the
+write tools are absent while `list_run_configs` runs without a prompt). Plus a
+**persistence scenario
 across three agent restarts** (`session/list` ->
 `session/load` with replay -> `session/resume` -> delete).
 All existing scenarios must pass **unchanged**.

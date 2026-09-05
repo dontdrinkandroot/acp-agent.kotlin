@@ -55,6 +55,12 @@ public fun runAgent(args: Array<String>) {
     ): AgentSessionImpl {
         val registry = ToolRegistry().apply {
             registerAll(localRegistry.all())
+            val cwd = restored?.cwd ?: parameters.cwd
+            register(RunTool(cwd))
+            register(ListRunConfigsTool(cwd))
+            register(CreateRunConfigTool(cwd))
+            register(UpdateRunConfigTool(cwd))
+            register(DeleteRunConfigTool(cwd))
         }
         val connections = mutableListOf<McpServerConnection>()
         suspend fun connect(server: McpServer) {
