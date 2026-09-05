@@ -379,6 +379,10 @@ class E2eConformanceTest {
                 .mapNotNull { (it.content as? ContentBlock.Text)?.text }
             assertTrue(textChunks.isNotEmpty(), "expected assistant text chunks")
             assertTrue(textChunks.joinToString("").contains("phase4 done"))
+            assertTrue(
+                textChunks.none { it.isEmpty() },
+                "reasoning-only deltas must not emit empty agent_message_chunk, got: ${textChunks.filter { it.isEmpty() }}",
+            )
             println("[ok] agent_message_chunk text assembled: ${textChunks.joinToString("")}")
 
             val promptResponse = events.filterIsInstance<Event.PromptResponseEvent>().singleOrNull()
@@ -416,38 +420,38 @@ class E2eConformanceTest {
                 "priming the writepondering the request",
                 thoughtChunks.mapNotNull { (it.content as ContentBlock.Text).text }.joinToString("")
             )
-            val uuidRegex =
-                Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+            val uuidRegex = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
             val thoughtIds = thoughtChunks.map { it.messageId?.value }
             assertTrue(thoughtIds.isNotEmpty() && thoughtIds.all { it != null }, "thought chunks must carry a messageId")
             thoughtIds.forEach { id ->
-                assertTrue(uuidRegex.matches(id!!), "messageId must be UUID format, got '$id'")
+                assertTrue(uuidRegex.matches(id!!), "messageId must be UUIDv7 format, got '$id'")
             }
             assertEquals(
                 2,
                 thoughtIds.distinct().size,
-                "each LLM iteration's thought block gets its own messageId, got $thoughtIds"
+                "each LLM iteration's thought deltas share one messageId, got $thoughtIds"
             )
             assertEquals(thoughtIds[1], thoughtIds[2], "iteration-2 thought deltas share one messageId")
             assertNotEquals(thoughtIds[0], thoughtIds[1], "a fresh LLM iteration gets a fresh thought messageId")
-            println("[ok] agent_thought_chunk relayed from reasoning deltas, one messageId per iteration")
+            println("[ok] agent_thought_chunk relayed from reasoning deltas, one UUIDv7 messageId per iteration")
 
             val textIds = updates.filterIsInstance<SessionUpdate.AgentMessageChunk>()
                 .map { it.messageId?.value }
             assertTrue(textIds.isNotEmpty() && textIds.all { it != null }, "message chunks must carry a messageId")
             textIds.forEach { id ->
-                assertTrue(uuidRegex.matches(id!!), "messageId must be UUID format, got '$id'")
+                assertTrue(uuidRegex.matches(id!!), "messageId must be UUIDv7 format, got '$id'")
             }
             assertEquals(
                 2,
                 textIds.distinct().size,
-                "each LLM iteration's text block gets its own messageId, got $textIds"
+                "each LLM iteration's text deltas share one messageId, got $textIds"
             )
-            assertTrue(
-                thoughtIds.toSet().intersect(textIds.toSet()).isEmpty(),
-                "thought and text blocks use distinct messageIds",
+            assertEquals(
+                thoughtIds.toSet(),
+                textIds.toSet(),
+                "an iteration's reasoning and reply deltas share the same messageId",
             )
-            println("[ok] agent_message_chunk deltas share one messageId per iteration")
+            println("[ok] agent_message_chunk deltas share the iteration's messageId")
 
             val thoughtWireIds = wireLines.mapNotNull { line ->
                 val root = runCatching { Json.parseToJsonElement(line) }.getOrNull()?.jsonObject
@@ -461,11 +465,11 @@ class E2eConformanceTest {
                 "expected raw agent_thought_chunk lines on the wire, got ${thoughtWireIds.size}",
             )
             thoughtWireIds.forEach { id ->
-                assertTrue(uuidRegex.matches(id), "wire messageId must be UUID format, got '$id'")
+                assertTrue(uuidRegex.matches(id), "wire messageId must be UUIDv7 format, got '$id'")
             }
             assertEquals(2, thoughtWireIds.distinct().size, "wire thought chunks must share per-iteration messageIds")
             assertEquals(thoughtIds.toList(), thoughtWireIds.toList(), "wire messageIds must match the decoded ones")
-            println("[ok] raw session/update wire lines carry messageId on agent_thought_chunk")
+            println("[ok] raw session/update wire lines carry the iteration messageId on agent_thought_chunk")
 
             val headers = llmMock.lastRequestHeaders
             val referer =
@@ -1330,7 +1334,7 @@ internal class MockOpenAiServer(
         val firstTurnDeltas = if (firstTurnStreamDeltas) {
             "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                 "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"priming the write\"},\"finish_reason\":null}]}\n\n" +
+                    "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"priming the write\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
                 "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                 "\"model\":\"test-model\"," +
                     "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"writing the file\"},\"finish_reason\":null}]}\n\n"
@@ -1456,12 +1460,12 @@ internal class MockOpenAiServer(
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                     "\"model\":\"test-model\"," +
-                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"pondering \"},\"finish_reason\":null}]}\n\n"
+                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"pondering \",\"content\":\"\"},\"finish_reason\":null}]}\n\n"
             )
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                     "\"model\":\"test-model\"," +
-                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the request\"},\"finish_reason\":null}]}\n\n"
+                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the request\",\"content\":\"\"},\"finish_reason\":null}]}\n\n"
             )
             append(
                 "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +

@@ -9,6 +9,7 @@ import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.jsonRpcInvalidParams
 import com.agentclientprotocol.rpc.ACPJson
+import com.github.f4b6a3.uuid.UuidCreator
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,7 +27,6 @@ import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
-import java.util.UUID
 import kotlin.concurrent.Volatile
 
 internal class AgentSessionImpl(
@@ -59,12 +59,12 @@ internal class AgentSessionImpl(
     private val persistMutex = Mutex()
 
     /**
-     * Mints a fresh [`MessageId`] for the message and thought chunks the agent
-     * streams to the client. All chunks that belong to the same content block
-     * share one id; a fresh id per block lets the client group streamed deltas
-     * into a single message. UUID format per the ACP message-id contract.
+     * Mints a fresh [`MessageId`] for one LLM iteration: the reasoning deltas and the
+     * assistant text of the same iteration share one id so the client groups them into a
+     * single message, while consecutive iterations get distinct ids. UUIDv7 (time-ordered,
+     * RFC 9562) so ids sort chronologically.
      */
-    private fun newMessageId(): MessageId = MessageId(UUID.randomUUID().toString())
+    private fun newMessageId(): MessageId = MessageId(UuidCreator.getTimeOrderedEpoch().toString())
 
     @Volatile
     private var deleted = false
@@ -491,6 +491,7 @@ internal class AgentSessionImpl(
         var usage: OpenAIUsage? = null
         while (iterations < 20) {
             iterations++
+            val iterationMessageId = newMessageId()
             val messages = listOf(OpenAIMessage.System(Content.Text(systemPrompt(mode, instructions)))) + history
             val tools = toolRegistry.availableForMode(mode).map { tool ->
                 OpenAITool(
@@ -504,8 +505,6 @@ internal class AgentSessionImpl(
 
             val assistantText = StringBuilder()
             val toolCallAccum = mutableMapOf<Int, MutableStreamToolCall>()
-            val thoughtMessageId = newMessageId()
-            val textMessageId = newMessageId()
 
             llm.chatCompletion(
                 messages = messages,
@@ -517,11 +516,11 @@ internal class AgentSessionImpl(
                 chunk.usage?.let { usage = it }
                 chunk.choices.firstOrNull()?.let { choice ->
                     choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentThoughtChunk(ContentBlock.Text(reasoning), thoughtMessageId)))
+                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentThoughtChunk(ContentBlock.Text(reasoning), iterationMessageId)))
                     }
-                    choice.delta.content?.let { text ->
+                    choice.delta.content?.takeIf { it.isNotEmpty() }?.let { text ->
                         assistantText.append(text)
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentMessageChunk(ContentBlock.Text(text), textMessageId)))
+                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentMessageChunk(ContentBlock.Text(text), iterationMessageId)))
                     }
                     choice.delta.toolCalls?.forEach { tc ->
                         val acc = toolCallAccum.getOrPut(tc.index) { MutableStreamToolCall() }

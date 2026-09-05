@@ -28,6 +28,7 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 | IO                     | kotlinx-io-core                                                                       | 0.9.1                             |
 | JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (resolved; declared 1.9.0) |
 | OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.2.0                             |
+| UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)        | 6.1.1                             |
 | Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.17                    |
 
 Gradle conflict resolution overrides our declared kotlinx versions (Koog forces the
@@ -135,13 +136,23 @@ Config comes from environment variables:
   `mcpCapabilities.http/sse`.
 - **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
   see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
-  relayed as `agent_thought_chunk` (not persisted). HTTP error statuses, `{"error": ...}`
+  relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
+  reasoning-capable providers alongside `delta.reasoning`) is filtered so reasoning deltas
+  emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
   stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
   so a failed or truncated turn fails loudly instead of executing partial tool calls or
   emitting an empty END_TURN.
-  Every `agent_message_chunk`/`agent_thought_chunk` carries a per-content-block UUID
-  `messageId` (fresh per LLM iteration) so clients group deltas into one message; pinned e2e at
-  the decoded-object and raw-wire level. Requests carry app attribution headers (`HTTP-Referer`
+  Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
+  UUIDv7 `messageId` (time-ordered, `com.github.f4b6a3:uuid-creator`; fresh per iteration) so
+  clients group the iteration's reasoning and reply into a single message; pinned e2e at
+  the decoded-object and raw-wire level.
+  **Pitfall**: the `messageId` RFD's "unique per message" is still violated by sharing one
+  id across the distinct `agent_message` and `agent_thought` streams of the same iteration -
+  deliberate v1 choice so reasoning folds into the message block it belongs to. v2 makes
+  `messageId` mandatory and keys whole `agent_message`/`agent_thought` messages by it, so
+  this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
+  runtime is upgraded.
+  Requests carry app attribution headers (`HTTP-Referer`
   + `X-OpenRouter-Title`).
 - **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
   disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
@@ -266,11 +277,6 @@ surface to Koog.
 
 **Definition of done**: a change is done when `./gradlew build` passes (compile + all
 tests incl. the black-box e2e).
-
-## Feature parity port (acp-agent.go -> acp-agent.kotlin)
-
-Reference: `dontdrinkandroot/acp-agent.go`; implemented features are listed under **Features** above.
-
 
 ## Conventions
 

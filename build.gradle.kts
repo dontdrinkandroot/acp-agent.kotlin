@@ -51,6 +51,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("ai.koog:prompt-executor-openrouter-client:1.2.0")
+    implementation("com.github.f4b6a3:uuid-creator:6.1.1")
     implementation("org.slf4j:slf4j-simple:2.0.17")
     implementation("io.github.oshai:kotlin-logging:8.0.4")
     testImplementation(kotlin("test"))

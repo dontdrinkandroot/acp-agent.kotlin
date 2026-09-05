@@ -4,15 +4,7 @@ set -euo pipefail
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bin="$script_dir/build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
 
-if [ ! -x "$bin" ] ||
-   [ -n "$(find "$script_dir/src" "$script_dir/build.gradle.kts" \
-      "$script_dir/settings.gradle.kts" -newer "$bin" 2>/dev/null)" ]; then
-    printf '%s\n' 'Building agent (installDist)...' >&2
-    (cd "$script_dir" && ./gradlew --no-daemon --quiet --console=plain installDist) >&2
-    # Gradle skips work based on content, not mtimes, so a mere mtime change on
-    # the sources leaves the binary untouched. Refresh it so the staleness
-    # check converges instead of re-running a no-op build on every launch.
-    touch "$bin"
-fi
+printf '%s\n' 'Building agent (installDist)...' >&2
+(cd "$script_dir" && ./gradlew --no-daemon --quiet --console=plain installDist) >&2
 
 exec "$bin" "$@"
