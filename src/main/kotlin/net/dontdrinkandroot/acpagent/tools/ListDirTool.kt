@@ -3,23 +3,16 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 public class ListDirTool : AgentTool {
     override val name = "list_dir"
     override val description = "List the contents of a directory."
     override val kind = ToolKind.READ
     override val mutating = false
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("path") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Directory path, absolute or relative to the working directory."))
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("path")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("path", PropType.STRING, "Directory path, absolute or relative to the working directory."),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("path")

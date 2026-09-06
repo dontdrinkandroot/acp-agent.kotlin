@@ -1,7 +1,7 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 public class ReadFileTool : AgentTool {
     override val name = "read_file"
@@ -14,30 +14,11 @@ public class ReadFileTool : AgentTool {
                 "the file's size (all lines are numbered), or page with line/limit."
     override val kind = ToolKind.READ
     override val mutating = false
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("path") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("File path, absolute or relative to the working directory."))
-            }
-            putJsonObject("line") {
-                put("type", JsonPrimitive("integer"))
-                put("description", JsonPrimitive("First line to return (1-based). Defaults to the start of the file."))
-            }
-            putJsonObject("limit") {
-                put("type", JsonPrimitive("integer"))
-                put(
-                    "description",
-                    JsonPrimitive("Maximum number of lines to return (1-$MAX_READ_LIMIT).")
-                )
-            }
-        })
-        putJsonArray("required") {
-            add(JsonPrimitive("path"))
-            add(JsonPrimitive("limit"))
-        }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("path", PropType.STRING, "File path, absolute or relative to the working directory."),
+        required("limit", PropType.INTEGER, "Maximum number of lines to return (1-$MAX_READ_LIMIT)."),
+        optional("line", PropType.INTEGER, "First line to return (1-based). Defaults to the start of the file."),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("path")

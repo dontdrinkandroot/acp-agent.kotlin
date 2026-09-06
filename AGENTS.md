@@ -424,8 +424,15 @@ skips, the `.git` walker skip) are unit-tested in `BashToolTest`/`ToolsTest`; mo
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
 payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip, and
 the strict JSON-null argument rejections are unit-tested in
-`ToolsTest`/`PermissionAndFileStoreTest`.
-All existing scenarios must pass **unchanged**.
+`ToolsTest`/`PermissionAndFileStoreTest`. **e2e change policy**: e2e scenarios pin the agent's **wire contract** -
+protocol message flow,
+security boundaries (permission routing, mode restrictions, containment caps), observable side
+effects, and session/replay semantics - not internal orchestration (LLM call counts, mock filler
+text, delta chunk splits). A behavioral change (feature/fix) that requires updating an e2e
+assertion is expected: update it in the **same commit** with a one-line comment, preferring a pin
+of equal strength. An e2e failure without a behavioral change is a test-design smell: fix the
+test by asserting the effect/shape, not the feature. Favor effect-based over exact-count
+assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
 Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
 build the image with `./build-docker` and smoke-test by piping an `initialize` request into
 `OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC response on stdout).

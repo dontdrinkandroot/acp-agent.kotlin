@@ -5,34 +5,22 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 public class GrepTool : AgentTool {
     override val name = "grep"
     override val description = "Search file contents for a regex pattern under a root directory."
     override val kind = ToolKind.SEARCH
     override val mutating = false
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("root") {
-                put("type", JsonPrimitive("string"))
-                put(
-                    "description",
-                    JsonPrimitive("Directory to search, absolute or relative; defaults to the working directory."),
-                )
-            }
-            putJsonObject("pattern") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Regular expression matched against each line."))
-            }
-            putJsonObject("glob") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Optional glob filter; only files matching it are searched."))
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("pattern")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("pattern", PropType.STRING, "Regular expression matched against each line."),
+        optional(
+            "root",
+            PropType.STRING,
+            "Directory to search, absolute or relative; defaults to the working directory."
+        ),
+        optional("glob", PropType.STRING, "Optional glob filter; only files matching it are searched."),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("root")

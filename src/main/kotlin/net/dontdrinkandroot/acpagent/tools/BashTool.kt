@@ -3,7 +3,7 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.*
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -210,19 +210,9 @@ public class BashTool : AgentTool {
     override val modes = listOf(SessionModeId("bash"))
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("command") {
-                put("type", JsonPrimitive("string"))
-                put(
-                    "description",
-                    JsonPrimitive("Shell command to run (via /bin/sh) in the project working directory.")
-                )
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("command")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("command", PropType.STRING, "Shell command to run (via /bin/sh) in the project working directory.")
+    )
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val command = arguments.stringArg("command") ?: return ToolResult(arguments.argError("command"), true)

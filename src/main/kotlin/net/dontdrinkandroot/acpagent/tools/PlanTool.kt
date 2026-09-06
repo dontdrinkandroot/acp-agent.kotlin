@@ -17,43 +17,42 @@ public class UpdatePlanTool : AgentTool {
                 "Send the complete list of entries on every call, and give every entry a content describing the step."
     override val kind = ToolKind.THINK
     override val mutating = false
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        putJsonObject("properties") {
-            putJsonObject("entries") {
-                put("type", JsonPrimitive("array"))
-                put("description", JsonPrimitive("Complete list of plan entries; send all entries on every call."))
-                putJsonObject("items") {
-                    put("type", JsonPrimitive("object"))
-                    put("description", JsonPrimitive("A step in the execution plan."))
-                    putJsonObject("properties") {
-                        putJsonObject("content") {
-                            put("type", JsonPrimitive("string"))
-                            put("description", JsonPrimitive("Description of the step."))
-                        }
-                        put(
-                            "priority",
-                            enumProperty(
-                                PRIORITIES,
-                                "Priority of the step: high (critical), medium (important), low (nice to have)."
-                            )
+    override val parameters: JsonObject = jsonSchema(
+        required(
+            "entries",
+            PropType.ARRAY,
+            "Complete list of plan entries; send all entries on every call.",
+            items = buildJsonObject {
+                put("type", JsonPrimitive("object"))
+                put("description", JsonPrimitive("A step in the execution plan."))
+                put("properties", buildJsonObject {
+                    put(
+                        "content",
+                        jsonSchemaProperty(PropType.STRING, "Description of the step.")
+                    )
+                    put(
+                        "priority",
+                        jsonSchemaProperty(
+                            PropType.STRING,
+                            "Priority of the step: high (critical), medium (important), low (nice to have).",
+                            enumValues = PRIORITIES,
                         )
-                        put(
-                            "status",
-                            enumProperty(
-                                STATUSES,
-                                "Status of the step; exactly one entry may be in_progress at a time."
-                            )
+                    )
+                    put(
+                        "status",
+                        jsonSchemaProperty(
+                            PropType.STRING,
+                            "Status of the step; exactly one entry may be in_progress at a time.",
+                            enumValues = STATUSES,
                         )
-                    }
-                    putJsonArray("required") {
-                        REQUIRED_FIELDS.forEach { add(JsonPrimitive(it)) }
-                    }
+                    )
+                })
+                putJsonArray("required") {
+                    REQUIRED_FIELDS.forEach { add(JsonPrimitive(it)) }
                 }
-            }
-        }
-        putJsonArray("required") { add(JsonPrimitive("entries")) }
-    }
+            },
+        ),
+    )
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val entriesJson = arguments["entries"]
@@ -76,11 +75,5 @@ public class UpdatePlanTool : AgentTool {
         private val PRIORITIES = listOf("high", "medium", "low")
         private val STATUSES = listOf("pending", "in_progress", "completed")
         private val REQUIRED_FIELDS = listOf("content", "priority", "status")
-
-        private fun enumProperty(values: List<String>, description: String): JsonObject = buildJsonObject {
-            put("type", JsonPrimitive("string"))
-            put("description", JsonPrimitive(description))
-            putJsonArray("enum") { values.forEach { add(JsonPrimitive(it)) } }
-        }
     }
 }

@@ -2,65 +2,33 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 private val RUN_CONFIG_WRITE_MODES = listOf(
     SessionModeId("build"),
     SessionModeId("bash"),
 )
 
-private val RUN_CONFIG_WRITE_PARAMETERS: JsonObject = buildJsonObject {
-    put("type", JsonPrimitive("object"))
-    put("properties", buildJsonObject {
-        putJsonObject("name") {
-            put("type", JsonPrimitive("string"))
-            put("description", JsonPrimitive("Name of the run configuration"))
-        }
-        putJsonObject("command") {
-            put("type", JsonPrimitive("string"))
-            put("description", JsonPrimitive("Shell command to run once the configuration is executed"))
-        }
-        putJsonObject("description") {
-            put("type", JsonPrimitive("string"))
-            put("description", JsonPrimitive("Optional human-readable description of the configuration"))
-        }
-    })
-    putJsonArray("required") { add(JsonPrimitive("name")) }
-}
-
 /**
- * The create tool's schema: `command` is required.
+ * The create tool's schema: `command` is required. The update tool's schema
+ * keeps the same properties but omits `command` from the required list.
  */
-private fun configRunWriteParameters(mutable: Boolean): JsonObject {
-    val required = buildJsonArray {
-        add(JsonPrimitive("name"))
-        if (mutable) add(JsonPrimitive("command"))
+private fun configRunWriteParameters(mutable: Boolean): JsonObject =
+    if (mutable) {
+        jsonSchema(
+            required("name", PropType.STRING, "Name of the run configuration"),
+            required("command", PropType.STRING, "Shell command to run once the configuration is executed"),
+            optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
+        )
+    } else {
+        jsonSchema(
+            required("name", PropType.STRING, "Name of the run configuration"),
+            optional("command", PropType.STRING, "Shell command to run once the configuration is executed"),
+            optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
+        )
     }
-    return buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("name") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Name of the run configuration"))
-            }
-            putJsonObject("command") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Shell command to run once the configuration is executed"))
-            }
-            putJsonObject("description") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Optional human-readable description of the configuration"))
-            }
-        })
-        put("required", required)
-    }
-}
 
-private val NO_ARGUMENT_PARAMETERS: JsonObject = buildJsonObject {
-    put("type", JsonPrimitive("object"))
-    put("properties", buildJsonObject {})
-    putJsonArray("required") {}
-}
+private val NO_ARGUMENT_PARAMETERS: JsonObject = jsonSchema()
 
 /**
  * Lists the run configurations defined in `.ai/run.json`. Read-only and
@@ -163,16 +131,9 @@ internal class DeleteRunConfigTool internal constructor(private val cwd: String)
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("name") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Name of the run configuration to delete"))
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("name")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("name", PropType.STRING, "Name of the run configuration to delete"),
+    )
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)

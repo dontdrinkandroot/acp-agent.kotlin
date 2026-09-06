@@ -4,7 +4,7 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
 
 /**
@@ -19,16 +19,9 @@ public class DeleteDirectoryTool : AgentTool {
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = BUILD_AND_BASH_MODES
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("path") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Directory to delete, absolute or relative to the working directory."))
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("path")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("path", PropType.STRING, "Directory to delete, absolute or relative to the working directory."),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("path")

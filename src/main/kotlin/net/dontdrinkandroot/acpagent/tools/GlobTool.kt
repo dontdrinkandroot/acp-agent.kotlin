@@ -4,30 +4,21 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 public class GlobTool : AgentTool {
     override val name = "glob"
     override val description = "Find files matching a glob pattern (e.g. src/**/*.kt) under a root directory."
     override val kind = ToolKind.SEARCH
     override val mutating = false
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("root") {
-                put("type", JsonPrimitive("string"))
-                put(
-                    "description",
-                    JsonPrimitive("Directory to search, absolute or relative; defaults to the working directory."),
-                )
-            }
-            putJsonObject("pattern") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."))
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("pattern")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("pattern", PropType.STRING, "Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."),
+        optional(
+            "root",
+            PropType.STRING,
+            "Directory to search, absolute or relative; defaults to the working directory."
+        ),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("root")

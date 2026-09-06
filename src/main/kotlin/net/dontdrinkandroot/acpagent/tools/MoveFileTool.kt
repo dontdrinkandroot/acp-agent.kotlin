@@ -3,7 +3,7 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
 
 /**
@@ -20,29 +20,14 @@ public class MoveFileTool : AgentTool {
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = BUILD_AND_BASH_MODES
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("source") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("File to move, absolute or relative to the working directory."))
-            }
-            putJsonObject("destination") {
-                put("type", JsonPrimitive("string"))
-                put(
-                    "description",
-                    JsonPrimitive(
-                        "New file location, absolute or relative to the working directory; " +
-                                "missing parent directories are created."
-                    ),
-                )
-            }
-        })
-        putJsonArray("required") {
-            add(JsonPrimitive("source"))
-            add(JsonPrimitive("destination"))
-        }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("source", PropType.STRING, "File to move, absolute or relative to the working directory."),
+        required(
+            "destination",
+            PropType.STRING,
+            "New file location, absolute or relative to the working directory; missing parent directories are created."
+        ),
+    )
 
     override fun targetPaths(arguments: JsonObject): List<String> =
         listOfNotNull(

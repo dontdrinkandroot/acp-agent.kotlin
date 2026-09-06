@@ -2,7 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
 
 public class WriteFileTool : AgentTool {
     override val name = "write_file"
@@ -10,23 +10,10 @@ public class WriteFileTool : AgentTool {
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("path") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("File path, absolute or relative to the working directory."))
-            }
-            putJsonObject("content") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Full file content; replaces existing content."))
-            }
-        })
-        putJsonArray("required") {
-            add(JsonPrimitive("path"))
-            add(JsonPrimitive("content"))
-        }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("path", PropType.STRING, "File path, absolute or relative to the working directory."),
+        required("content", PropType.STRING, "Full file content; replaces existing content."),
+    )
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("path")

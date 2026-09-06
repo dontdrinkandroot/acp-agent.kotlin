@@ -217,23 +217,14 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
     override val modes = emptyList<SessionModeId>()
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        put("properties", buildJsonObject {
-            putJsonObject("config") {
-                put("type", JsonPrimitive("string"))
-                put("description", JsonPrimitive("Name of the run configuration to execute"))
-            }
-            putJsonObject("args") {
-                put("type", JsonPrimitive("string"))
-                put(
-                    "description",
-                    JsonPrimitive("Optional arguments substituted for the $ARGS_PLACEHOLDER placeholder in the command")
-                )
-            }
-        })
-        putJsonArray("required") { add(JsonPrimitive("config")) }
-    }
+    override val parameters: JsonObject = jsonSchema(
+        required("config", PropType.STRING, "Name of the run configuration to execute"),
+        optional(
+            "args",
+            PropType.STRING,
+            "Optional arguments substituted for the $ARGS_PLACEHOLDER placeholder in the command"
+        ),
+    )
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val configName = arguments.stringArg("config") ?: return ToolResult(arguments.argError("config"), true)
