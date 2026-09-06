@@ -155,4 +155,26 @@ class ToolCallExecutorTest {
         assertEquals(true, tool.executed, "no client means no permission prompt and the call is allowed")
         assertTrue(toolCallUpdates(emitter).any { it.status == ToolCallStatus.COMPLETED })
     }
+
+    @Test
+    fun `the same executor serves calls with different modes independently`() = runBlocking {
+        val gated = object : RecordingTool("gated", false) {
+            override val modes: List<SessionModeId> = listOf(SessionModeId("bash"))
+        }
+        val registry = ToolRegistry().apply { register(gated) }
+        val state = state()
+        val executor = ToolCallExecutor("/project", registry, state)
+        val photoBuild = RecordingEmitter()
+        val emitterBash = RecordingEmitter()
+
+        // First call in build mode: gated tool is refused.
+        execute(executor, photoBuild, StreamToolCall("call_1", "gated", "{}"), SessionModeId("build"))
+        assertTrue(toolCallUpdates(photoBuild).any { it.status == ToolCallStatus.FAILED })
+
+        // Second call on the same executor in bash mode: the same tool must run,
+        // proving no per-call mode/client is leaking across executions.
+        execute(executor, emitterBash, StreamToolCall("call_2", "gated", "{}"), SessionModeId("bash"))
+        assertEquals(true, gated.executed, "second call must execute independently of the first mode")
+        assertTrue(toolCallUpdates(emitterBash).any { it.status == ToolCallStatus.COMPLETED })
+    }
 }

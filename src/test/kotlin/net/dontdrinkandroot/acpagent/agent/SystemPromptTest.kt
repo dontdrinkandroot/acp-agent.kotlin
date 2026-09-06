@@ -32,6 +32,14 @@ class SystemPromptTest {
     }
 
     @Test
+    fun `operating rules cover edit-file deltas, source-derived test expectations and the run tool`() {
+        val prompt = builder.build(SessionModeId("build"), null)
+        assertTrue(prompt.contains("Modify existing code with `edit_file` deltas"), prompt)
+        assertTrue(prompt.contains("derive the expectation from the code being tested"), prompt)
+        assertTrue(prompt.contains("Prefer the `run` tool's named configurations"), prompt)
+    }
+
+    @Test
     fun `project instructions are appended after the rules`() {
         val prompt = builder.build(
             SessionModeId("plan"),

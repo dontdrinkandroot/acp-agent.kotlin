@@ -8,4 +8,7 @@ for xml in build/test-results/test/TEST-*.xml; do
   sed -n 's/.*message="\([^"]*\)".*/FAILURE: \1/p' "$xml" | head -10
   # The full message body lives in the <failure> element text.
   awk '/<failure/{flag=1} flag{print} /<\/failure>/{flag=0}' "$xml" | sed 's/&#10;/\n/g; s/&#9;/  /g; s/&quot;/"/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' | head -40
+    # Debug prints from the test live in <system-out>; echo them so a fault
+    # loop does not have to re-drill the XML by hand.
+    awk '/<system-out>/{flag=1} flag{print} /<\/system-out>/{flag=0}' "$xml" | sed 's/&#10;/\n/g; s/&#9;/  /g; s/&quot;/"/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' | head -30
 done

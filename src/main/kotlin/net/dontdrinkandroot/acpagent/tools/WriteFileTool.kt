@@ -3,6 +3,8 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 public class WriteFileTool : AgentTool {
     override val name = "write_file"
@@ -17,6 +19,21 @@ public class WriteFileTool : AgentTool {
 
     override fun targetPath(arguments: JsonObject): String? =
         arguments.stringArg("path")
+
+    /**
+     * A human-readable title so the model (and the permission prompt) shows what
+     * is being replaced: a whole-file write with the content size, not a bare
+     * "write_file". The size signals the overwrite scope (e.g. a rewrite of a
+     * large file) without needing to I/O in the title.
+     */
+    override fun title(arguments: JsonObject): String? {
+        val path = arguments.stringArg("path") ?: return null
+        val content = arguments.stringArg("content") ?: return null
+        return formatToolTitle(name, buildJsonObject {
+            put("path", JsonPrimitive(path))
+            put("size", JsonPrimitive("${content.length} chars"))
+        })
+    }
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)

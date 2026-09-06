@@ -163,7 +163,12 @@ class E2eWireConformanceTest : E2eAgentTest() {
             val toolCalls = updates.filterIsInstance<SessionUpdate.ToolCall>()
             assertEquals(1, toolCalls.size)
             val toolCall = toolCalls.single()
-            assertEquals("write_file", toolCall.title)
+            // write_file titles now summarize the overwrite (path + content size) for
+// permission prompts/progress; a bare name would hide what is being replaced.
+            assertTrue(
+                toolCall.title.startsWith("write_file(path:"),
+                "expected summarized write_file title, got: ${toolCall.title}"
+            )
             assertEquals(ToolKind.EDIT, toolCall.kind)
             assertEquals(ToolCallStatus.IN_PROGRESS, toolCall.status)
             val rawInput = requireNotNull(toolCall.rawInput) { "tool_call must carry rawInput" }

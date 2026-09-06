@@ -30,6 +30,9 @@ internal class SystemPromptBuilder(
         appendLine("- Cite code as file_path:line_number where it helps navigation.")
         appendLine("- Keep responses terse; skip preamble and filler.")
         appendLine("- After finishing, summarize the result concisely in Markdown.")
+        appendLine("- Modify existing code with `edit_file` deltas; use `write_file` only for new files or an intentional whole-file rewrite (read the full file first - a hasty rewrite can drop the tail).")
+        appendLine("- When asserting behavior in a test, derive the expectation from the code being tested or its existing tests, not from assumptions.")
+        appendLine("- Prefer the `run` tool's named configurations for the standard build/test/compile loop over raw `bash` shells.")
         append(instructionsSection(instructions))
     }
 
