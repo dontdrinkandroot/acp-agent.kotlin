@@ -13,7 +13,10 @@ import java.nio.file.StandardCopyOption
 
 private val logger = KotlinLogging.logger {}
 
-private val runConfigJson = Json { ignoreUnknownKeys = true }
+private val runConfigJson = Json {
+    ignoreUnknownKeys = true
+    prettyPrint = true
+}
 
 internal const val ARGS_PLACEHOLDER = "{args}"
 

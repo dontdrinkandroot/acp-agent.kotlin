@@ -46,6 +46,16 @@ class RunConfigToolsTest {
     }
 
     @Test
+    fun `writes to the run json are pretty printed`() {
+        val dir = tempDir()
+        createRunConfig(dir, "test", "npm test", "Run unit tests")
+        val text = Files.readString(runJsonPath(dir))
+        assertTrue(text.startsWith("{\n"), text)
+        assertTrue(text.contains("\n    \"test\": {\n"), text)
+        assertEquals(RunConfig("test", "npm test", "Run unit tests"), configs(dir).single())
+    }
+
+    @Test
     fun `create is rejected for an existing name`() {
         val dir = tempDir()
         createRunConfig(dir, "test", "npm test", null)
