@@ -101,7 +101,11 @@ Config comes from environment variables:
   remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially.
 - **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
   the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
-  and produce the "disabled in current mode" error. The mode-aware system prompt is rebuilt per
+  and produce the "disabled in current mode" error. Mode enforcement happens in the agent loop *before* permission and
+  execution: a tool call for a registered tool that is disabled in the
+  current mode fails with the "disabled in current mode" update and never reaches the permission
+  flow (so a model carrying a tool call over from an earlier mode switch cannot execute it; see
+  `E2eModeRestrictionTest`). The mode-aware system prompt is rebuilt per
   turn with `cwd`, today's date and `Agent build: <sha>[-dirty]`. A `mode` config option
   (`session/set_config_option` + legacy `set_mode`) emits `current_mode_update` +
   `config_option_update`; unknown -> invalid-params.
@@ -327,6 +331,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
                                      # restarts + update_plan persistence/replay
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt
+        E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
+                                     # before permission/execution (bash in build mode)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
                                      # + move/delete tools (in-project without prompt, out-of-project

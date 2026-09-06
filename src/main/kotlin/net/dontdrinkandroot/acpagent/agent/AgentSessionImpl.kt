@@ -554,27 +554,27 @@ internal class AgentSessionImpl(
 
             for (call in calls) {
                 val toolCallId = ToolCallId(call.id)
-                val tool = toolRegistry.get(call.name)
-                if (tool == null) {
-                    val disabled = toolRegistry.disabledInMode(call.name, mode)
-                    if (disabled != null) {
-                        val msg = disabledToolMessage(disabled, mode)
-                        emit(
-                            Event.SessionUpdateEvent(
-                                SessionUpdate.ToolCallUpdate(
-                                    toolCallId = toolCallId,
-                                    title = "Disabled in current mode",
-                                    kind = ToolKind.OTHER,
-                                    status = ToolCallStatus.FAILED,
-                                    content = listOf(
-                                        ToolCallContent.Content(ContentBlock.Text(msg))
-                                    ),
-                                )
+                val disabled = toolRegistry.disabledInMode(call.name, mode)
+                if (disabled != null) {
+                    val msg = disabledToolMessage(disabled, mode)
+                    emit(
+                        Event.SessionUpdateEvent(
+                            SessionUpdate.ToolCallUpdate(
+                                toolCallId = toolCallId,
+                                title = "Disabled in current mode",
+                                kind = ToolKind.OTHER,
+                                status = ToolCallStatus.FAILED,
+                                content = listOf(
+                                    ToolCallContent.Content(ContentBlock.Text(msg))
+                                ),
                             )
                         )
-                        appendToHistory(OpenAIMessage.Tool(Content.Text(msg), toolCallId = call.id))
-                        continue
-                    }
+                    )
+                    appendToHistory(OpenAIMessage.Tool(Content.Text(msg), toolCallId = call.id))
+                    continue
+                }
+                val tool = toolRegistry.get(call.name)
+                if (tool == null) {
                     val msg = "Error: unknown tool \"${call.name}\""
                     emit(
                         Event.SessionUpdateEvent(

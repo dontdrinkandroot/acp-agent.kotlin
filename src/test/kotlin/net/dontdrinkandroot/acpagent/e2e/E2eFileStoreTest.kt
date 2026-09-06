@@ -1,9 +1,7 @@
 package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.FileSystemCapability
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -154,6 +152,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                 connection.client.initialize(testClientInfo())
                 val ops = TestClientOperations()
                 val session = newSession(connection.client, projectDir, ops)
+                session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
                 val events = collectPrompt(session, listOf(ContentBlock.Text("Move the file")))
                 assertEndTurn(events)
                 val file = requireNotNull(sourceFile)
@@ -192,6 +191,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()
                     val session = newSession(connection.client, projectDir, ops)
+                    session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
                     val events = collectPrompt(session, listOf(ContentBlock.Text("Move the file")))
                     assertEndTurn(events)
                     val file = requireNotNull(sourceFile)
@@ -233,6 +233,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                 connection.client.initialize(testClientInfo())
                 val ops = TestClientOperations()
                 val session = newSession(connection.client, projectDir, ops)
+                session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
                 val events = collectPrompt(session, listOf(ContentBlock.Text("Delete the file")))
                 assertEndTurn(events)
                 val file = requireNotNull(targetFile)

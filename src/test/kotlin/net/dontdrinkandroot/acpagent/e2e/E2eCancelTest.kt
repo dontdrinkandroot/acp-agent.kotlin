@@ -2,15 +2,8 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.StopReason
-import com.agentclientprotocol.model.ToolCallStatus
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import com.agentclientprotocol.model.*
+import kotlinx.coroutines.*
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -37,6 +30,9 @@ class E2eCancelTest : E2eAgentTest() {
                     connection.client.initialize(testClientInfo())
                     val ops = SuspendingPermissionOperations()
                     val session = newSession(connection.client, projectDir, ops)
+                    // write_file is a build/bash-mode tool; the permission prompt comes from the
+                    // out-of-project target, not from a mode switch.
+                    session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
                     val events = mutableListOf<Event>()
                     val promptJob = async {
                         runCatching {
@@ -45,9 +41,12 @@ class E2eCancelTest : E2eAgentTest() {
                             }
                         }
                     }
-                    ops.permissionRequestStarted.await()
+                    withTimeout(60_000) { ops.permissionRequestStarted.await() }
                     session.cancel()
-                    assertNotNull(ops.permissionCancelled.await(), "permission prompt must be cancelled")
+                    assertNotNull(
+                        withTimeout(60_000) { ops.permissionCancelled.await() },
+                        "permission prompt must be cancelled",
+                    )
                     val outcome = promptJob.await()
                     val stopReason =
                         events.filterIsInstance<Event.PromptResponseEvent>().lastOrNull()?.response?.stopReason
