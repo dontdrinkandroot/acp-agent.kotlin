@@ -334,6 +334,7 @@ internal class AgentSessionImpl(
                                 title = tool?.title(args) ?: toolName,
                                 kind = tool?.kind ?: ToolKind.OTHER,
                                 status = ToolCallStatus.PENDING,
+                                locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
                                 rawInput = args,
                             )
                         }
@@ -600,6 +601,7 @@ internal class AgentSessionImpl(
                             title = tool.title(arguments) ?: tool.name,
                             kind = tool.kind,
                             status = ToolCallStatus.IN_PROGRESS,
+                            locations = toolLocations(tool, arguments),
                             rawInput = arguments,
                         )
                     )
@@ -612,8 +614,9 @@ internal class AgentSessionImpl(
                         Event.SessionUpdateEvent(
                             SessionUpdate.ToolCallUpdate(
                                 toolCallId = toolCallId,
-                                title = tool.name,
+                                title = tool.title(arguments) ?: tool.name,
                                 status = ToolCallStatus.FAILED,
+                                content = listOf(ToolCallContent.Content(ContentBlock.Text(msg))),
                                 rawOutput = JsonPrimitive(msg)
                             )
                         )
@@ -634,8 +637,9 @@ internal class AgentSessionImpl(
                     Event.SessionUpdateEvent(
                         SessionUpdate.ToolCallUpdate(
                             toolCallId = toolCallId,
-                            title = tool.name,
+                            title = tool.title(arguments) ?: tool.name,
                             status = if (result.isError) ToolCallStatus.FAILED else ToolCallStatus.COMPLETED,
+                            content = toolCallContent(result),
                             rawOutput = JsonPrimitive(result.text),
                         )
                     )
@@ -732,6 +736,7 @@ internal class AgentSessionImpl(
             title = tool.title(arguments) ?: tool.name,
             kind = tool.kind,
             status = ToolCallStatus.IN_PROGRESS,
+            locations = toolLocations(tool, arguments),
             rawInput = arguments,
         )
         return try {
@@ -773,6 +778,24 @@ internal class AgentSessionImpl(
         return runCatching { ACPJson.parseToJsonElement(arguments) as? JsonObject }
             .getOrNull()
             ?: buildJsonObject { put("arguments", JsonPrimitive(arguments)) }
+    }
+
+    /**
+     * File locations of a path-scoped tool call, driving the client's
+     * "follow the agent" surface (tool_call creation, permission prompts and
+     * load replay all carry them).
+     */
+    private fun toolLocations(tool: AgentTool, arguments: JsonObject): List<ToolCallLocation> =
+        tool.targetPath(arguments)?.let { listOf(ToolCallLocation(it)) } ?: emptyList()
+
+    /**
+     * Renderable tool-call content: the result text always, plus the optional
+     * diff payload for edit-kind tools. Kept out of `rawOutput` so the raw
+     * wire shape stays unchanged.
+     */
+    private fun toolCallContent(result: ToolResult): List<ToolCallContent> = buildList {
+        add(ToolCallContent.Content(ContentBlock.Text(result.text)))
+        result.diff?.let { add(ToolCallContent.Diff(it.path, it.newText, it.oldText)) }
     }
 
     /**

@@ -36,8 +36,29 @@ public class WriteFileTool : AgentTool {
         val path = absoluteToolPath(context.cwd, rawPath)
         val content = arguments["content"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'content'", true)
         return runCatching {
+            val diff = writeResultDiff(path, content, context)
             context.fileStore.writeFile(path, content)
-            ToolResult("Written $path")
+            ToolResult("Written $path", diff = diff)
         }.getOrElse { ToolResult("Write failed: ${it.message}", true) }
     }
 }
+
+/**
+ * Best-effort pre-read of the target so the result can carry a `Diff` content
+ * block for clients that render tool-call diffs without the client fs proxy.
+ * A missing file yields a diff with `oldText = null`; any other read failure
+ * skips the diff. Oversized content is skipped to keep the wire payload sane.
+ */
+private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
+    val oldText = try {
+        context.fileStore.readFile(path, null, null)
+    } catch (e: FileStoreException) {
+        return ToolResultDiff(path, newText, null)
+    } catch (e: Exception) {
+        return null
+    }
+    if (oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
+    return ToolResultDiff(path, newText, oldText)
+}
+
+private const val MAX_DIFF_CONTENT_LENGTH = 100_000

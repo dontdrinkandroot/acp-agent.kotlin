@@ -62,7 +62,7 @@ public class EditFileTool : AgentTool {
                 true
             )
             context.fileStore.writeFile(path, content.replace(oldString, newString))
-            ToolResult("Edited $path")
+            ToolResult("Edited $path", diff = ToolResultDiff(path, newString, oldString))
         }.getOrElse { ToolResult("Edit failed: ${it.message}", true) }
     }
 }

@@ -39,10 +39,68 @@ class FileToolsTest {
         val write = WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "line1\nline2\nline3") }, context(dir))
         assertFalse(write.isError, write.text)
         assertTrue(write.text.contains("Written"))
+        assertEquals(path, write.diff?.path, "write to a new file must carry a diff with the target path")
+        assertEquals(null, write.diff?.oldText, "a new file has no old content")
 
         val read = ReadFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
         assertFalse(read.isError, read.text)
         assertEquals("line1\nline2\nline3", read.text)
+    }
+
+    @Test
+    fun `write to an existing file carries the old content in the diff`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "old") }, context(dir))
+        val write = WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "new") }, context(dir))
+        assertFalse(write.isError, write.text)
+        assertEquals(ToolResultDiff(path, "new", "old"), write.diff)
+    }
+
+    @Test
+    fun `edit carries an argument-derived diff`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/e.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "hello world") }, context(dir))
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "world"); put("new_string", "kotlin") },
+            context(dir),
+        )
+        assertFalse(edit.isError, edit.text)
+        assertEquals(ToolResultDiff(path, "kotlin", "world"), edit.diff)
+    }
+
+    @Test
+    fun `write skips the diff for oversized old content`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/big.txt"
+        val big = "x".repeat(100_001)
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", big) }, context(dir))
+        val write =
+            WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "small") }, context(dir))
+        assertFalse(write.isError, write.text)
+        assertEquals(null, write.diff, "oversized old content must not be pushed onto the wire")
+    }
+
+    @Test
+    fun `write skips the diff when the old content cannot be read`() = runBlocking {
+        val dir = tmpDir()
+        val failingReadStore = object : FileStore {
+            override suspend fun readFile(path: String, line: Int?, limit: Int?): String =
+                throw RuntimeException("boom")
+
+            override suspend fun writeFile(path: String, content: String) = Unit
+        }
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileStore = failingReadStore,
+        )
+        val write = WriteFileTool().execute(buildJsonObject { put("path", "$dir/f.txt"); put("content", "x") }, ctx)
+        assertFalse(write.isError, write.text)
+        assertEquals(null, write.diff, "a read failure must not fail the write or emit a diff")
     }
 
     @Test

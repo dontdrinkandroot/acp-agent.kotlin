@@ -3,42 +3,19 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.Client
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.SessionConfigId
-import com.agentclientprotocol.model.SessionConfigOption
-import com.agentclientprotocol.model.SessionConfigOptionValue
-import com.agentclientprotocol.model.SessionConfigSelectOptions
-import com.agentclientprotocol.model.SessionModeId
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.StopReason
-import com.agentclientprotocol.model.ToolCallStatus
-import com.agentclientprotocol.model.ToolKind
+import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.*
 import java.io.File
 import java.nio.file.Files
-import java.util.Collections
-import java.util.Properties
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import java.util.*
+import kotlin.test.*
 
 /**
  * Black-box wire conformance:
@@ -193,7 +170,12 @@ class E2eWireConformanceTest : E2eAgentTest() {
             val rawInputObj = rawInput as JsonObject
             assertEquals(targetFile.absolutePath, (rawInputObj["path"] as JsonPrimitive).content)
             assertEquals("phase4", (rawInputObj["content"] as JsonPrimitive).content)
-            println("[ok] tool_call update (write_file, title/kind/status/rawInput correct)")
+            assertEquals(
+                listOf(ToolCallLocation(targetFile.absolutePath)),
+                toolCall.locations,
+                "tool_call must carry the file location for the follow-along surface",
+            )
+            println("[ok] tool_call update (write_file, title/kind/status/rawInput/locations correct)")
 
             assertTrue(
                 testOps.permissionRequests.isEmpty(),
@@ -207,7 +189,24 @@ class E2eWireConformanceTest : E2eAgentTest() {
             val resultUpdate = resultUpdates.last()
             assertEquals(ToolCallStatus.COMPLETED, resultUpdate.status)
             assertTrue(resultUpdate.rawOutput.toString().contains("Written"))
-            println("[ok] tool_call_update completed (rawOutput=${resultUpdate.rawOutput})")
+            val resultContent = requireNotNull(resultUpdate.content) { "completed tool_call_update must carry content" }
+            assertTrue(
+                resultContent.any {
+                    it is ToolCallContent.Content &&
+                            (it.content as? ContentBlock.Text)?.text?.contains("Written") == true
+                },
+                "completed tool_call_update must carry the result text as content, got: $resultContent",
+            )
+            assertTrue(
+                resultContent.any {
+                    it is ToolCallContent.Diff &&
+                            it.path == targetFile.absolutePath &&
+                            it.newText == "phase4" &&
+                            it.oldText == null
+                },
+                "completed tool_call_update must carry a diff block for a new file, got: $resultContent",
+            )
+            println("[ok] tool_call_update completed (rawOutput + text/diff content)")
 
             assertEquals("phase4", targetFile.readText())
             println("[ok] write_file side effect verified on disk")

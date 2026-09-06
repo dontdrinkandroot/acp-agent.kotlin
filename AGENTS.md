@@ -170,10 +170,19 @@ Config comes from environment variables:
   - a `name(key: value, ...)` summary, gemini-cli style, arg part trimmed at 50 chars;
     `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
     implemented for `bash`, `run` and the run-config write tools; path tools only prompt for
-    out-of-project access and are untouched. **Revert path**: when JetBrains renders
+    out-of-project access and are untouched. **Tool-call results**: completed/failed
+    `tool_call_update`s carry the result text as `content` blocks (and the error text on
+    permission denial), so clients that ignore `rawOutput` still render the outcome;
+    edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
+    file changes are visible without the client fs proxy - `edit_file` derives the diff
+    from its args (`old_string`/`new_string`), `write_file` best-effort pre-reads the old
+    content (`oldText = null` for new files; skipped on read failure or when the old
+    content exceeds 100k chars). Path-scoped tool calls carry `locations`
+    (`tool_call`, `request_permission` and load replay) for the client's follow-along
+    surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
     `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
-    three call sites (`tool_call` notification, `request_permission`, load replay in
-    `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
+    call sites (`tool_call` notification, `request_permission`, completed/denied updates,
+    load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
   `mcpCapabilities.http/sse`.

@@ -45,7 +45,20 @@ private fun JsonElement.primitiveContentOrNull(): String? = when (this) {
 
 public data class ToolResult(
     val text: String,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val diff: ToolResultDiff? = null,
+)
+
+/**
+ * An optional file-change payload for [ToolResult], emitted as a
+ * `ToolCallContent.Diff` content block on the completed tool-call update so
+ * clients can render the modification without relying on the client fs proxy.
+ * `oldText` is null for new files.
+ */
+public data class ToolResultDiff(
+    val path: String,
+    val newText: String,
+    val oldText: String? = null,
 )
 
 public class ToolContext internal constructor(
