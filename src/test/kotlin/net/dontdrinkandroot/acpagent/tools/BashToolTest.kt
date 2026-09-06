@@ -120,6 +120,11 @@ class BashToolTest {
             elapsed < 15000,
             "drain must not hang on a child keeping the pipe open, took ${elapsed}ms",
         )
+        // Regression: the captured output must survive the forced teardown.
+        assertTrue(
+            result.text.contains("started"),
+            "output captured before the drain timeout was discarded: ${result.text}",
+        )
     }
 
     @Test

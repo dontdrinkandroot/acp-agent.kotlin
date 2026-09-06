@@ -103,11 +103,12 @@ internal class CreateRunConfigTool internal constructor(private val cwd: String)
     override val parameters: JsonObject = configRunWriteParameters(mutable = true)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val name = arguments["name"]?.jsonPrimitive?.content
-        val command = arguments["command"]?.jsonPrimitive?.content
-        val description = arguments["description"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+        val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
+        val command = arguments.stringArg("command")
+        val description = arguments.stringArg("description")?.takeIf { it.isNotBlank() }
+        if (arguments.isNullArg("description")) return ToolResult(arguments.argError("description"), true)
         return try {
-            val config = createRunConfig(cwd, name.orEmpty(), command, description)
+            val config = createRunConfig(cwd, name, command, description)
             ToolResult("Created run configuration \"${config.name}\": ${config.command}")
         } catch (e: RunConfigException) {
             ToolResult(e.message ?: "Could not create run configuration", isError = true)
@@ -132,11 +133,13 @@ internal class UpdateRunConfigTool internal constructor(private val cwd: String)
     override val parameters: JsonObject = configRunWriteParameters(mutable = false)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val name = arguments["name"]?.jsonPrimitive?.content
-        val command = arguments["command"]?.jsonPrimitive?.content
-        val description = arguments["description"]?.jsonPrimitive?.content
+        val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
+        val command = arguments.stringArg("command")
+        val description = arguments.stringArg("description")
+        if (arguments.isNullArg("command")) return ToolResult(arguments.argError("command"), true)
+        if (arguments.isNullArg("description")) return ToolResult(arguments.argError("description"), true)
         return try {
-            val config = updateRunConfig(cwd, name.orEmpty(), command, description)
+            val config = updateRunConfig(cwd, name, command, description)
             val output = buildString {
                 append("Updated run configuration \"").append(config.name).append("\": ")
                 append(config.command)
@@ -172,9 +175,9 @@ internal class DeleteRunConfigTool internal constructor(private val cwd: String)
     }
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val name = arguments["name"]?.jsonPrimitive?.content
+        val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
         return try {
-            val config = deleteRunConfig(cwd, name.orEmpty())
+            val config = deleteRunConfig(cwd, name)
             val output = buildString {
                 append("Deleted run configuration \"").append(config.name).append("\"")
                 if (config.command.isNotBlank()) append(": ").append(config.command)

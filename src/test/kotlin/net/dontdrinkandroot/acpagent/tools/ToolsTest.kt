@@ -1,17 +1,13 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.SessionId
-import com.agentclientprotocol.model.SessionModeId
+import com.agentclientprotocol.common.ClientSessionOperations
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -29,6 +25,36 @@ private fun context(cwd: String) = ToolContext(
     clientCapabilities = ClientCapabilities(),
     sessionId = SessionId("sess_test"),
 )
+
+/**
+ * A client fs proxy double that would fail loudly if the file tools
+ * accidentally issued a pre-read through it (the diff skip must avoid the
+ * round-trip, not just the payload).
+ */
+internal class RecordingFsClient : ClientSessionOperations {
+    val readCalls = mutableListOf<String>()
+
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: JsonElement?,
+    ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+
+    override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
+
+    override suspend fun fsReadTextFile(
+        path: String,
+        line: UInt?,
+        limit: UInt?,
+        _meta: JsonElement?,
+    ): ReadTextFileResponse {
+        readCalls += path
+        return ReadTextFileResponse("proxy content")
+    }
+
+    override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =
+        WriteTextFileResponse()
+}
 
 class FileToolsTest {
 
@@ -60,7 +86,7 @@ class FileToolsTest {
     }
 
     @Test
-    fun `edit carries an argument-derived diff`() = runBlocking {
+    fun `edit carries a whole-file diff`() = runBlocking {
         val dir = tmpDir()
         val path = "$dir/e.txt"
         WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "hello world") }, context(dir))
@@ -69,7 +95,9 @@ class FileToolsTest {
             context(dir),
         )
         assertFalse(edit.isError, edit.text)
-        assertEquals(ToolResultDiff(path, "kotlin", "world"), edit.diff)
+        // The diff describes the whole file (consistent with write_file and
+        // delete_file), not just the replaced fragment.
+        assertEquals(ToolResultDiff(path, "hello kotlin", "hello world"), edit.diff)
     }
 
     @Test
@@ -85,11 +113,13 @@ class FileToolsTest {
     }
 
     @Test
-    fun `write skips the diff when the old content cannot be read`() = runBlocking {
+    fun `write with a failing raw read still writes and skips the diff`() = runBlocking {
         val dir = tmpDir()
-        val failingReadStore = object : FileStore {
+        val failingRawStore = object : FileStore {
             override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult =
-                throw RuntimeException("boom")
+                ReadResult("display content")
+
+            override suspend fun readRaw(path: String): String = throw RuntimeException("boom")
 
             override suspend fun writeFile(path: String, content: String) = Unit
         }
@@ -98,11 +128,115 @@ class FileToolsTest {
             client = null,
             clientCapabilities = ClientCapabilities(),
             sessionId = SessionId("sess_test"),
-            fileStore = failingReadStore,
+            fileStore = failingRawStore,
         )
         val write = WriteFileTool().execute(buildJsonObject { put("path", "$dir/f.txt"); put("content", "x") }, ctx)
         assertFalse(write.isError, write.text)
         assertEquals(null, write.diff, "a read failure must not fail the write or emit a diff")
+    }
+
+    @Test
+    fun `edit skips the diff for oversized content and the client fs proxy`() = runBlocking {
+        val dir = tmpDir()
+        // Oversized: the old content is over 100k chars -> no diff, but the
+        // edit runs. "y" + x's keeps "yx" a unique anchor at the start.
+        val path = "$dir/big.txt"
+        WriteFileTool().execute(
+            buildJsonObject { put("path", path); put("content", "y" + "x".repeat(100_001)) },
+            context(dir),
+        )
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "yx"); put("new_string", "yy") },
+            context(dir),
+        )
+        assertFalse(edit.isError, edit.text)
+        assertNull(edit.diff, "oversized content must not be pushed onto the wire")
+
+        // Proxy active: the client renders the change itself, so no diff and
+        // no extra proxy pre-read round-trip.
+        val proxyCtx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileStore = ClientFileStore(RecordingFsClient()),
+        )
+        val proxyWrite = WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/p.txt"); put("content", "proxy") },
+            proxyCtx,
+        )
+        assertFalse(proxyWrite.isError, proxyWrite.text)
+        assertNull(proxyWrite.diff, "the client fs proxy renders the change; no diff block")
+        val proxyEdit = EditFileTool().execute(
+            buildJsonObject { put("path", "$dir/p.txt"); put("old_string", "proxy"); put("new_string", "edited") },
+            proxyCtx,
+        )
+        assertFalse(proxyEdit.isError, proxyEdit.text)
+        assertNull(proxyEdit.diff, "the client fs proxy renders the change; no diff block")
+    }
+
+    @Test
+    fun `read truncates a single line over the cap`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/minified.txt"
+        val longLine = "z".repeat(5000)
+        WriteFileTool().execute(
+            buildJsonObject { put("path", path); put("content", "before\n$longLine\nafter") },
+            context(dir)
+        )
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 3) }, context(dir))
+        assertFalse(read.isError, read.text)
+        val lines = read.text.split("\n")
+        assertEquals(3, lines.size, read.text)
+        assertTrue(lines[1].startsWith("   2  z"), lines[1])
+        assertTrue(lines[1].endsWith("... [truncated]"), lines[1])
+        assertEquals(2000, lines[1].removePrefix("   2  ").removeSuffix("... [truncated]").length)
+    }
+
+    @Test
+    fun `read refuses files over the size cap`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/huge.bin"
+        java.io.FileOutputStream(path).use { it.write(ByteArray(21 * 1024 * 1024) { 0 }) } // 21 MB of NULs
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 1) }, context(dir))
+        assertTrue(read.isError)
+        assertTrue(read.text.contains("too large"), read.text)
+        assertTrue(read.text.contains("bash"), read.text)
+    }
+
+    @Test
+    fun `read errors when the line is past the end of the file`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, context(dir))
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", 100); put("limit", 1) },
+            context(dir)
+        )
+        assertTrue(read.isError)
+        assertTrue(read.text.contains("past the end"), read.text)
+        assertTrue(read.text.contains("3 lines"), read.text)
+    }
+
+    @Test
+    fun `explicit json null arguments are rejected with a dedicated message`() = runBlocking {
+        val dir = tmpDir()
+        val read = ReadFileTool().execute(buildJsonObject { put("path", JsonNull); put("limit", 1) }, context(dir))
+        assertTrue(read.isError)
+        assertEquals("'path' must not be null", read.text)
+
+        val write = WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/n.txt"); put("content", JsonNull) },
+            context(dir),
+        )
+        assertTrue(write.isError)
+        assertEquals("'content' must not be null", write.text)
+
+        val bash = BashTool().execute(buildJsonObject { put("command", JsonNull) }, context(dir))
+        assertTrue(bash.isError)
+        assertEquals("'command' must not be null", bash.text)
+
+        assertFalse(SystemFileSystem.exists(Path("$dir/n.txt")), "a null write must not touch the disk")
     }
 
     @Test
@@ -419,6 +553,43 @@ class FileToolsTest {
         val grep = GrepTool().execute(buildJsonObject { put("root", "."); put("pattern", "y") }, context(dir))
         assertFalse(grep.isError, grep.text)
         assertTrue(grep.text.contains("sub/a.txt:1:y"), grep.text)
+    }
+
+    @Test
+    fun `glob and grep skip dot git directories`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/.git/objects"))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/.git/objects/ab"); put("content", "needle") },
+            context(dir),
+        )
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "needle") }, context(dir))
+
+        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "**/*") }, context(dir))
+        assertFalse(glob.isError, glob.text)
+        assertFalse(glob.text.contains(".git"), "glob must skip .git: ${glob.text}")
+        assertTrue(glob.text.contains("a.txt"), glob.text)
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", dir); put("pattern", "needle") }, context(dir))
+        assertFalse(grep.isError, grep.text)
+        assertEquals(listOf("a.txt:1:needle"), grep.text.split("\n").filter { it.isNotBlank() }, grep.text)
+    }
+
+    @Test
+    fun `grep skips binary and oversized files with a note`() = runBlocking {
+        val dir = tmpDir()
+        // NUL byte -> binary sniff
+        java.io.FileOutputStream("$dir/blob.bin").use { it.write(byteArrayOf(0, 1, 2, 3)) }
+        // over the 1 MB cap
+        java.io.FileOutputStream("$dir/big.log").use { it.write(ByteArray(1024 * 1024 + 1) { 'x'.code.toByte() }) }
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "findme") }, context(dir))
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", dir); put("pattern", "findme|x") }, context(dir))
+        assertFalse(grep.isError, grep.text)
+        assertTrue(grep.text.contains("a.txt:1:findme"), grep.text)
+        assertFalse(grep.text.contains("blob.bin"), grep.text)
+        assertFalse(grep.text.contains("big.log"), grep.text)
+        assertTrue(grep.text.contains("binary or oversized files skipped"), grep.text)
     }
 
     @Test

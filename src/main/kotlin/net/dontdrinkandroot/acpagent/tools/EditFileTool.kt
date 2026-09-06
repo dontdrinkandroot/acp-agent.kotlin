@@ -6,7 +6,8 @@ import kotlinx.serialization.json.*
 
 public class EditFileTool : AgentTool {
     override val name = "edit_file"
-    override val description = "Replace an exact substring in a file (old_string must match exactly once)."
+    override val description = "Replace an exact substring in a file (old_string must match exactly once). " +
+            "Matching is raw: a CRLF file contains \\r\\n line breaks, so old_string spanning lines must include them."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
@@ -34,18 +35,18 @@ public class EditFileTool : AgentTool {
     }
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments["path"]?.jsonPrimitive?.content
+        arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
         val oldString =
-            arguments["old_string"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'old_string'", true)
+            arguments.stringArg("old_string") ?: return ToolResult(arguments.argError("old_string"), true)
         if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)
-        val newString = arguments["new_string"]?.jsonPrimitive?.content ?: ""
+        val newString = arguments.stringArg("new_string") ?: ""
 
         return runCatching {
-            val content = context.fileStore.readFile(path, null, null).content
+            val content = context.fileStore.readRaw(path)
             // Count non-overlapping occurrences via indexOf so the number
             // matches exactly what String.replace replaces: overlapping
             // occurrences (e.g. old_string "aa" in "aaaa") are counted as
@@ -61,8 +62,27 @@ public class EditFileTool : AgentTool {
                 "old_string matches $count times in $path; make it unique",
                 true
             )
-            context.fileStore.writeFile(path, content.replace(oldString, newString))
-            ToolResult("Edited $path", diff = ToolResultDiff(path, newString, oldString))
+            val updated = content.replace(oldString, newString)
+            context.fileStore.writeFile(path, updated)
+            ToolResult("Edited $path", diff = editResultDiff(path, content, updated, context))
         }.getOrElse { ToolResult("Edit failed: ${it.message}", true) }
     }
+}
+
+/**
+ * The edit result carries a whole-file `Diff` content block (old/new full
+ * content), consistent with write_file and delete_file, so clients can render
+ * the change as a file diff. Skipped when the client fs proxy is active (the
+ * client renders the modification itself) and when either side exceeds
+ * [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
+ */
+private suspend fun editResultDiff(
+    path: String,
+    oldContent: String,
+    newContent: String,
+    context: ToolContext,
+): ToolResultDiff? {
+    if (context.fileStore is ClientFileStore) return null
+    if (oldContent.length > MAX_DIFF_CONTENT_LENGTH || newContent.length > MAX_DIFF_CONTENT_LENGTH) return null
+    return ToolResultDiff(path, newContent, oldContent)
 }

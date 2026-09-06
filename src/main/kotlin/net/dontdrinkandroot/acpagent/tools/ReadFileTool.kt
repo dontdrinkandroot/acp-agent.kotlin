@@ -40,15 +40,16 @@ public class ReadFileTool : AgentTool {
     }
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments["path"]?.jsonPrimitive?.content
+        arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
-        val line = arguments["line"]?.jsonPrimitive?.longOrNull
-        val limit = arguments["limit"]?.jsonPrimitive?.longOrNull
+        if (arguments.isNullArg("line")) return ToolResult(arguments.argError("line", "an integer"), true)
+        val line = arguments.longArg("line")
+        val limit = arguments.longArg("limit")
         if (line != null && line < 1) return ToolResult("'line' must be a positive integer (1-based)", true)
-        if (limit == null) return ToolResult("Missing 'limit'", true)
+        if (limit == null) return ToolResult(arguments.argError("limit", "an integer"), true)
         if (limit < 1 || limit > MAX_READ_LIMIT) {
             return ToolResult("'limit' must be between 1 and $MAX_READ_LIMIT", true)
         }

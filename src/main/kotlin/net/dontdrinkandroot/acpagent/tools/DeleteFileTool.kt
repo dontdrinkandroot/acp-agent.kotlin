@@ -31,12 +31,12 @@ public class DeleteFileTool : AgentTool {
     }
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments["path"]?.jsonPrimitive?.content
+        arguments.stringArg("path")
 
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
         return runCatching {
             val fs = SystemFileSystem
@@ -56,12 +56,14 @@ public class DeleteFileTool : AgentTool {
 
 /**
  * Best-effort read of the deleted file so the result can carry a `Diff`
- * content block showing the removed content. Oversized content is skipped to
- * keep the wire payload sane.
+ * content block showing the removed content. Skipped when the client fs proxy
+ * is active (the client renders the modification itself) and when the content
+ * exceeds [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
  */
 private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolResultDiff? {
+    if (context.fileStore is ClientFileStore) return null
     val oldText = try {
-        context.fileStore.readFile(path, null, null).content
+        context.fileStore.readRaw(path)
     } catch (e: Exception) {
         return null
     }

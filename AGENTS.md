@@ -112,7 +112,9 @@ Config comes from environment variables:
 - **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
   configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
   read from local disk every access, fail-open like AGENTS.md). Commands are shell strings run
-  via `ProcessRunner`; the model's `args` are substituted for the first `{args}` placeholder,
+  via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
+  leaked a literal `{args}` into the shell for multi-placeholder
+  configs),
   configs without the placeholder reject arguments. `mutating = true` so every `run` asks the
   user for permission regardless of mode; the config file is project-controlled (same trust
   tier as AGENTS.md), so the name + args shown in the permission prompt are the real gate (the resolved command itself
@@ -129,7 +131,11 @@ Config comes from environment variables:
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class via `{args}`), `install_dist`
   (relink the e2e launcher), `dependency_updates` (stable-only), `lint_scripts`
-  (`bash -n` + `shellcheck` on the launchers/build script). A `test_fsproxy`
+  (`bash -n` + `shellcheck` on the launchers/build script). The agent's own `.ai/run.json`
+  additionally carries `test_single_fqn` (single test class by fully-qualified name) and
+  `show_failures` (failure messages from the latest JUnit XML reports, backed by
+  `.ai/scripts/show-test-failures.sh`) - added while debugging a flaky test hang. A
+  `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
   leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
   scenario explicitly sets it), so the full `test` suite already covers the
@@ -166,7 +172,16 @@ Config comes from environment variables:
   not cover the whole file, so a truncated read is
   unambiguous and the model can page forward (line numbers are display-only - `edit_file`
   matches raw content, so the model must strip the prefixes; the client fs proxy returns no
-  total, so the footer total comes from the local store, not the proxy). listing/search always use the local disk (ACP
+  total, so the footer total comes from the local store, not the proxy; a proxy window of
+  exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
+  line). Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
+  `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
+  `'x' must not be null` error (previously `null` was silently coerced to the string
+  "null" - e.g. written into files or run as a shell command), an absent key stays
+  `Missing 'x'`. Tool-call diffs describe the **whole file** (`edit_file` was fragment-only
+  before, which clients like Zed misrender) and are **skipped when the client fs proxy is
+  active** (the client renders the change itself; also removes the stale pre-read
+  round-trip). listing/search always use the local disk (ACP
   has no client-side search), and so
   do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
   `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
@@ -175,14 +190,30 @@ Config comes from environment variables:
   so java.nio is used like the run-config writes), `delete_file` deletes single files (refuses
   directories and symlinks; carries the removed content as a `Diff`), `delete_directory`
   deletes recursively but is refused when the tree contains any symlink (kotlinx-io follows
-  links, so a link could smuggle the recursive delete outside the approved project).
+  links, so a link could smuggle the recursive delete outside the approved project); the
+  symlink scan and the recursive delete are depth-capped (64) like the search walker.
+  The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
+  object files are binary noise for content searches) and symlinks.
 - **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
   explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
-  prepending `...(truncated: N chars omitted from the beginning)...` (bounded memory while
-  reading, UTF-8 chunk-safe); `read_file` requires `limit` (1..2000 lines; anything else is
-  rejected before I/O); `list_dir`/`glob` list at most 500 entries with a
-  `...(N more entries omitted)` suffix; `grep` caps matches at 500 and truncates each matched
-  line at 500 chars (`...` suffix). MCP tool results are intentionally uncapped.
+  prepending `...(truncated: N chars omitted from the beginning)...` (Locale.ROOT; bounded
+  memory while reading, UTF-8 chunk-safe) - the output is captured **progressively** into a
+  synchronized tail buffer (`ProcessRunner.StreamTail`), so when a backgrounded child holds
+  the pipe fds open and the drain grace expires, the tree is force-killed, re-drained once,
+  and the output captured so far is snapshotted, never discarded (before this, such a command
+  surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
+  output. `read_file` requires `limit` (1..2000 lines; anything else is
+  rejected before I/O), refuses files over **20 MB** (hardcoded, with a "use bash" hint),
+  truncates lines over **2000 chars** with `... [truncated]`, and errors with
+  `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
+  streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
+  observed to spin forever on zero-char reads under JDK 25); `list_dir`/`glob` list at most
+  500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
+  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff) and
+  files over 1 MB, and reports skips as `...(N binary or oversized files skipped)`.
+  `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
+  operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
+  be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
   `session/request_permission` (all MCP tools are treated as mutating, so they always prompt).
@@ -202,16 +233,20 @@ Config comes from environment variables:
     `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
     implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
     safety-critical: a bare title would leave the user confirming a
-    deletion blind); the remaining path tools only prompt for out-of-project access and are
+    deletion blind); titles flatten embedded newlines so permission prompts stay
+    single-line; the remaining path tools only prompt for out-of-project access and are
     untouched. **Tool-call results**: completed/failed
     `tool_call_update`s carry the result text as `content` blocks (and the error text on
     permission denial), so clients that ignore `rawOutput` still render the outcome;
     edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
-    file changes are visible without the client fs proxy - `edit_file` derives the diff
-    from its args (`old_string`/`new_string`), `write_file` best-effort pre-reads the old
-    content (`oldText = null` for new files; skipped on read failure or when the old
-    content exceeds 100k chars), `delete_file` carries the removed content as
-    `newText = ""`. Path-scoped tool calls carry `locations`
+    file changes are visible without the client fs proxy - every diff describes the **whole file**: `edit_file` emits
+    the full old/new content (was fragment-only, which
+    Zed-style clients misrender), `write_file` best-effort pre-reads the old
+    content (`oldText = null` for new files; skipped on read failure or when either side
+    exceeds 100k chars), `delete_file` carries the removed content as
+    `newText = ""`. All diff blocks are **skipped when the client fs proxy is active**
+    (the client renders the change itself; avoids a stale duplicate and a pre-read
+    round-trip). Path-scoped tool calls carry `locations`
     (`tool_call`, `request_permission` and load replay) for the client's follow-along
     surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
     `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
@@ -382,11 +417,14 @@ side effect verified on disk; an out-of-project move destination routed through
 **persistence scenario
 across three agent restarts** (`session/list` ->
 `session/load` with replay -> `session/resume` -> delete).
-The output caps (bash/run tail truncation, `read_file` limit requirement and bounds,
-listing caps, grep line truncation) are unit-tested in `BashToolTest`/`ToolsTest`;
-move/delete semantics (destination-exists refusal, symlink refusal, dir/file type
-mismatches, diff payloads, local-disk-only) and the multi-target permission
-decision are unit-tested in `ToolsTest`/`PermissionAndFileStoreTest`.
+The output caps (bash/run tail truncation **and progressive capture through a drain
+timeout**, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
+truncation and past-EOF error, listing caps, grep match/line caps and the binary/oversized
+skips, the `.git` walker skip) are unit-tested in `BashToolTest`/`ToolsTest`; move/delete
+semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
+payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip, and
+the strict JSON-null argument rejections are unit-tested in
+`ToolsTest`/`PermissionAndFileStoreTest`.
 All existing scenarios must pass **unchanged**.
 Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
 build the image with `./build-docker` and smoke-test by piping an `initialize` request into
@@ -486,6 +524,15 @@ communicate that with the user so we can review them.
 - **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
+- **JDK chunked `InputStreamReader` can spin forever**: a read-loop that calls
+  `reader.read(chunk)` and processes chars incrementally (the first
+  `StreamingLineReader` implementation) was observed to burn 100% CPU forever on
+  zero-char reads under JDK 25 (`jstack` on the Gradle test worker showed
+  `RUNNABLE` in `StreamDecoder.read`), non-deterministically. The file line
+  reader therefore splits on `\n` at the **byte** level and decodes per line -
+  avoid incremental `InputStreamReader` decode loops in this repo; if a test
+  "hangs" without forking a worker, take a `jstack` of the test worker before
+  blaming Gradle.
 - **CIO engine request timeout**: the ktor CIO engine applies a default **15s aggregate
   `requestTimeout`** over the whole HTTP call unless it is explicitly disabled
   (`engine { requestTimeout = 0 }`). This silently kills any LLM chat completion

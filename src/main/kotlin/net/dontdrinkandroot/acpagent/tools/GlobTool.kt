@@ -30,12 +30,13 @@ public class GlobTool : AgentTool {
     }
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments["root"]?.jsonPrimitive?.content
+        arguments.stringArg("root")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawRoot = arguments["root"]?.jsonPrimitive?.content ?: context.cwd
+        if (arguments.isNullArg("root")) return ToolResult(arguments.argError("root"), true)
+        val rawRoot = arguments.stringArg("root") ?: context.cwd
         val root = absoluteToolPath(context.cwd, rawRoot)
-        val pattern = arguments["pattern"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'pattern'", true)
+        val pattern = arguments.stringArg("pattern") ?: return ToolResult(arguments.argError("pattern"), true)
         return runCatching {
             val regex = globToRegex(pattern)
             val fs = SystemFileSystem
@@ -67,7 +68,8 @@ private const val MAX_LISTING_ENTRIES = 500
  * Walks [dir] recursively, visiting files. Symlinks are deliberately skipped
  * (both files and directories): kotlinx-io follows links by default, so a link
  * inside the search root could otherwise smuggle reads or listings outside the
- * project the permission flow approved.
+ * project the permission flow approved. `.git` directories are skipped at any
+ * depth (packed object files would flood a content search with binary noise).
  */
 internal fun walk(
     fs: FileSystem,
@@ -75,10 +77,11 @@ internal fun walk(
     depth: Int,
     visit: (Path) -> Unit
 ) {
-    if (depth > 64) return
+    if (depth > MAX_WALK_DEPTH) return
     val entries = runCatching { fs.list(dir) }.getOrNull() ?: return
     for (entry in entries) {
         if (isSymbolicLink(entry)) continue
+        if (entry.name == GIT_DIR) continue
         val meta = fs.metadataOrNull(entry)
         if (meta?.isDirectory == true) {
             walk(fs, entry, depth + 1, visit)
@@ -87,6 +90,9 @@ internal fun walk(
         }
     }
 }
+
+internal const val MAX_WALK_DEPTH = 64
+internal const val GIT_DIR = ".git"
 
 private fun isSymbolicLink(path: Path): Boolean =
     runCatching { java.nio.file.Files.isSymbolicLink(java.nio.file.Path.of(path.toString())) }.getOrDefault(false)

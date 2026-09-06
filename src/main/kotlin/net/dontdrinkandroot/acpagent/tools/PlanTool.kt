@@ -61,7 +61,7 @@ public class UpdatePlanTool : AgentTool {
         val entries = runCatching {
             ACPJson.decodeFromJsonElement<List<PlanEntry>>(entriesJson)
         }.getOrElse { return ToolResult(INVALID_ARGUMENTS_MESSAGE, true) }
-        if (entries.any { it.content.isEmpty() }) {
+        if (entries.any { it.content.isBlank() }) {
             return ToolResult(INVALID_ARGUMENTS_MESSAGE, true)
         }
         context.updatePlan(entries)

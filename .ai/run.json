@@ -26,5 +26,13 @@
     "lint_scripts": {
         "command": "bash -n ddr-acp-agent ddr-acp-agent-docker && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker",
         "description": "Validate launcher + build scripts"
+    },
+    "test_single_fqn": {
+        "command": "./gradlew test --tests \"{args}\" 2>&1 | tail -40",
+        "description": "Run a single test class by FQN"
+    },
+    "show_failures": {
+        "command": "bash .ai/scripts/show-test-failures.sh",
+        "description": "Print failure messages from the latest JUnit XML reports"
     }
 }

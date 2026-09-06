@@ -5,10 +5,7 @@ import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.PlanEntry
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.*
 
 private const val MAX_TITLE_ARGUMENTS_LENGTH = 50
 private const val MAX_TITLE_ARGUMENTS_KEEP = 47
@@ -27,7 +24,7 @@ private const val MAX_TITLE_ARGUMENTS_KEEP = 47
 public fun formatToolTitle(name: String, arguments: JsonObject): String {
     val rendered = arguments.mapNotNull { (key, value) ->
         val content = value.primitiveContentOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        "$key: $content"
+        "$key: ${content.flattenForTitle()}"
     }
     val joined = rendered.joinToString(", ")
     val args = if (joined.length > MAX_TITLE_ARGUMENTS_LENGTH) {
@@ -42,6 +39,48 @@ private fun JsonElement.primitiveContentOrNull(): String? = when (this) {
     is JsonPrimitive -> if (this is JsonNull) null else content
     else -> null
 }
+
+/**
+ * Permission prompts and progress render the title on a single line; embedded
+ * newlines (multi-line shell commands, file contents) are flattened to
+ * spaces so the title stays one line.
+ */
+private fun String.flattenForTitle(): String =
+    replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+
+/**
+ * Reads a string tool argument. Returns null when the key is absent, holds an
+ * explicit JSON null, or is not a JSON primitive - combine with [argError] to
+ * render the matching error. Kept non-throwing so [AgentTool.targetPath] and
+ * [AgentTool.title] can use it for malformed arguments, too.
+ */
+public fun JsonObject.stringArg(name: String): String? =
+    (this[name] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+
+/**
+ * Reads an integer tool argument; null when absent, an explicit JSON null, or
+ * not a number.
+ */
+public fun JsonObject.longArg(name: String): Long? =
+    (this[name] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.longOrNull
+
+/**
+ * The user-facing error for a [stringArg]/[longArg] result of null: missing
+ * key, explicit null, or wrong type.
+ */
+public fun JsonObject.argError(name: String, type: String = "a string"): String =
+    when (this[name]) {
+        null -> "Missing '$name'"
+        is JsonNull -> "'$name' must not be null"
+        else -> "'$name' must be $type"
+    }
+
+/**
+ * True when the argument is present but an explicit JSON null. Optional
+ * arguments whose null value would otherwise be silently coerced (e.g. into
+ * the string "null") are rejected with this check.
+ */
+public fun JsonObject.isNullArg(name: String): Boolean = this[name] is JsonNull
 
 public data class ToolResult(
     val text: String,

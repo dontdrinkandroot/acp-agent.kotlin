@@ -99,6 +99,25 @@ class RunToolTest {
     }
 
     @Test
+    fun `substitutes args for every placeholder occurrence`() = runBlocking {
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(
+            aiDir.resolve("run.json"),
+            """{"twice":{"command":"printf '%s-%s' {args} {args}"}}""",
+        )
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "twice")
+                put("args", "ab")
+            },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertEquals("ab-ab", result.text, "every {args} occurrence must be substituted")
+    }
+
+    @Test
     fun `missing placeholder substitutes empty string`() = runBlocking {
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))

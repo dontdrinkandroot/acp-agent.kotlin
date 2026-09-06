@@ -4,6 +4,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class FormatToolTitleTest {
 
@@ -49,5 +50,16 @@ class FormatToolTitleTest {
         val title = formatToolTitle("bash", buildJsonObject { put("command", command) })
         assertEquals(56, title.length)
         assertEquals("bash(command: $command)", title)
+    }
+
+    @Test
+    fun `flattens newlines so the title stays a single line`() {
+        val title = formatToolTitle(
+            "bash",
+            buildJsonObject { put("command", "echo one\necho two\r\necho three") },
+        )
+        assertFalse(title.contains('\n'), title)
+        assertFalse(title.contains('\r'), title)
+        assertEquals("bash(command: echo one echo two echo three)", title)
     }
 }

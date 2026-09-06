@@ -105,6 +105,32 @@ class UpdatePlanToolTest {
     }
 
     @Test
+    fun `entries with whitespace-only content are rejected`() = runBlocking {
+        var emitted = false
+        val context = ToolContext(
+            cwd = "/tmp",
+            client = null,
+            clientCapabilities = com.agentclientprotocol.model.ClientCapabilities(),
+            sessionId = com.agentclientprotocol.model.SessionId("sess_plantool000001"),
+            updatePlan = { emitted = true },
+        )
+        val result = tool.execute(
+            buildJsonObject {
+                put("entries", buildJsonArray {
+                    add(buildJsonObject {
+                        put("content", "   \n\t ")
+                        put("priority", "low")
+                        put("status", "pending")
+                    })
+                })
+            },
+            context,
+        )
+        assertTrue(result.isError)
+        assertFalse(emitted, "nothing must be emitted for invalid entries")
+    }
+
+    @Test
     fun `invalid priority or status values are rejected`() = runBlocking {
         val context = ToolContext(
             cwd = "/tmp",

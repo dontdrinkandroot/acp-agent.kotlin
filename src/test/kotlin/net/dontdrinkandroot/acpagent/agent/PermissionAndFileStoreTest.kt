@@ -2,12 +2,11 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.model.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.tools.*
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class PermissionAndFileStoreTest {
 
@@ -181,6 +180,52 @@ class PermissionAndFileStoreTest {
             ) is LocalFileStore
         )
     }
+
+    @Test
+    fun `client proxy read of an exact limit window ending in a newline is complete`() = runBlocking {
+        // The proxy returns exactly `limit` lines where the last line ends with
+        // a newline: that terminator means the window reached EOF, so the
+        // phantom-footer re-read loop must not be triggered.
+        val exactWindow = (1..5).joinToString("") { "line $it\n" }
+        val store = ClientFileStore(ConfigurableFsClient(exactWindow))
+        val read = store.readFile("/any", 1, 5)
+        assertTrue(read.complete, "an exact-limit window ending in a newline has no more lines below")
+        assertEquals(exactWindow, read.content)
+
+        // A window that fills the limit (`limit` newlines) but does not end in
+        // a newline is assumed truncated (the last line was cut off).
+        val cutWindow = (1..5).joinToString("") { "line $it\n" } + "line 6"
+        val truncated = ClientFileStore(ConfigurableFsClient(cutWindow)).readFile("/any", 1, 5)
+        assertFalse(truncated.complete)
+    }
+
+    @Test
+    fun `client proxy read without a limit is complete`() = runBlocking {
+        val store = ClientFileStore(ConfigurableFsClient("anything"))
+        val read = store.readFile("/any", null, null)
+        assertTrue(read.complete)
+        assertNull(read.total)
+    }
+}
+
+private class ConfigurableFsClient(private val content: String) : ClientSessionOperations {
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: JsonElement?,
+    ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+
+    override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
+
+    override suspend fun fsReadTextFile(
+        path: String,
+        line: UInt?,
+        limit: UInt?,
+        _meta: JsonElement?,
+    ): ReadTextFileResponse = ReadTextFileResponse(content)
+
+    override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =
+        WriteTextFileResponse()
 }
 
 private class RecordingClient : ClientSessionOperations {

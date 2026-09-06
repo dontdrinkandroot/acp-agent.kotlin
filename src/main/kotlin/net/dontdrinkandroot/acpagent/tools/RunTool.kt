@@ -42,7 +42,8 @@ internal fun runConfigTarget(cwd: String): String = "$cwd/$RUN_CONFIG_DIR/$RUN_C
  * Loads the run configurations from `.ai/run.json` directly from the session
  * working directory (never via the client fs proxy). Returns an empty list
  * when the file does not exist or does not parse; read errors are logged and
- * never fail the turn.
+ * never fail the turn. Concurrent writers (several sessions on one cwd) are
+ * last-writer-wins; writes are atomic per file.
  */
 internal fun loadRunConfigs(cwd: String): List<RunConfig> {
     val root = try {
@@ -76,8 +77,8 @@ internal fun parseRunConfigRoot(text: String): JsonObject = runConfigJson.parseT
 internal fun parseRunConfigsFromRoot(root: JsonObject?): List<RunConfig> =
     root?.mapNotNull { (name, value) ->
         if (value !is JsonObject) return@mapNotNull null
-        val command = value["command"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val description = value["description"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+        val command = value.stringArg("command")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val description = value.stringArg("description")?.takeIf { it.isNotBlank() }
         RunConfig(name, command, description)
     } ?: emptyList()
 
@@ -114,7 +115,7 @@ internal fun updateRunConfig(
         ?: throw RunConfigException("Could not update \"$trimmedName\": no run configurations are defined")
     val existing = root[trimmedName] as? JsonObject
         ?: throw RunConfigException("Unknown run configuration \"$trimmedName\"")
-    val existingCommand = existing["command"]?.jsonPrimitive?.content.orEmpty()
+    val existingCommand = existing.stringArg("command").orEmpty()
     if (command != null && command.isBlank()) {
         throw RunConfigException("Run configuration \"$trimmedName\" cannot have a blank command")
     }
@@ -140,7 +141,7 @@ internal fun updateRunConfig(
     return RunConfig(
         name = trimmedName,
         command = effectiveCommand,
-        description = entry["description"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+        description = entry.stringArg("description")?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -151,8 +152,8 @@ internal fun deleteRunConfig(cwd: String, name: String): RunConfig {
         ?: throw RunConfigException("Could not delete \"$trimmedName\": no run configs are defined")
     val removed = root[trimmedName] as? JsonObject
         ?: throw RunConfigException("Unknown run configuration \"$trimmedName\"")
-    val command = removed["command"]?.jsonPrimitive?.content.orEmpty()
-    val description = removed["description"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+    val command = removed.stringArg("command").orEmpty()
+    val description = removed.stringArg("description")?.takeIf { it.isNotBlank() }
     val newRoot = buildJsonObject {
         root.forEach { (key, value) -> if (key != trimmedName) put(key, value) }
     }
@@ -232,8 +233,9 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
     }
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val configName = arguments["config"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'config'", true)
-        val args = arguments["args"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+        val configName = arguments.stringArg("config") ?: return ToolResult(arguments.argError("config"), true)
+        if (arguments.isNullArg("args")) return ToolResult(arguments.argError("args"), true)
+        val args = arguments.stringArg("args")?.takeIf { it.isNotBlank() }
         val configs = loadRunConfigs(cwd)
         val config = configs.firstOrNull { it.name == configName }
             ?: return ToolResult(
@@ -244,7 +246,9 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
         if (args != null && !config.command.contains(ARGS_PLACEHOLDER)) {
             return ToolResult("Run configuration \"$configName\" does not accept arguments", true)
         }
-        val resolvedCommand = config.command.replaceFirst(ARGS_PLACEHOLDER, args.orEmpty())
+        // Every occurrence is substituted so multi-placeholder commands do not
+        // leak a literal "{args}" into the shell.
+        val resolvedCommand = config.command.replace(ARGS_PLACEHOLDER, args.orEmpty())
         return runCatching {
             val result = ProcessRunner.run(resolvedCommand, context.cwd, context.bashTimeoutSeconds.toLong())
             val output = buildString {

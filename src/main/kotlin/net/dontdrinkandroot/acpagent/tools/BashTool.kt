@@ -4,10 +4,11 @@ import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.tools.ProcessRunner.MAX_STREAM_CHARS
+import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
+import java.util.*
 import java.util.concurrent.TimeUnit
 
 internal class ProcessResult(
@@ -44,36 +45,60 @@ internal object ProcessRunner {
     private const val TRUNCATION_MARKER = "...(truncated: %d chars omitted from the beginning)...\n"
 
     /**
-     * Reads a process stream keeping only the last [MAX_STREAM_CHARS]
-     * characters (UTF-8, chunk-boundary safe). When characters were dropped a
-     * marker line is prepended. The memory footprint stays bounded regardless
-     * of how much the process writes.
+     * Progressively captured, bounded tail of one process stream. Readers
+     * append decoded chunks as they arrive; [snapshot] returns everything
+     * captured so far, so output survives even when the reader never reaches
+     * EOF (a surviving child holding the pipe descriptors). UTF-8, chunk-boundary
+     * safe; when characters were dropped a marker line is prepended. The memory
+     * footprint stays bounded regardless of how much the process writes.
      */
-    private fun readStreamTail(stream: InputStream): String {
+    private class StreamTail {
+        private val lock = Any()
+        private val tail = StringBuilder(MAX_STREAM_CHARS)
+        private var dropped = 0
+
+        fun append(chunk: String) {
+            if (chunk.isEmpty()) return
+            synchronized(lock) {
+                tail.append(chunk)
+                if (tail.length > MAX_STREAM_CHARS) {
+                    dropped += tail.length - MAX_STREAM_CHARS
+                    tail.delete(0, tail.length - MAX_STREAM_CHARS)
+                }
+            }
+        }
+
+        fun snapshot(): String = synchronized(lock) {
+            val result = tail.toString()
+            if (dropped > 0) String.format(Locale.ROOT, TRUNCATION_MARKER, dropped) + result else result
+        }
+
+        /**
+         * Records a reader failure (e.g. an I/O error on the pipe) as part of
+         * the captured output, so it stays visible instead of failing the whole
+         * tool call.
+         */
+        fun recordError(error: Exception) {
+            synchronized(lock) { tail.append("\n(output stream error: ${error.message})\n") }
+        }
+    }
+
+    /**
+     * Reads a process stream into the shared [tail] until EOF. Blocking on a
+     * pipe whose far end is held open by a surviving child never returns; the
+     * caller bounds this by detaching the reader and using [StreamTail.snapshot].
+     */
+    private fun readStreamTail(stream: InputStream, tail: StreamTail) {
         val decoder = Charsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPLACE)
             .onUnmappableCharacter(CodingErrorAction.REPLACE)
         val buffer = ByteArray(8192)
-        val tail = StringBuilder(MAX_STREAM_CHARS)
-        var dropped = 0
         while (true) {
             val n = stream.read(buffer)
             if (n == -1) break
-            val decoded = decoder.decode(ByteBuffer.wrap(buffer, 0, n)).toString()
-            tail.append(decoded)
-            if (tail.length > MAX_STREAM_CHARS) {
-                dropped += tail.length - MAX_STREAM_CHARS
-                tail.delete(0, tail.length - MAX_STREAM_CHARS)
-            }
+            tail.append(decoder.decode(ByteBuffer.wrap(buffer, 0, n)).toString())
         }
-        val flushed = decoder.decode(ByteBuffer.allocate(0)).toString()
-        tail.append(flushed)
-        if (tail.length > MAX_STREAM_CHARS) {
-            dropped += tail.length - MAX_STREAM_CHARS
-            tail.delete(0, tail.length - MAX_STREAM_CHARS)
-        }
-        val result = tail.toString()
-        return if (dropped > 0) TRUNCATION_MARKER.format(dropped) + result else result
+        tail.append(decoder.decode(ByteBuffer.allocate(0)).toString())
     }
 
     public suspend fun run(
@@ -93,8 +118,26 @@ internal object ProcessRunner {
         // unblocked portably via Thread.interrupt — see the bounded drain.
 
         val readerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val stdout = readerScope.async { runInterruptible { readStreamTail(process.inputStream) } }
-        val stderr = readerScope.async { runInterruptible { readStreamTail(process.errorStream) } }
+        val stdoutTail = StreamTail()
+        val stderrTail = StreamTail()
+        val stdout = readerScope.async {
+            runInterruptible {
+                try {
+                    readStreamTail(process.inputStream, stdoutTail)
+                } catch (e: IOException) {
+                    stdoutTail.recordError(e)
+                }
+            }
+        }
+        val stderr = readerScope.async {
+            runInterruptible {
+                try {
+                    readStreamTail(process.errorStream, stderrTail)
+                } catch (e: IOException) {
+                    stderrTail.recordError(e)
+                }
+            }
+        }
         val finished = try {
             runInterruptible { process.waitFor(timeoutSeconds, TimeUnit.SECONDS) }
         } catch (e: CancellationException) {
@@ -110,25 +153,23 @@ internal object ProcessRunner {
         // (and its subtree) exited and the OS closed the pipes. When a child
         // inherited the pipe descriptors and outlived its parent (e.g. a
         // backgrounded `(sleep 100) &`), the pipes stay open and the reads
-        // block forever; after the grace period we detach the readers rather
-        // than hang the tool, relying on the best-effort force-kill to close
-        // the surviving child's pipe ends eventually.
-
-        val drained = withTimeoutOrNull(DRAIN_GRACE_MILLIS) {
-            stdout.await() to stderr.await()
-        }
-        if (drained == null) {
+        // block forever. First the whole tree is force-killed so the surviving
+        // child's pipe ends close; a short second drain usually completes. A
+        // reader that still does not finish is detached and the output captured
+        // so far is snapshotted - never discarded.
+        if (!drainReaders(readerScope, stdout, stderr, DRAIN_GRACE_MILLIS)) {
             runCatching { process.descendants().forEach { it.destroyForcibly() } }
             runCatching { process.destroyForcibly() }
-            readerScope.cancel()
+            drainReaders(readerScope, stdout, stderr, DRAIN_GRACE_MILLIS)
         }
-        val (stdoutText, stderrText) = drained ?: ("" to "")
-        ProcessResult(
+        val result = ProcessResult(
             exitCode = if (finished) process.exitValue() else -1,
-            stdout = stdoutText,
-            stderr = stderrText,
+            stdout = stdoutTail.snapshot(),
+            stderr = stderrTail.snapshot(),
             timedOut = !finished,
         )
+        readerScope.cancel()
+        result
     }
 
     /**
@@ -143,6 +184,22 @@ internal object ProcessRunner {
             process.destroyForcibly()
         }
     }
+
+    /**
+     * Awaits both stream readers with a deadline. Returns whether both
+     * finished; on timeout the readers stay running (they are detached by the
+     * caller) and their captured output remains available via the tails.
+     */
+    private suspend fun drainReaders(
+        readerScope: CoroutineScope,
+        stdout: Deferred<*>,
+        stderr: Deferred<*>,
+        graceMillis: Long,
+    ): Boolean = withTimeoutOrNull(graceMillis) {
+        stdout.join()
+        stderr.join()
+        true
+    } ?: false
 }
 
 public class BashTool : AgentTool {
@@ -168,7 +225,7 @@ public class BashTool : AgentTool {
     }
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val command = arguments["command"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'command'", true)
+        val command = arguments.stringArg("command") ?: return ToolResult(arguments.argError("command"), true)
         return runCatching {
             val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
             val output = buildString {

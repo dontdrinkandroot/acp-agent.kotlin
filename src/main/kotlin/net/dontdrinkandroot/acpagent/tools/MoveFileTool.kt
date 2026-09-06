@@ -46,16 +46,16 @@ public class MoveFileTool : AgentTool {
 
     override fun targetPaths(arguments: JsonObject): List<String> =
         listOfNotNull(
-            arguments["source"]?.jsonPrimitive?.content,
-            arguments["destination"]?.jsonPrimitive?.content,
+            arguments.stringArg("source"),
+            arguments.stringArg("destination"),
         )
 
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawSource = arguments["source"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'source'", true)
-        val rawDestination = arguments["destination"]?.jsonPrimitive?.content
-            ?: return ToolResult("Missing 'destination'", true)
+        val rawSource = arguments.stringArg("source") ?: return ToolResult(arguments.argError("source"), true)
+        val rawDestination = arguments.stringArg("destination")
+            ?: return ToolResult(arguments.argError("destination"), true)
         val source = absoluteToolPath(context.cwd, rawSource)
         val destination = absoluteToolPath(context.cwd, rawDestination)
         return runCatching {

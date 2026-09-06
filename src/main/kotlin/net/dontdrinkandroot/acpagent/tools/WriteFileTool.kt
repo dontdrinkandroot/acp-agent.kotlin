@@ -29,12 +29,12 @@ public class WriteFileTool : AgentTool {
     }
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments["path"]?.jsonPrimitive?.content
+        arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments["path"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'path'", true)
+        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
-        val content = arguments["content"]?.jsonPrimitive?.content ?: return ToolResult("Missing 'content'", true)
+        val content = arguments.stringArg("content") ?: return ToolResult(arguments.argError("content"), true)
         return runCatching {
             val diff = writeResultDiff(path, content, context)
             context.fileStore.writeFile(path, content)
@@ -47,16 +47,22 @@ public class WriteFileTool : AgentTool {
  * Best-effort pre-read of the target so the result can carry a `Diff` content
  * block for clients that render tool-call diffs without the client fs proxy.
  * A missing file yields a diff with `oldText = null`; any other read failure
- * skips the diff. Oversized content is skipped to keep the wire payload sane.
+ * skips the diff. The client fs proxy already renders the modification itself,
+ * so the diff is skipped there; oversized content is skipped to keep the wire
+ * payload sane.
  */
 private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
+    if (context.fileStore is ClientFileStore) return null
     val oldText = try {
-        context.fileStore.readFile(path, null, null).content
+        context.fileStore.readRaw(path)
+    } catch (e: FileTooLargeException) {
+        return null
     } catch (e: FileStoreException) {
-        return ToolResultDiff(path, newText, null)
+        // A missing file is a new-file write: the diff shows oldText = null.
+        null
     } catch (e: Exception) {
         return null
     }
-    if (oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
+    if (oldText != null && oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
     return ToolResultDiff(path, newText, oldText)
 }
