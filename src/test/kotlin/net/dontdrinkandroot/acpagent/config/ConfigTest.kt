@@ -107,9 +107,9 @@ class ConfigParseTest {
     }
 
     @Test
-    fun `max turn requests defaults to 40`() {
+    fun `max turn requests defaults to 100`() {
         assertEquals(
-            40,
+            100,
             Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).maxTurnRequests,
         )
         assertEquals(
@@ -132,7 +132,7 @@ class ConfigParseTest {
                 .maxTurnRequests,
         )
         assertEquals(
-            40,
+            100,
             Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_MAX_TURN_REQUESTS" to "garbage"))
                 .maxTurnRequests,
         )

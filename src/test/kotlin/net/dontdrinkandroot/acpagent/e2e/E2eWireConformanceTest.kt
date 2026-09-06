@@ -317,7 +317,7 @@ class E2eWireConformanceTest : E2eAgentTest() {
                 )
             }?.value?.firstOrNull()
             assertEquals("https://github.com/dontdrinkandroot/acp-agent.kotlin", referer)
-            assertEquals("DdrAcpAgentKotlin", appTitle)
+            assertEquals("DdrAcpAgent", appTitle)
             println("[ok] attribution headers sent (HTTP-Referer + X-OpenRouter-Title)")
 
             val buildCommit = Properties().apply {

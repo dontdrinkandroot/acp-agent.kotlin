@@ -70,7 +70,7 @@ Config comes from environment variables:
   client advertises fs capabilities, see Features)
 - `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
   after this many seconds, killing the whole process tree, see Features)
-- `ACP_MAX_TURN_REQUESTS` (default 40, clamped to >= 1; the per-prompt tool iteration
+- `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
   budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
   before the turn ends with `MAX_TURN_REQUESTS`)
 
@@ -93,7 +93,7 @@ Config comes from environment variables:
   response (SDK hook limitation); `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
-- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 40,
+- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
   `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
   when the iteration budget is exhausted while the model kept calling tools, streams one final
