@@ -39,6 +39,34 @@ class BashToolTest {
     }
 
     @Test
+    fun `large stdout keeps the tail with a truncation marker`() = runBlocking {
+        val result = BashTool().execute(
+            buildJsonObject { put("command", "head -c 40000 /dev/zero | tr '\\0' 'x'") },
+            context,
+        )
+        assertFalse(result.isError, result.text)
+        assertTrue(
+            result.text.startsWith("...(truncated: 10000 chars omitted from the beginning)...\n"),
+            result.text,
+        )
+        assertEquals(30000, result.text.count { it == 'x' }, "the tail must be kept, not the head")
+    }
+
+    @Test
+    fun `large stderr keeps the tail with a truncation marker`() = runBlocking {
+        val result = BashTool().execute(
+            buildJsonObject { put("command", "head -c 40000 /dev/zero | tr '\\0' 'y' >&2") },
+            context,
+        )
+        assertFalse(result.isError, result.text)
+        assertTrue(
+            result.text.contains("STDERR:\n...(truncated: 10000 chars omitted from the beginning)...\n"),
+            result.text,
+        )
+        assertEquals(30000, result.text.count { it == 'y' })
+    }
+
+    @Test
     fun `missing command errors`() = runBlocking {
         val result = BashTool().execute(buildJsonObject {}, context)
         assertTrue(result.isError)

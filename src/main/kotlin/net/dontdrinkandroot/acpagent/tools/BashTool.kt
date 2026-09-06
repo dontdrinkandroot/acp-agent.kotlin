@@ -4,6 +4,10 @@ import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.tools.ProcessRunner.MAX_STREAM_CHARS
+import java.io.InputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.util.concurrent.TimeUnit
 
 internal class ProcessResult(
@@ -30,6 +34,48 @@ internal object ProcessRunner {
      */
     private const val DRAIN_GRACE_MILLIS = 2000L
 
+    /**
+     * Maximum number of characters kept from a process stream. Keeps the
+     * context bounded no matter how much the process writes; the tail is kept
+     * because errors and final state tend to arrive last.
+     */
+    private const val MAX_STREAM_CHARS = 30_000
+
+    private const val TRUNCATION_MARKER = "...(truncated: %d chars omitted from the beginning)...\n"
+
+    /**
+     * Reads a process stream keeping only the last [MAX_STREAM_CHARS]
+     * characters (UTF-8, chunk-boundary safe). When characters were dropped a
+     * marker line is prepended. The memory footprint stays bounded regardless
+     * of how much the process writes.
+     */
+    private fun readStreamTail(stream: InputStream): String {
+        val decoder = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPLACE)
+            .onUnmappableCharacter(CodingErrorAction.REPLACE)
+        val buffer = ByteArray(8192)
+        val tail = StringBuilder(MAX_STREAM_CHARS)
+        var dropped = 0
+        while (true) {
+            val n = stream.read(buffer)
+            if (n == -1) break
+            val decoded = decoder.decode(ByteBuffer.wrap(buffer, 0, n)).toString()
+            tail.append(decoded)
+            if (tail.length > MAX_STREAM_CHARS) {
+                dropped += tail.length - MAX_STREAM_CHARS
+                tail.delete(0, tail.length - MAX_STREAM_CHARS)
+            }
+        }
+        val flushed = decoder.decode(ByteBuffer.allocate(0)).toString()
+        tail.append(flushed)
+        if (tail.length > MAX_STREAM_CHARS) {
+            dropped += tail.length - MAX_STREAM_CHARS
+            tail.delete(0, tail.length - MAX_STREAM_CHARS)
+        }
+        val result = tail.toString()
+        return if (dropped > 0) TRUNCATION_MARKER.format(dropped) + result else result
+    }
+
     public suspend fun run(
         command: String,
         cwd: String? = null,
@@ -47,8 +93,8 @@ internal object ProcessRunner {
         // unblocked portably via Thread.interrupt — see the bounded drain.
 
         val readerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val stdout = readerScope.async { runInterruptible { process.inputStream.readBytes().decodeToString() } }
-        val stderr = readerScope.async { runInterruptible { process.errorStream.readBytes().decodeToString() } }
+        val stdout = readerScope.async { runInterruptible { readStreamTail(process.inputStream) } }
+        val stderr = readerScope.async { runInterruptible { readStreamTail(process.errorStream) } }
         val finished = try {
             runInterruptible { process.waitFor(timeoutSeconds, TimeUnit.SECONDS) }
         } catch (e: CancellationException) {

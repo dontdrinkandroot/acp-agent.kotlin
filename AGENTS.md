@@ -156,6 +156,13 @@ Config comes from environment variables:
   use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
   the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
   local store; listing/search always use the local disk (ACP has no client-side search).
+- **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
+  explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
+  prepending `...(truncated: N chars omitted from the beginning)...` (bounded memory while
+  reading, UTF-8 chunk-safe); `read_file` requires `limit` (1..2000 lines; anything else is
+  rejected before I/O); `list_dir`/`glob` list at most 500 entries with a
+  `...(N more entries omitted)` suffix; `grep` caps matches at 500 and truncates each matched
+  line at 500 chars (`...` suffix). MCP tool results are intentionally uncapped.
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
   `session/request_permission` (all MCP tools are treated as mutating, so they always prompt).
@@ -336,6 +343,8 @@ write tools are absent while `list_run_configs` runs without a prompt). Plus a
 **persistence scenario
 across three agent restarts** (`session/list` ->
 `session/load` with replay -> `session/resume` -> delete).
+The output caps (bash/run tail truncation, `read_file` limit requirement and bounds,
+listing caps, grep line truncation) are unit-tested in `BashToolTest`/`ToolsTest`.
 All existing scenarios must pass **unchanged**.
 Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
 build the image with `./build-docker` and smoke-test by piping an `initialize` request into

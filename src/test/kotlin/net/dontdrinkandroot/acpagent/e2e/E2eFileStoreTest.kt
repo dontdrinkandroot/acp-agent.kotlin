@@ -30,7 +30,7 @@ class E2eFileStoreTest : E2eAgentTest() {
             val file = projectDir.resolve("known.txt")
             file.writeText("proxy content")
             targetFile = file
-            MockOpenAiServer("unused", toolCall = MockToolCall("read_file", pathArgs(file.absolutePath)))
+            MockOpenAiServer("unused", toolCall = MockToolCall("read_file", readFileArgs(file.absolutePath)))
         }) {
             val connection = connect()
             try {
@@ -69,7 +69,7 @@ class E2eFileStoreTest : E2eAgentTest() {
             val file = projectDir.resolve("known.txt")
             file.writeText("local content")
             targetFile = file
-            MockOpenAiServer("unused", toolCall = MockToolCall("read_file", pathArgs(file.absolutePath)))
+            MockOpenAiServer("unused", toolCall = MockToolCall("read_file", readFileArgs(file.absolutePath)))
         }) {
             val connection = connect(extraEnv = mapOf("FS_PROXY_ENABLED" to "0"))
             try {
@@ -103,7 +103,7 @@ class E2eFileStoreTest : E2eAgentTest() {
         targetFile.writeText("secret")
         val llmMock = MockOpenAiServer(
             "unused",
-            toolCall = MockToolCall("read_file", pathArgs(targetFile.absolutePath)),
+            toolCall = MockToolCall("read_file", readFileArgs(targetFile.absolutePath)),
         )
         try {
             withE2eAgent("outread", llmMock) {

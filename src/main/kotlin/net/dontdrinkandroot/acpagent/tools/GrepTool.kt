@@ -66,9 +66,15 @@ public class GrepTool : AgentTool {
             }
             val matches = results
                 .sortedWith(compareBy({ it.first }, { it.second }))
-                .take(500)
-                .map { "${it.first}:${it.second}:${it.third}" }
+                .take(MAX_MATCHES)
+                .map { "${it.first}:${it.second}:${truncateMatchLine(it.third)}" }
             ToolResult(matches.joinToString("\n").ifEmpty { "No matches" })
         }.getOrElse { ToolResult("Grep failed: ${it.message}", true) }
     }
 }
+
+private const val MAX_MATCHES = 500
+private const val MAX_MATCH_LINE_CHARS = 500
+
+private fun truncateMatchLine(line: String): String =
+    if (line.length > MAX_MATCH_LINE_CHARS) line.take(MAX_MATCH_LINE_CHARS) + "..." else line

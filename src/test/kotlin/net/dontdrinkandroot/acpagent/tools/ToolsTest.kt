@@ -42,7 +42,7 @@ class FileToolsTest {
         assertEquals(path, write.diff?.path, "write to a new file must carry a diff with the target path")
         assertEquals(null, write.diff?.oldText, "a new file has no old content")
 
-        val read = ReadFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 3) }, context(dir))
         assertFalse(read.isError, read.text)
         assertEquals("line1\nline2\nline3", read.text)
     }
@@ -157,7 +157,7 @@ class FileToolsTest {
         val dir = tmpDir()
         val path = "$dir/f.txt"
         WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc\n") }, context(dir))
-        val read = ReadFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, context(dir))
         assertFalse(read.isError, read.text)
         assertEquals("a\nb\nc\n", read.text)
     }
@@ -180,12 +180,33 @@ class FileToolsTest {
         val dir = tmpDir()
         val path = "$dir/f.txt"
         WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, context(dir))
-        val zeroLine = ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 0) }, context(dir))
+        val zeroLine =
+            ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 0); put("limit", 1) }, context(dir))
         assertTrue(zeroLine.isError)
         val zeroLimit = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 0) }, context(dir))
         assertTrue(zeroLimit.isError)
-        val negLine = ReadFileTool().execute(buildJsonObject { put("path", path); put("line", -1) }, context(dir))
+        val negLine = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", -1); put("limit", 1) },
+            context(dir)
+        )
         assertTrue(negLine.isError)
+    }
+
+    @Test
+    fun `read requires limit and bounds it`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, context(dir))
+        val missingLimit = ReadFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
+        assertTrue(missingLimit.isError)
+        assertTrue(missingLimit.text.contains("'limit'"), missingLimit.text)
+        val tooLargeLimit =
+            ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 2001) }, context(dir))
+        assertTrue(tooLargeLimit.isError)
+        assertTrue(tooLargeLimit.text.contains("2000"), tooLargeLimit.text)
+        val atBound = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 2000) }, context(dir))
+        assertFalse(atBound.isError, atBound.text)
+        assertEquals("a\nb\nc", atBound.text)
     }
 
     @Test
@@ -252,6 +273,48 @@ class FileToolsTest {
     }
 
     @Test
+    fun `list dir caps entries`() = runBlocking {
+        val dir = tmpDir()
+        val fs = SystemFileSystem
+        repeat(600) { i ->
+            WriteFileTool().execute(buildJsonObject { put("path", "$dir/f$i.txt"); put("content", "x") }, context(dir))
+        }
+        val list = ListDirTool().execute(buildJsonObject { put("path", dir) }, context(dir))
+        assertFalse(list.isError, list.text)
+        assertEquals(501, list.text.split("\n").size, "500 entries plus the omission marker")
+        assertTrue(list.text.endsWith("...(100 more entries omitted)"), list.text)
+    }
+
+    @Test
+    fun `glob caps entries`() = runBlocking {
+        val dir = tmpDir()
+        val fs = SystemFileSystem
+        repeat(600) { i ->
+            WriteFileTool().execute(buildJsonObject { put("path", "$dir/f$i.txt"); put("content", "x") }, context(dir))
+        }
+        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "*.txt") }, context(dir))
+        assertFalse(glob.isError, glob.text)
+        assertEquals(501, glob.text.split("\n").size, "500 entries plus the omission marker")
+        assertTrue(glob.text.endsWith("...(100 more entries omitted)"), glob.text)
+    }
+
+    @Test
+    fun `grep truncates long matched lines`() = runBlocking {
+        val dir = tmpDir()
+        val longLine = "y".repeat(1000)
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/long.txt"); put("content", longLine) },
+            context(dir)
+        )
+        val grep = GrepTool().execute(buildJsonObject { put("root", dir); put("pattern", "y") }, context(dir))
+        assertFalse(grep.isError, grep.text)
+        val match = grep.text.split("\n").single()
+        assertTrue(match.startsWith("long.txt:1:"), match)
+        assertTrue(match.endsWith("..."), match)
+        assertEquals(500, match.removePrefix("long.txt:1:").removeSuffix("...").length)
+    }
+
+    @Test
     fun `glob root not found errors`() = runBlocking {
         val result = GlobTool().execute(buildJsonObject { put("root", "/nonexistent-root"); put("pattern", "*") }, context("/tmp"))
         assertTrue(result.isError)
@@ -270,7 +333,7 @@ class FileToolsTest {
             "file must be written under the session cwd, not the process cwd",
         )
 
-        val read = ReadFileTool().execute(buildJsonObject { put("path", "sub/a.txt") }, context(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", "sub/a.txt"); put("limit", 1) }, context(dir))
         assertFalse(read.isError, read.text)
         assertEquals("x", read.text)
 

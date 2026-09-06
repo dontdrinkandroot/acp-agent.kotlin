@@ -32,7 +32,15 @@ public class ListDirTool : AgentTool {
             val dir = Path(path)
             val meta = fs.metadataOrNull(dir)
             if (meta == null || !meta.isDirectory) return@runCatching ToolResult("Not a directory: $path", true)
-            ToolResult(fs.list(dir).map { it.name }.sorted().joinToString("\n"))
+            val sorted = fs.list(dir).map { it.name }.sorted()
+            val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
+            if (sorted.size > MAX_LISTING_ENTRIES) {
+                ToolResult("$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)")
+            } else {
+                ToolResult(listing)
+            }
         }.getOrElse { ToolResult("List failed: ${it.message}", true) }
     }
 }
+
+private const val MAX_LISTING_ENTRIES = 500

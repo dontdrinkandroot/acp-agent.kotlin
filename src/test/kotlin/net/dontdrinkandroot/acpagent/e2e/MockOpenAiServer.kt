@@ -12,6 +12,12 @@ internal data class MockToolCall(val name: String, val arguments: JsonObject)
 
 internal fun pathArgs(path: String): JsonObject = buildJsonObject { put("path", path) }
 
+internal fun readFileArgs(path: String, limit: Int = 2000): JsonObject =
+    buildJsonObject {
+        put("path", path)
+        put("limit", limit)
+    }
+
 /**
  * Minimal OpenAI-compatible streaming server:
  *  - 1st completion request  -> a tool_call for `write_file` (writes 'phase4' to the target path)

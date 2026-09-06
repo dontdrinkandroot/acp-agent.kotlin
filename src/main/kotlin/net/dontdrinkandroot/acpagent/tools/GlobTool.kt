@@ -46,10 +46,22 @@ public class GlobTool : AgentTool {
                 val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
                 if (regex.matches(rel)) results += rel
             }
-            ToolResult(results.sorted().joinToString("\n").ifEmpty { "No matches" })
+            val sorted = results.sorted()
+            val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
+            ToolResult(
+                if (listing.isEmpty()) {
+                    "No matches"
+                } else if (sorted.size > MAX_LISTING_ENTRIES) {
+                    "$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)"
+                } else {
+                    listing
+                }
+            )
         }.getOrElse { ToolResult("Glob failed: ${it.message}", true) }
     }
 }
+
+private const val MAX_LISTING_ENTRIES = 500
 
 /**
  * Walks [dir] recursively, visiting files. Symlinks are deliberately skipped

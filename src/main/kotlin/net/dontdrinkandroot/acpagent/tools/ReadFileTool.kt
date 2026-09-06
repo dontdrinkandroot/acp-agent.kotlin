@@ -24,11 +24,14 @@ public class ReadFileTool : AgentTool {
                 put("type", JsonPrimitive("integer"))
                 put(
                     "description",
-                    JsonPrimitive("Maximum number of lines to return. Defaults to the rest of the file.")
+                    JsonPrimitive("Maximum number of lines to return (1-$MAX_READ_LIMIT).")
                 )
             }
         })
-        putJsonArray("required") { add(JsonPrimitive("path")) }
+        putJsonArray("required") {
+            add(JsonPrimitive("path"))
+            add(JsonPrimitive("limit"))
+        }
     }
 
     override fun targetPath(arguments: JsonObject): String? =
@@ -40,9 +43,16 @@ public class ReadFileTool : AgentTool {
         val line = arguments["line"]?.jsonPrimitive?.longOrNull
         val limit = arguments["limit"]?.jsonPrimitive?.longOrNull
         if (line != null && line < 1) return ToolResult("'line' must be a positive integer (1-based)", true)
-        if (limit != null && limit < 1) return ToolResult("'limit' must be a positive integer", true)
+        if (limit == null) return ToolResult("Missing 'limit'", true)
+        if (limit < 1 || limit > MAX_READ_LIMIT) {
+            return ToolResult("'limit' must be between 1 and $MAX_READ_LIMIT", true)
+        }
         return runCatching {
-            ToolResult(context.fileStore.readFile(path, line?.toInt(), limit?.toInt()))
+            ToolResult(context.fileStore.readFile(path, line?.toInt(), limit.toInt()))
         }.getOrElse { ToolResult("Read failed: ${it.message}", true) }
+    }
+
+    private companion object {
+        const val MAX_READ_LIMIT = 2000
     }
 }
