@@ -111,12 +111,16 @@ Config comes from environment variables:
   current mode fails with the "disabled in current mode" update and never reaches the permission
   flow (so a model carrying a tool call over from an earlier mode switch cannot execute it; see
   `E2eModeRestrictionTest`). The mode-aware system prompt is rebuilt per
-  turn with `cwd`, today's date and `Agent build: <sha>[-dirty]`. A `mode` config option
+  turn with `cwd`, today's date, the available run configurations (name + command +
+  description, re-read from local disk per iteration so mid-turn `create_run_config` changes
+  apply like AGENTS.md) and `Agent build: <sha>[-dirty]`. A `mode` config option
   (`session/set_config_option` + legacy `set_mode`) emits `current_mode_update` +
   `config_option_update`; unknown -> invalid-params.
 - **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
   configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
-  read from local disk every access, fail-open like AGENTS.md). Commands are shell strings run
+  read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,
+  location-agnostic string; the available configs (name + command + description) are surfaced in
+  the system prompt instead. Commands are shell strings run
   via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
   leaked a literal `{args}` into the shell for multi-placeholder
   configs),
@@ -340,7 +344,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
                                      # AgentSession interface (config options, replay, prompt plumbing)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
-                                     # build hash, mode description, AGENTS.md instructions)
+                                     # build hash, mode description, run configurations,
+                                       # AGENTS.md instructions)
     agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning): option listing,
                                      # validation/assignment, effective reasoning effort
     agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, permission
@@ -356,7 +361,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
-    tools/RunTool.kt                 # run tool + run-config storage (load/create/update/delete, atomic write)
+    tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
+                                     # prompt) + run-config storage (load/create/update/delete, atomic write)
     tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
     tools/ReadFileTool.kt            # read_file tool (via FileStore)
     tools/WriteFileTool.kt           # write_file tool (via FileStore)

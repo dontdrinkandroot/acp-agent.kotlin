@@ -45,7 +45,11 @@ internal class AgentSessionImpl(
         closeResources = { runBlocking { closeResources() } },
     )
 
-    private val systemPrompt = SystemPromptBuilder(cwd, todayProvider)
+    private val systemPrompt = SystemPromptBuilder(
+        cwd,
+        todayProvider,
+        runConfigsProvider = { loadRunConfigs(cwd) },
+    )
 
     private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
 

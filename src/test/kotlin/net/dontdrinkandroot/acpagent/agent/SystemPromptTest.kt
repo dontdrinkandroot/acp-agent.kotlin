@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionModeId
+import net.dontdrinkandroot.acpagent.tools.RunConfig
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -37,6 +38,37 @@ class SystemPromptTest {
         assertTrue(prompt.contains("Modify existing code with `edit_file` deltas"), prompt)
         assertTrue(prompt.contains("derive the expectation from the code being tested"), prompt)
         assertTrue(prompt.contains("Prefer the `run` tool's named configurations"), prompt)
+    }
+
+    @Test
+    fun `run configurations are listed with command and description`() {
+        val builder = SystemPromptBuilder(
+            "/project",
+            { "2026-09-03" },
+            runConfigsProvider = {
+                listOf(
+                    RunConfig("compile", "./gradlew compileKotlin", "Compile main sources (fastest loop)"),
+                    RunConfig("test_class", "./gradlew test --tests \"{args}\"", "Run a single test class"),
+                    RunConfig("relint", "npm run lint", null),
+                )
+            },
+        )
+        val prompt = builder.build(SessionModeId("build"), null)
+        assertTrue(prompt.contains("Available run configurations"), prompt)
+        assertTrue(prompt.contains("- compile: ./gradlew compileKotlin — Compile main sources (fastest loop)"), prompt)
+        assertTrue(prompt.contains("- test_class: ./gradlew test --tests \"{args}\" — Run a single test class"), prompt)
+        assertTrue(prompt.contains("- relint: npm run lint"), prompt)
+        assertTrue(
+            prompt.contains("pass `args` only for configurations whose command contains the {args} placeholder"),
+            prompt
+        )
+    }
+
+    @Test
+    fun `run configurations section is omitted when none are defined`() {
+        val prompt = builder.build(SessionModeId("build"), null)
+        assertTrue(!prompt.contains("Available run configurations"), prompt)
+        assertTrue(!prompt.contains(".ai/run.json"), prompt)
     }
 
     @Test

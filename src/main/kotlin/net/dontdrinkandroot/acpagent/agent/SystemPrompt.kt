@@ -2,16 +2,18 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionModeId
 import net.dontdrinkandroot.acpagent.BuildInfo
+import net.dontdrinkandroot.acpagent.tools.RunConfig
 
 /**
  * Builds the system prompt for a prompt turn. Pure text assembly: the prompt
- * is derived from the session mode, the working directory, today's date and
- * the AGENTS.md instructions, so it is independent of the session's mutable
- * state and trivially testable.
+ * is derived from the session mode, the working directory, today's date, the
+ * run configurations and the AGENTS.md instructions, so it is independent of
+ * the session's mutable state and trivially testable.
  */
 internal class SystemPromptBuilder(
     private val cwd: String,
     private val todayProvider: () -> String,
+    private val runConfigsProvider: () -> List<RunConfig> = { emptyList() },
 ) {
 
     fun build(mode: SessionModeId, instructions: AgentsInstructions?): String = buildString {
@@ -33,7 +35,24 @@ internal class SystemPromptBuilder(
         appendLine("- Modify existing code with `edit_file` deltas; use `write_file` only for new files or an intentional whole-file rewrite (read the full file first - a hasty rewrite can drop the tail).")
         appendLine("- When asserting behavior in a test, derive the expectation from the code being tested or its existing tests, not from assumptions.")
         appendLine("- Prefer the `run` tool's named configurations for the standard build/test/compile loop over raw `bash` shells.")
+        append(runConfigsSection(runConfigsProvider()))
         append(instructionsSection(instructions))
+    }
+
+    private fun runConfigsSection(configs: List<RunConfig>): String {
+        if (configs.isEmpty()) return ""
+        return buildString {
+            append("\nAvailable run configurations:\n")
+            configs.forEach { config ->
+                append("- ").append(config.name).append(": ").append(config.command)
+                config.description?.let { append(" — ").append(it) }
+                appendLine()
+            }
+            appendLine(
+                "Execute one via the `run` tool with `config: <name>`; pass `args` only for " +
+                        "configurations whose command contains the {args} placeholder."
+            )
+        }
     }
 
     private fun modeDescription(mode: SessionModeId): String = when (mode.value) {

@@ -155,7 +155,7 @@ class RunToolTest {
     }
 
     @Test
-    fun `description lists available configurations`() {
+    fun `description is static and does not list configurations`() {
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
         Files.writeString(
@@ -163,14 +163,10 @@ class RunToolTest {
             """{"test":{"command":"npm test","description":"Run unit tests"},"lint":{"command":"npm run lint"}}""",
         )
         val description = RunTool(dir).description
-        assertTrue(description.contains("test (Run unit tests)"), description)
-        assertTrue(description.contains("lint"), description)
-        assertTrue(description.contains("{args}"), description)
-    }
-
-    @Test
-    fun `description notes when no configurations exist`() {
-        assertTrue(RunTool(tempDir()).description.contains("No run configurations"), RunTool(tempDir()).description)
+        assertFalse(description.contains("npm test"), description)
+        assertFalse(description.contains("Run unit tests"), description)
+        assertFalse(description.contains("lint"), description)
+        assertEquals(description, RunTool(tempDir()).description)
     }
 
     @Test

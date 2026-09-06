@@ -196,21 +196,9 @@ private fun moveAtomically(source: java.nio.file.Path, target: java.nio.file.Pat
  */
 public class RunTool internal constructor(private val cwd: String) : AgentTool {
     override val name = "run"
-    override val description: String
-        get() {
-            val configs = loadRunConfigs(cwd)
-            if (configs.isEmpty()) {
-                return "Run a run configuration defined in .ai/run.json in the project working directory. " +
-                        "No run configurations are currently defined."
-            }
-            return "Run a run configuration defined in .ai/run.json in the project working directory. " +
-                    "Available configurations: " +
-                    configs.joinToString(", ") { config ->
-                        config.description?.let { "${config.name} ($it)" } ?: config.name
-                    } +
-                    ". Pass optional arguments via 'args'; they are substituted for the $ARGS_PLACEHOLDER " +
-                    "placeholder in the configuration command."
-        }
+    override val description = "Run a named run configuration in the project working directory. " +
+            "Pass optional arguments via 'args'; they are substituted for the $ARGS_PLACEHOLDER " +
+            "placeholder in the configuration command."
 
     override val kind = ToolKind.EXECUTE
     override val mutating = true
