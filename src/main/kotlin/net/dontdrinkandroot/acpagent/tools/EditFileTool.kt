@@ -46,7 +46,16 @@ public class EditFileTool : AgentTool {
 
         return runCatching {
             val content = context.fileStore.readFile(path, null, null)
-            val count = content.windowed(oldString.length).count { it == oldString }
+            // Count non-overlapping occurrences via indexOf so the number
+            // matches exactly what String.replace replaces: overlapping
+            // occurrences (e.g. old_string "aa" in "aaaa") are counted as
+            // replace counts them, not as windowed would.
+            var count = 0
+            var occurrence = content.indexOf(oldString)
+            while (occurrence != -1) {
+                count++
+                occurrence = content.indexOf(oldString, occurrence + oldString.length)
+            }
             if (count == 0) return@runCatching ToolResult("old_string not found in $path", true)
             if (count > 1) return@runCatching ToolResult(
                 "old_string matches $count times in $path; make it unique",

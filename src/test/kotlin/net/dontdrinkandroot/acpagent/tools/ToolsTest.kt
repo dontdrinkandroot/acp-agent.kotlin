@@ -95,6 +95,70 @@ class FileToolsTest {
     }
 
     @Test
+    fun `full read keeps the trailing newline`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc\n") }, context(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
+        assertFalse(read.isError, read.text)
+        assertEquals("a\nb\nc\n", read.text)
+    }
+
+    @Test
+    fun `crlf file slices by visual lines`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/crlf.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\r\nb\r\nc\r\n") }, context(dir))
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", 2); put("limit", 1) },
+            context(dir),
+        )
+        assertFalse(read.isError, read.text)
+        assertEquals("b", read.text)
+    }
+
+    @Test
+    fun `non-positive line and limit are rejected`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, context(dir))
+        val zeroLine = ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 0) }, context(dir))
+        assertTrue(zeroLine.isError)
+        val zeroLimit = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 0) }, context(dir))
+        assertTrue(zeroLimit.isError)
+        val negLine = ReadFileTool().execute(buildJsonObject { put("path", path); put("line", -1) }, context(dir))
+        assertTrue(negLine.isError)
+    }
+
+    @Test
+    fun `edit counts non-overlapping occurrences`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/e.txt"
+        // "aa" occurs twice in "aaaa" non-overlapping, but also overlaps;
+        // the overlap must not inflate the ambiguity count to three.
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "aaaa") }, context(dir))
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "aa"); put("new_string", "b") },
+            context(dir),
+        )
+        assertTrue(edit.isError)
+        assertTrue(edit.text.contains("matches 2 times"), edit.text)
+
+        // When only the first of two overlapping occurrences is a real
+        // non-overlapping match, replace is deterministic and the edit must
+        // succeed.
+        val unique = path + "2"
+        WriteFileTool().execute(buildJsonObject { put("path", unique); put("content", "aaa") }, context(dir))
+        val single = EditFileTool().execute(
+            buildJsonObject { put("path", unique); put("old_string", "aa"); put("new_string", "b") },
+            context(dir),
+        )
+        assertFalse(single.isError, single.text)
+        val content = SystemFileSystem.source(Path(unique)).buffered().use { it.readString() }
+        assertEquals("ba", content)
+    }
+
+    @Test
     fun `edit ambiguous old_string errors`() = runBlocking {
         val dir = tmpDir()
         val path = "$dir/e.txt"

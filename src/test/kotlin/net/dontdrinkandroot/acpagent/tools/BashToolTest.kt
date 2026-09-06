@@ -70,6 +70,31 @@ class BashToolTest {
     }
 
     @Test
+    fun `backgrounded child holding the pipe does not hang the tool`() = runBlocking {
+        val ctx = ToolContext(
+            cwd = "/tmp",
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            bashTimeoutSeconds = 2,
+        )
+        // The shell exits immediately but the backgrounded child keeps the
+        // stdout/stderr pipes open forever; before the fix the drain awaited
+        // the pipes and the tool hung indefinitely.
+        val start = System.currentTimeMillis()
+        val result = BashTool().execute(
+            buildJsonObject { put("command", "(sleep 30) & echo started") },
+            ctx,
+        )
+        val elapsed = System.currentTimeMillis() - start
+        assertFalse(result.isError, result.text)
+        assertTrue(
+            elapsed < 15000,
+            "drain must not hang on a child keeping the pipe open, took ${elapsed}ms",
+        )
+    }
+
+    @Test
     fun `cancelling a running command terminates it promptly`() = runBlocking {
         val dir = Files.createTempDirectory("acp-bash-cancel").toString()
         val pidFile = "$dir/pid"

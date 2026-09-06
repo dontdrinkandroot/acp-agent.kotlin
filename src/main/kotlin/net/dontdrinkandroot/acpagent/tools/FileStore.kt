@@ -28,7 +28,12 @@ internal class LocalFileStore : FileStore {
         val file = Path(path)
         if (!fs.exists(file)) throw FileStoreException("file not found: $path")
         val content = fs.source(file).buffered().use { it.readString() }
-        val lines = content.split('\n')
+        if (line == null && limit == null) return content
+        // Split on '\n' and strip the trailing '\r' so CRLF files slice by
+        // visual lines (the IDE's line/limit are 1-based, '\r\n' = one line).
+        val lines = content.split('\n').map { lineText ->
+            if (lineText.endsWith("\r")) lineText.dropLast(1) else lineText
+        }
         val from = line?.let { it - 1 } ?: 0
         val to = limit?.let { from + it } ?: lines.size
         return lines.subList(from.coerceIn(0, lines.size), to.coerceIn(0, lines.size)).joinToString("\n")

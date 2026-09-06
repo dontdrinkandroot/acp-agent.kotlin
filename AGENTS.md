@@ -119,9 +119,11 @@ Config comes from environment variables:
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class via `{args}`), `install_dist`
   (relink the e2e launcher), `dependency_updates` (stable-only), `lint_scripts`
-  (`bash -n` + `shellcheck` on the launchers/build script) and `test_fsproxy`
-  (runs the fs-proxy e2e with `FS_PROXY_ENABLED` unset, so a leaked `=0` in the
-  environment cannot force the local store and break the scenario).
+  (`bash -n` + `shellcheck` on the launchers/build script). A `test_fsproxy`
+  run config was removed because it is redundant: the e2e harness itself strips a
+  leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
+  scenario explicitly sets it), so the full `test` suite already covers the
+  fs-proxy scenarios regardless of the host environment (`E2eAgentTest`).
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
   `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
   `GIT_SHA` build-arg (no `.git` in the build context).

@@ -39,6 +39,8 @@ public class ReadFileTool : AgentTool {
         val path = absoluteToolPath(context.cwd, rawPath)
         val line = arguments["line"]?.jsonPrimitive?.longOrNull
         val limit = arguments["limit"]?.jsonPrimitive?.longOrNull
+        if (line != null && line < 1) return ToolResult("'line' must be a positive integer (1-based)", true)
+        if (limit != null && limit < 1) return ToolResult("'limit' must be a positive integer", true)
         return runCatching {
             ToolResult(context.fileStore.readFile(path, line?.toInt(), limit?.toInt()))
         }.getOrElse { ToolResult("Read failed: ${it.message}", true) }

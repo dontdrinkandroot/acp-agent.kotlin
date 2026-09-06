@@ -21,6 +21,15 @@ internal object ProcessRunner {
      */
     private const val KILL_GRACE_MILLIS = 5000L
 
+    /**
+     * Grace period during which the stdout/stderr readers are allowed to drain
+     * after the process has ended (or been killed). A backgrounded child that
+     * inherited the pipe file descriptors can keep them open beyond the shell's
+     * death; the readers are cancelled after this period so the tool cannot
+     * hang on a dead process.
+     */
+    private const val DRAIN_GRACE_MILLIS = 2000L
+
     public suspend fun run(
         command: String,
         cwd: String? = null,
@@ -31,27 +40,49 @@ internal object ProcessRunner {
                 cwd?.let { directory(java.io.File(it)) }
             }
             .start()
-        coroutineScope {
-            // runInterruptible makes the blocking reads and the wait
-            // responsive to coroutine cancellation (session/cancel).
-            val stdout = async { runInterruptible { process.inputStream.readBytes().decodeToString() } }
-            val stderr = async { runInterruptible { process.errorStream.readBytes().decodeToString() } }
-            val finished = try {
-                runInterruptible { process.waitFor(timeoutSeconds, TimeUnit.SECONDS) }
-            } catch (e: CancellationException) {
-                killProcessTree(process)
-                throw e
-            }
-            if (!finished) {
-                killProcessTree(process)
-            }
-            ProcessResult(
-                exitCode = if (finished) process.exitValue() else -1,
-                stdout = stdout.await(),
-                stderr = stderr.await(),
-                timedOut = !finished,
-            )
+        // The reader coroutines live in their own scope so a stuck read cannot
+        // hold up the enclosing withContext: runInterruptible makes the
+        // blocking reads responsive to cancellation, but a read blocked on a
+        // pipe whose far end is held open by a surviving child cannot be
+        // unblocked portably via Thread.interrupt — see the bounded drain.
+
+        val readerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val stdout = readerScope.async { runInterruptible { process.inputStream.readBytes().decodeToString() } }
+        val stderr = readerScope.async { runInterruptible { process.errorStream.readBytes().decodeToString() } }
+        val finished = try {
+            runInterruptible { process.waitFor(timeoutSeconds, TimeUnit.SECONDS) }
+        } catch (e: CancellationException) {
+            killProcessTree(process)
+            readerScope.cancel()
+            throw e
         }
+        if (!finished) {
+            killProcessTree(process)
+        }
+
+        // Bounded drain: normally the readers finish as soon as the process
+        // (and its subtree) exited and the OS closed the pipes. When a child
+        // inherited the pipe descriptors and outlived its parent (e.g. a
+        // backgrounded `(sleep 100) &`), the pipes stay open and the reads
+        // block forever; after the grace period we detach the readers rather
+        // than hang the tool, relying on the best-effort force-kill to close
+        // the surviving child's pipe ends eventually.
+
+        val drained = withTimeoutOrNull(DRAIN_GRACE_MILLIS) {
+            stdout.await() to stderr.await()
+        }
+        if (drained == null) {
+            runCatching { process.descendants().forEach { it.destroyForcibly() } }
+            runCatching { process.destroyForcibly() }
+            readerScope.cancel()
+        }
+        val (stdoutText, stderrText) = drained ?: ("" to "")
+        ProcessResult(
+            exitCode = if (finished) process.exitValue() else -1,
+            stdout = stdoutText,
+            stderr = stderrText,
+            timedOut = !finished,
+        )
     }
 
     /**

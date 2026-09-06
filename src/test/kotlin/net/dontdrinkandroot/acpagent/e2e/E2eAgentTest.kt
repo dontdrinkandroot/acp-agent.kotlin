@@ -14,21 +14,15 @@ import com.agentclientprotocol.model.Implementation
 import com.agentclientprotocol.model.StopReason
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.Collections
+import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 
@@ -116,6 +110,10 @@ abstract class E2eAgentTest {
                 environment()["OPENROUTER_BASE_URL"] = "http://127.0.0.1:$llmPort"
                 environment()["OPENROUTER_MODEL"] = "test-model"
                 if (xdgStateHome != null) environment()["XDG_STATE_HOME"] = xdgStateHome.absolutePath
+                // A leaked FS_PROXY_ENABLED=0 in the host environment must not silently force the
+                // local store in scenarios that expect the proxy; scenarios opting out pass it via
+                // extraEnv, which wins below.
+                environment().remove("FS_PROXY_ENABLED")
                 extraEnv.forEach { (key, value) -> environment()[key] = value }
             }
             .start()
