@@ -70,6 +70,9 @@ Config comes from environment variables:
   client advertises fs capabilities, see Features)
 - `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
   after this many seconds, killing the whole process tree, see Features)
+- `ACP_MAX_TURN_REQUESTS` (default 40, clamped to >= 1; the per-prompt tool iteration
+  budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
+  before the turn ends with `MAX_TURN_REQUESTS`)
 
 ## Features
 
@@ -90,9 +93,12 @@ Config comes from environment variables:
   response (SDK hook limitation); `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
-- **Agent loop**: up to 20 LLM iterations per prompt; text streamed as `AgentMessageChunk`,
-  tool-call deltas merged, results appended to history; stops on `END_TURN` (no tool call) or
-  `MAX_TURN_REQUESTS`. Tool calls run sequentially.
+- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 40,
+  `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
+  tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
+  when the iteration budget is exhausted while the model kept calling tools, streams one final
+  text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
+  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially.
 - **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
   the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
   and produce the "disabled in current mode" error. The mode-aware system prompt is rebuilt per
@@ -217,7 +223,8 @@ Config comes from environment variables:
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
   home (`ACP_DOCKER_HOME_VOLUME` -> named volume), non-root user matching host UID/GID,
   host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables), host session state
-  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_BASH_TIMEOUT_SECONDS` forwarded,
+  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_BASH_TIMEOUT_SECONDS`/
+  `ACP_MAX_TURN_REQUESTS` forwarded,
   host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
   `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
   `./build-docker`. Launcher output is stderr-only - ACP travels over the container

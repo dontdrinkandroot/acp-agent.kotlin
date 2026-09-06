@@ -491,7 +491,7 @@ internal class AgentSessionImpl(
 
         var iterations = 0
         var usage: OpenAIUsage? = null
-        while (iterations < 20) {
+        while (iterations < config.maxTurnRequests) {
             iterations++
             val iterationMessageId = newMessageId()
             val messages = listOf(OpenAIMessage.System(Content.Text(systemPrompt(mode, instructions)))) + history
@@ -643,6 +643,51 @@ internal class AgentSessionImpl(
                 appendToHistory(OpenAIMessage.Tool(Content.Text(result.text), toolCallId = call.id))
             }
         }
+
+        // The turn has consumed the whole tool-iteration budget while the model kept
+        // requesting tool calls. Run one final text-only synthesis pass (tools omitted, so
+        // no tool call is possible) so the user gets a summary of what was done and what
+        // remains instead of an abrupt stop.
+        val windDownMessageId = newMessageId()
+        val windDownText = StringBuilder()
+        val windDownMessages = buildList {
+            add(OpenAIMessage.System(Content.Text(systemPrompt(mode, instructions))))
+            addAll(history)
+            add(OpenAIMessage.User(Content.Text(WIND_DOWN_PROMPT)))
+        }
+        llm.chatCompletion(
+            messages = windDownMessages,
+            tools = emptyList(),
+            reasoning = effectiveReasoning(),
+            model = currentModel,
+            provider = providerRouting?.providerFor(currentModel),
+        ).collect { chunk ->
+            chunk.usage?.let { usage = it }
+            chunk.choices.firstOrNull()?.let { choice ->
+                choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
+                    emit(
+                        Event.SessionUpdateEvent(
+                            SessionUpdate.AgentThoughtChunk(
+                                ContentBlock.Text(reasoning),
+                                windDownMessageId
+                            )
+                        )
+                    )
+                }
+                choice.delta.content?.takeIf { it.isNotEmpty() }?.let { text ->
+                    windDownText.append(text)
+                    emit(
+                        Event.SessionUpdateEvent(
+                            SessionUpdate.AgentMessageChunk(
+                                ContentBlock.Text(text),
+                                windDownMessageId
+                            )
+                        )
+                    )
+                }
+            }
+        }
+        appendToHistory(OpenAIMessage.Assistant(Content.Text(windDownText.toString())))
 
         persistSession()
         emitUsageUpdate(usage)
@@ -870,6 +915,9 @@ private val MODE_PLAN = SessionModeId("plan")
 private val MODE_BASH = SessionModeId("bash")
 private val DEFAULT_MODE = MODE_PLAN
 private const val MAX_TITLE_LENGTH = 72
+private const val WIND_DOWN_PROMPT =
+    "The per-prompt tool iteration limit has been reached. Summarize what has been accomplished " +
+            "so far and what remains to be done; do not call any tools."
 
 private const val REASONING_OFF = "none"
 private val DEFAULT_REASONING_LEVELS = listOf("max", "xhigh", "high", "medium", "low", "minimal")

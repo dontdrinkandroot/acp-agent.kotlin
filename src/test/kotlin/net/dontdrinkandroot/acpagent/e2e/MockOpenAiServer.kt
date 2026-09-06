@@ -1,12 +1,7 @@
 package net.dontdrinkandroot.acpagent.e2e
 
 import com.sun.net.httpserver.HttpServer
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -22,6 +17,8 @@ internal fun pathArgs(path: String): JsonObject = buildJsonObject { put("path", 
  *  - 1st completion request  -> a tool_call for `write_file` (writes 'phase4' to the target path)
  *  - subsequent completions  -> plain text chunks "phase4 done"
  * With [textOnly] every request is answered with plain text instead.
+ * With [alwaysToolCall] every request carrying a tools field is answered with a `write_file`
+ * tool call, while requests without tools (the wind-down pass) get plain text.
  */
 internal class MockOpenAiServer(
     private val targetPath: String,
@@ -31,6 +28,7 @@ internal class MockOpenAiServer(
     private val failEndpoints: Boolean = false,
     private val toolCall: MockToolCall? = null,
     private val firstTurnStreamDeltas: Boolean = false,
+    private val alwaysToolCall: Boolean = false,
 ) {
     val requestCount = AtomicInteger(0)
     var lastRequestBody: String? = null
@@ -55,6 +53,12 @@ internal class MockOpenAiServer(
             requestBodies += lastRequestBody!!
             val n = requestCount.incrementAndGet()
             val body = when {
+                // Always-tool-call mode: requests that carry tools get a tool call, a request
+                // without the tools field (the wind-down pass) gets plain text.
+                alwaysToolCall && lastRequestBody!!.contains("\"tools\"") ->
+                    toolCallSse("write_file", writeFileArguments())
+
+                alwaysToolCall -> textSse()
                 planMode && n == 1 -> planSse()
                 toolCall != null && n == 1 -> toolCallSse(toolCall.name, toolCall.arguments)
                 textOnly || n > 1 -> textSse()
