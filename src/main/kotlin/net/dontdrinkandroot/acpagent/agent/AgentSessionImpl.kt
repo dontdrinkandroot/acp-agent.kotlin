@@ -142,7 +142,7 @@ internal class AgentSessionImpl(
     }
 
     override val availableModes: List<SessionMode> = listOf(
-        SessionMode(MODE_BUILD, "Build", "Read and modify files to implement the task"),
+        SessionMode(MODE_BUILD, "Build", "Read, write, move and delete files to implement the task"),
         SessionMode(MODE_PLAN, "Plan", "Read-only: research the code and present an implementation plan"),
         SessionMode(MODE_BASH, "Bash", "Build plus a bash tool; every command asks the user for permission"),
     )
@@ -453,7 +453,7 @@ internal class AgentSessionImpl(
     }
 
     private fun modeDescription(mode: SessionModeId): String = when (mode.value) {
-        "build" -> "You may read and modify files to implement the user's task."
+        "build" -> "You may read, write, move and delete files to implement the user's task."
         "bash" ->
             "You may read, modify files, and run shell commands via the 'bash' tool. " +
                     "Every command is confirmed by the user first; do not retry a rejected command. " +
@@ -786,7 +786,7 @@ internal class AgentSessionImpl(
      * load replay all carry them).
      */
     private fun toolLocations(tool: AgentTool, arguments: JsonObject): List<ToolCallLocation> =
-        tool.targetPath(arguments)?.let { listOf(ToolCallLocation(it)) } ?: emptyList()
+        tool.targetPaths(arguments).map { ToolCallLocation(it) }
 
     /**
      * Renderable tool-call content: the result text always, plus the optional
@@ -827,14 +827,14 @@ internal data class StreamToolCall(
 
 /**
  * Decides whether a tool call needs a user permission prompt. Path-scoped
- * calls whose target lies inside the session working directory are allowed
+ * calls whose targets all lie inside the session working directory are allowed
  * outright; anything else that is mutating (bash) or reaches outside the
- * project (path-scoped reads, writes, searches) requires permission.
+ * project (path-scoped reads, writes, searches, moves) requires permission.
  */
 internal fun permissionNeeded(cwd: String, tool: AgentTool, arguments: JsonObject): Boolean {
-    val target = tool.targetPath(arguments)
-    if (target != null && isWithin(cwd, target)) return false
-    return tool.mutating || target != null
+    val targets = tool.targetPaths(arguments)
+    if (targets.isNotEmpty() && targets.all { isWithin(cwd, it) }) return false
+    return tool.mutating || targets.isNotEmpty()
 }
 
 /**

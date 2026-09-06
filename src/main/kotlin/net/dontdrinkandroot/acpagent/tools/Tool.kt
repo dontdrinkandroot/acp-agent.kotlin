@@ -61,6 +61,21 @@ public data class ToolResultDiff(
     val oldText: String? = null,
 )
 
+/**
+ * Upper bound for old-content payloads carried by [ToolResultDiff] so a
+ * write/delete of an oversized file cannot blow up the wire payload.
+ */
+internal const val MAX_DIFF_CONTENT_LENGTH = 100_000
+
+/**
+ * Modes that may mutate the filesystem: write/edit/move/delete tools are
+ * filtered to these by [ToolRegistry] and withheld in plan mode.
+ */
+internal val BUILD_AND_BASH_MODES = listOf(
+    SessionModeId("build"),
+    SessionModeId("bash"),
+)
+
 public class ToolContext internal constructor(
     val cwd: String,
     val client: ClientSessionOperations?,
@@ -89,6 +104,16 @@ public interface AgentTool {
      * permission decision.
      */
     public fun targetPath(arguments: JsonObject): String? = null
+
+    /**
+     * All filesystem targets of the tool, derived from its arguments, or empty
+     * when the tool is not path-scoped. Drives the in-project / out-of-project
+     * permission decision (every target must lie inside the session cwd) and
+     * the client's follow-along locations. Defaults to [targetPath] when
+     * present; tools touching several paths (e.g. move) override this.
+     */
+    public fun targetPaths(arguments: JsonObject): List<String> =
+        targetPath(arguments)?.let { listOf(it) } ?: emptyList()
 
     /**
      * A human-readable title for a tool call, defaulting to the tool name.

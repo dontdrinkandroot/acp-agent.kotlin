@@ -60,5 +60,3 @@ private suspend fun writeResultDiff(path: String, newText: String, context: Tool
     if (oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
     return ToolResultDiff(path, newText, oldText)
 }
-
-private const val MAX_DIFF_CONTENT_LENGTH = 100_000

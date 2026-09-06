@@ -74,6 +74,70 @@ class PermissionAndFileStoreTest {
         )
     }
 
+    private fun moveArgs(source: String, destination: String): JsonObject = buildJsonObject {
+        put("source", source)
+        put("destination", destination)
+    }
+
+    @Test
+    fun `move within the project needs no permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val source = dir.resolve("a.txt")
+        Files.writeString(source, "x")
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                MoveFileTool(),
+                moveArgs(source.toString(), dir.resolve("b.txt").toString())
+            )
+        )
+    }
+
+    @Test
+    fun `move with an out of project destination needs permission even when the source is inside`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        val source = dir.resolve("a.txt")
+        Files.writeString(source, "x")
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                MoveFileTool(),
+                moveArgs(source.toString(), outside.resolve("b.txt").toString())
+            )
+        )
+    }
+
+    @Test
+    fun `move with an out of project source needs permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                MoveFileTool(),
+                moveArgs(outside.resolve("a.txt").toString(), dir.resolve("b.txt").toString())
+            )
+        )
+    }
+
+    @Test
+    fun `delete within the project needs no permission and outside needs permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        assertEquals(
+            false,
+            permissionNeeded(dir.toString(), DeleteFileTool(), pathArgs(dir.resolve("a.txt").toString()))
+        )
+        assertEquals(
+            true,
+            permissionNeeded(dir.toString(), DeleteFileTool(), pathArgs(outside.resolve("a.txt").toString()))
+        )
+    }
+
     @Test
     fun `selectFileStore uses the client proxy only when enabled and both caps are present`() {
         val sessionId = SessionId("sess_0000000000000001")

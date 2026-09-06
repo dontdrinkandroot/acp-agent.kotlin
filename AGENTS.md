@@ -146,7 +146,8 @@ Config comes from environment variables:
 - **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
   `size` = model `context_length`); skipped when either is missing. During an active prompt the
   SDK routes session updates into the prompt event flow, not the `notify` callback.
-- **Tools**: `read/write/edit/list/glob/grep` (kotlinx-io) + `bash` (killed after
+- **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
+  (kotlinx-io) + `bash` (killed after
   `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `update_plan`, registered in `Main.kt`,
   copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
   collision with a local tool is ignored with a warning - locals can never be shadowed. All
@@ -155,7 +156,15 @@ Config comes from environment variables:
   follows them by default, which could smuggle reads outside the project). `read/write/edit`
   use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
   the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
-  local store; listing/search always use the local disk (ACP has no client-side search).
+  local store; listing/search always use the local disk (ACP has no client-side search), and so
+  do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
+  `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
+  `move_directory` rename (java.nio `Files.move`, no overwrite - an existing destination is
+  refused - missing destination parents are created; kotlinx-io's `atomicMove` is a JVM stub,
+  so java.nio is used like the run-config writes), `delete_file` deletes single files (refuses
+  directories and symlinks; carries the removed content as a `Diff`), `delete_directory`
+  deletes recursively but is refused when the tree contains any symlink (kotlinx-io follows
+  links, so a link could smuggle the recursive delete outside the approved project).
 - **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
   explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
   prepending `...(truncated: N chars omitted from the beginning)...` (bounded memory while
@@ -166,6 +175,10 @@ Config comes from environment variables:
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
   `session/request_permission` (all MCP tools are treated as mutating, so they always prompt).
+  A tool's targets come from `AgentTool.targetPaths(arguments)` (`tools/Tool.kt`, defaults to
+  the single `targetPath`; `move_file`/`move_directory` override it with source + destination)
+  and every target must lie inside the cwd for a prompt-free call - a move with an
+  out-of-project destination asks even when the source is inside.
   In-project writes are further gated by mode (plan is read-only). The containment check
   (`tools/Containment.kt`) is symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
@@ -176,15 +189,18 @@ Config comes from environment variables:
   `tools/Tool.kt`, default `null` = bare tool name) returning `formatToolTitle(name, args)`
   - a `name(key: value, ...)` summary, gemini-cli style, arg part trimmed at 50 chars;
     `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
-    implemented for `bash`, `run` and the run-config write tools; path tools only prompt for
-    out-of-project access and are untouched. **Tool-call results**: completed/failed
+    implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
+    safety-critical: a bare title would leave the user confirming a
+    deletion blind); the remaining path tools only prompt for out-of-project access and are
+    untouched. **Tool-call results**: completed/failed
     `tool_call_update`s carry the result text as `content` blocks (and the error text on
     permission denial), so clients that ignore `rawOutput` still render the outcome;
     edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
     file changes are visible without the client fs proxy - `edit_file` derives the diff
     from its args (`old_string`/`new_string`), `write_file` best-effort pre-reads the old
     content (`oldText = null` for new files; skipped on read failure or when the old
-    content exceeds 100k chars). Path-scoped tool calls carry `locations`
+    content exceeds 100k chars), `delete_file` carries the removed content as
+    `newText = ""`. Path-scoped tool calls carry `locations`
     (`tool_call`, `request_permission` and load replay) for the client's follow-along
     surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
     `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
@@ -285,6 +301,11 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/ListDirTool.kt             # list_dir tool (local disk)
     tools/GlobTool.kt                # glob tool + internal walk/globToRegex helpers (local disk)
     tools/GrepTool.kt                # grep tool (local disk)
+    tools/MoveFileTool.kt            # move_file tool + shared movePath helper (local disk)
+    tools/MoveDirectoryTool.kt       # move_directory tool (local disk)
+    tools/DeleteFileTool.kt          # delete_file tool + removed-content diff (local disk)
+    tools/DeleteDirectoryTool.kt     # delete_directory tool; symlink-safe recursive delete
+                                     # (containsSymlink/deleteRecursively helpers)
 src/test/kotlin/                              # unit tests + black-box e2e harness
     net/dontdrinkandroot/acpagent/e2e/
         E2eAgentTest.kt              # abstract base: process/stdio transport harness, temp-dir
@@ -301,6 +322,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
+                                     # + move/delete tools (in-project without prompt, out-of-project
+                                     # move destination prompts)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
@@ -337,14 +360,20 @@ classpath `git.properties`, and path-aware permissions + the client fs proxy (in
 read/write without a prompt, out-of-project read prompts, proxy disabled via
 `FS_PROXY_ENABLED=0` falls back to the local store), the `run` tool
 (mutating permission prompt in plan mode, side effect verified on disk, unknown
-config fails loudly), and the run-config management tools (`create_run_config`
+config fails loudly), the run-config management tools (`create_run_config`
 persists `.ai/run.json` after a build-mode permission prompt; in plan mode the
-write tools are absent while `list_run_configs` runs without a prompt). Plus a
+write tools are absent while `list_run_configs` runs without a prompt), and the
+move/delete tools (in-project `move_file`/`delete_file` without a prompt with the
+side effect verified on disk; an out-of-project move destination routed through
+`session/request_permission`). Plus a
 **persistence scenario
 across three agent restarts** (`session/list` ->
 `session/load` with replay -> `session/resume` -> delete).
 The output caps (bash/run tail truncation, `read_file` limit requirement and bounds,
-listing caps, grep line truncation) are unit-tested in `BashToolTest`/`ToolsTest`.
+listing caps, grep line truncation) are unit-tested in `BashToolTest`/`ToolsTest`;
+move/delete semantics (destination-exists refusal, symlink refusal, dir/file type
+mismatches, diff payloads, local-disk-only) and the multi-target permission
+decision are unit-tested in `ToolsTest`/`PermissionAndFileStoreTest`.
 All existing scenarios must pass **unchanged**.
 Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
 build the image with `./build-docker` and smoke-test by piping an `initialize` request into

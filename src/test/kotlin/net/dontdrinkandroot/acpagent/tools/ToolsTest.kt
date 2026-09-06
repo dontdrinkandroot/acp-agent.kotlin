@@ -429,6 +429,234 @@ class GlobRegexTest {
     }
 }
 
+class MoveDeleteToolsTest {
+
+    @Test
+    fun `move_file moves content and creates destination parents`() = runBlocking {
+        val dir = tmpDir()
+        val source = "$dir/a.txt"
+        val destination = "$dir/sub/b.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", source); put("content", "hello") }, context(dir))
+        val result = MoveFileTool().execute(
+            buildJsonObject { put("source", source); put("destination", destination) },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertTrue(result.text.contains("Moved"), result.text)
+        assertFalse(SystemFileSystem.exists(Path(source)), "the source must be moved away")
+        val content = SystemFileSystem.source(Path(destination)).buffered().use { it.readString() }
+        assertEquals("hello", content)
+    }
+
+    @Test
+    fun `move_file refuses an existing destination and keeps the source`() = runBlocking {
+        val dir = tmpDir()
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "a") }, context(dir))
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/b.txt"); put("content", "b") }, context(dir))
+        val result = MoveFileTool().execute(
+            buildJsonObject { put("source", "$dir/a.txt"); put("destination", "$dir/b.txt") },
+            context(dir),
+        )
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("Destination exists"), result.text)
+        assertTrue(SystemFileSystem.exists(Path("$dir/a.txt")), "the source must survive a refused move")
+    }
+
+    @Test
+    fun `move_file refuses directories`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/sub"))
+        val result = MoveFileTool().execute(
+            buildJsonObject { put("source", "$dir/sub"); put("destination", "$dir/other") },
+            context(dir),
+        )
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("move_directory"), result.text)
+    }
+
+    @Test
+    fun `move_file missing source errors`() = runBlocking {
+        val dir = tmpDir()
+        val result = MoveFileTool().execute(
+            buildJsonObject { put("source", "$dir/nope.txt"); put("destination", "$dir/x.txt") },
+            context(dir),
+        )
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("Source not found"), result.text)
+    }
+
+    @Test
+    fun `move_directory moves the whole tree`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/src/nested"))
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/src/a.txt"); put("content", "a") }, context(dir))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/src/nested/b.txt"); put("content", "b") },
+            context(dir),
+        )
+        val result = MoveDirectoryTool().execute(
+            buildJsonObject { put("source", "$dir/src"); put("destination", "$dir/dst") },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertFalse(SystemFileSystem.exists(Path("$dir/src")))
+        assertTrue(SystemFileSystem.exists(Path("$dir/dst/nested/b.txt")))
+    }
+
+    @Test
+    fun `move_directory refuses a file source`() = runBlocking {
+        val dir = tmpDir()
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "a") }, context(dir))
+        val result = MoveDirectoryTool().execute(
+            buildJsonObject { put("source", "$dir/a.txt"); put("destination", "$dir/dst") },
+            context(dir),
+        )
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("move_file"), result.text)
+    }
+
+    @Test
+    fun `delete_file deletes and carries the removed content as a diff`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/gone.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "bye") }, context(dir))
+        val result = DeleteFileTool().execute(buildJsonObject { put("path", path) }, context(dir))
+        assertFalse(result.isError, result.text)
+        assertFalse(SystemFileSystem.exists(Path(path)))
+        assertEquals(ToolResultDiff(path, "", "bye"), result.diff)
+    }
+
+    @Test
+    fun `delete_file refuses directories and skips oversized diffs`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/sub"))
+        val dirResult = DeleteFileTool().execute(buildJsonObject { put("path", "$dir/sub") }, context(dir))
+        assertTrue(dirResult.isError)
+        assertTrue(dirResult.text.contains("delete_directory"), dirResult.text)
+
+        val big = "x".repeat(100_001)
+        val bigPath = "$dir/big.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", bigPath); put("content", big) }, context(dir))
+        val bigResult = DeleteFileTool().execute(buildJsonObject { put("path", bigPath) }, context(dir))
+        assertFalse(bigResult.isError, bigResult.text)
+        assertNull(bigResult.diff, "oversized content must not be pushed onto the wire")
+    }
+
+    @Test
+    fun `delete_file refuses symlinks`() = runBlocking {
+        val base = tmpDir()
+        val project = "$base/project"
+        val outside = "$base/outside"
+        SystemFileSystem.createDirectories(Path(project))
+        SystemFileSystem.createDirectories(Path(outside))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$outside/secret.txt"); put("content", "secret") },
+            context(project),
+        )
+        java.nio.file.Files.createSymbolicLink(
+            java.nio.file.Path.of("$project/link.txt"),
+            java.nio.file.Path.of("$outside/secret.txt"),
+        )
+        val result = DeleteFileTool().execute(buildJsonObject { put("path", "$project/link.txt") }, context(project))
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("symlink"), result.text)
+        assertTrue(SystemFileSystem.exists(Path("$project/link.txt")), "the link must survive the refusal")
+        assertTrue(SystemFileSystem.exists(Path("$outside/secret.txt")), "the target must survive")
+    }
+
+    @Test
+    fun `delete_directory deletes recursively`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/tree/deep"))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/tree/deep/f.txt"); put("content", "x") },
+            context(dir),
+        )
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", "$dir/tree") }, context(dir))
+        assertFalse(result.isError, result.text)
+        assertFalse(SystemFileSystem.exists(Path("$dir/tree")))
+    }
+
+    @Test
+    fun `delete_directory refuses symlinks inside the tree`() = runBlocking {
+        val base = tmpDir()
+        val project = "$base/project"
+        val outside = "$base/outside"
+        SystemFileSystem.createDirectories(Path("$project/sub"))
+        SystemFileSystem.createDirectories(Path(outside))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$outside/secret.txt"); put("content", "secret") },
+            context(project),
+        )
+        java.nio.file.Files.createSymbolicLink(
+            java.nio.file.Path.of("$project/sub/link.txt"),
+            java.nio.file.Path.of("$outside/secret.txt"),
+        )
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", "$project/sub") }, context(project))
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("symlink"), result.text)
+        assertTrue(SystemFileSystem.exists(Path("$project/sub")), "nothing must be deleted on refusal")
+        assertTrue(SystemFileSystem.exists(Path("$outside/secret.txt")), "the symlink target must survive")
+    }
+
+    @Test
+    fun `delete_directory refuses a symlink root`() = runBlocking {
+        val base = tmpDir()
+        val project = "$base/project"
+        val outside = "$base/outside"
+        SystemFileSystem.createDirectories(Path(project))
+        SystemFileSystem.createDirectories(Path(outside))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$outside/secret.txt"); put("content", "secret") },
+            context(project),
+        )
+        java.nio.file.Files.createSymbolicLink(
+            java.nio.file.Path.of("$project/linkdir"),
+            java.nio.file.Path.of(outside),
+        )
+        val result =
+            DeleteDirectoryTool().execute(buildJsonObject { put("path", "$project/linkdir") }, context(project))
+        assertTrue(result.isError)
+        assertTrue(result.text.contains("symlink"), result.text)
+        assertTrue(SystemFileSystem.exists(Path("$outside/secret.txt")), "the symlink target must survive")
+    }
+
+    @Test
+    fun `move_delete tools are local disk only and never touch the file store`() = runBlocking {
+        val dir = tmpDir()
+        val recordingStore = object : FileStore {
+            val reads = mutableListOf<String>()
+            val writes = mutableListOf<String>()
+            override suspend fun readFile(path: String, line: Int?, limit: Int?): String {
+                reads += path
+                throw RuntimeException("must not be used")
+            }
+
+            override suspend fun writeFile(path: String, content: String) {
+                writes += path
+                throw RuntimeException("must not be used")
+            }
+        }
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileStore = recordingStore,
+        )
+        val source = "$dir/a.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", source); put("content", "x") }, context(dir))
+        val move = MoveFileTool().execute(
+            buildJsonObject { put("source", source); put("destination", "$dir/b.txt") },
+            ctx,
+        )
+        assertFalse(move.isError, move.text)
+        val delete = DeleteFileTool().execute(buildJsonObject { put("path", "$dir/b.txt") }, ctx)
+        assertFalse(delete.isError, delete.text)
+        assertTrue(recordingStore.writes.isEmpty(), "move/delete must operate on the local disk")
+    }
+}
+
 class ToolSchemaTest {
 
     @Test
@@ -437,6 +665,10 @@ class ToolSchemaTest {
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
+            MoveFileTool(),
+            MoveDirectoryTool(),
+            DeleteFileTool(),
+            DeleteDirectoryTool(),
             ListDirTool(),
             GlobTool(),
             GrepTool(),
@@ -482,6 +714,10 @@ class ToolRegistryTest {
                 ReadFileTool(),
                 WriteFileTool(),
                 EditFileTool(),
+                MoveFileTool(),
+                MoveDirectoryTool(),
+                DeleteFileTool(),
+                DeleteDirectoryTool(),
                 ListDirTool(),
                 GlobTool(),
                 GrepTool(),
@@ -495,18 +731,25 @@ class ToolRegistryTest {
         )
         assertTrue(registry.disabledInMode("write_file", SessionModeId("plan")) != null)
         assertTrue(registry.disabledInMode("edit_file", SessionModeId("plan")) != null)
+        assertTrue(registry.disabledInMode("move_file", SessionModeId("plan")) != null)
+        assertTrue(registry.disabledInMode("delete_file", SessionModeId("plan")) != null)
         assertTrue(registry.disabledInMode("bash", SessionModeId("plan")) != null)
         assertTrue(registry.disabledInMode("read_file", SessionModeId("plan")) == null)
 
         val build = registry.availableForMode(SessionModeId("build"))
         assertTrue(build.any { it.name == "write_file" })
         assertTrue(build.any { it.name == "edit_file" })
+        assertTrue(build.any { it.name == "move_file" })
+        assertTrue(build.any { it.name == "move_directory" })
+        assertTrue(build.any { it.name == "delete_file" })
+        assertTrue(build.any { it.name == "delete_directory" })
         assertTrue(build.none { it.name == "bash" })
         assertTrue(registry.disabledInMode("bash", SessionModeId("build")) != null)
 
         val bash = registry.availableForMode(SessionModeId("bash"))
         assertTrue(bash.any { it.name == "bash" })
         assertTrue(bash.any { it.name == "write_file" })
+        assertTrue(bash.any { it.name == "delete_directory" })
         assertTrue(registry.disabledInMode("bash", SessionModeId("bash")) == null)
         assertTrue(registry.disabledInMode("unknown_tool", SessionModeId("bash")) == null)
     }
