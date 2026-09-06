@@ -98,7 +98,12 @@ Config comes from environment variables:
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
   when the iteration budget is exhausted while the model kept calling tools, streams one final
   text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
-  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially.
+  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. The session is a thin
+  SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
+  `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
+  (one tool-call lifecycle: mode gate -> permission -> execution -> updates) and `PromptRunner`
+  (the loop + wind-down pass, over the `ChatCompleter` seam so the runner is unit-testable).
+  New session code should extend a component, not the facade.
 - **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
   the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
   and produce the "disabled in current mode" error. Mode enforcement happens in the agent loop *before* permission and
@@ -318,7 +323,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     BuildInfo.kt                     # build commit hash from git.properties (classpath)
     config/Config.kt                 # env config (OPENROUTER_*, FS_PROXY_ENABLED)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
-    llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON)
+    llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
+    llm/ChatCompleter.kt             # chat-completion seam (LlmClient implements it) so the prompt
+                                     # runner is testable with a fake stream
     llm/LlmWire.kt                   # the single shared `llmWireJson` (snake-case etc.) for all
                                      # wire-shaped LLM data (chat traffic + persisted history)
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
@@ -328,8 +335,18 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM)
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt)
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
-    agent/AgentSessionImpl.kt        # the agent loop: system prompt, mode/config, tool calls,
-                                     # permission flow, persist/delete coordination, load replay
+    agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
+                                     # permanent permissions) + record lifecycle (buildRecord/persist/delete)
+    agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
+                                     # AgentSession interface (config options, replay, prompt plumbing)
+    agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
+                                     # build hash, mode description, AGENTS.md instructions)
+    agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning): option listing,
+                                     # validation/assignment, effective reasoning effort
+    agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, permission
+                                     # (path-aware + permanent), execution, updates + history
+    agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
+                                     # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
                                      # sessions, AgentSessionFactory interface, randomSessionId)
@@ -455,6 +472,7 @@ tests incl. the black-box e2e).
 
 * We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
   uses speaking variable and function names.
+* Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
 * _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
 * Secrets come from env vars only (`OPENROUTER_API_KEY`, ...); never commit or print them.

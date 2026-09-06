@@ -1,33 +1,25 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.*
+import ai.koog.prompt.executor.clients.openai.base.models.Content
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIContentPart
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.agent.AgentSession
 import com.agentclientprotocol.agent.client
 import com.agentclientprotocol.agent.clientInfo
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
-import com.agentclientprotocol.protocol.jsonRpcInvalidParams
-import com.agentclientprotocol.rpc.ACPJson
-import com.github.f4b6a3.uuid.UuidCreator
-import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.BuildInfo
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
-import kotlin.concurrent.Volatile
 
 internal class AgentSessionImpl(
     override val sessionId: SessionId,
@@ -37,109 +29,25 @@ internal class AgentSessionImpl(
     private val llm: LlmClient,
     private val providerRouting: ProviderRouting? = null,
     private val todayProvider: () -> String,
-    private val closeResources: suspend () -> Unit = {},
+    closeResources: suspend () -> Unit = {},
     private val sessionStore: SessionStore? = null,
     private val restored: SessionRecord? = null,
     private val replayOnInitialize: Boolean = false,
     private val models: List<OpenRouterModel> = emptyList(),
 ) : AgentSession {
 
-    private val logger = KotlinLogging.logger {}
+    private val state = SessionState(
+        sessionId = sessionId,
+        cwd = cwd,
+        config = config,
+        restored = restored,
+        sessionStore = sessionStore,
+        closeResources = { runBlocking { closeResources() } },
+    )
 
-    private val history = mutableListOf<OpenAIMessage>().apply { restored?.let { addAll(it.history) } }
-    private val historyLock = Any()
-    private var plan: List<PlanEntry> = restored?.plan ?: emptyList()
-    private val permanentPermissions = mutableMapOf<String, Boolean>()
+    private val systemPrompt = SystemPromptBuilder(cwd, todayProvider)
 
-    /**
-     * Serializes the record lifecycle: persist (deleted check through save) and
-     * delete (mark deleted through record removal) share this mutex, so a delete
-     * cannot interleave with an in-flight persist and resurrect the record.
-     */
-    private val persistMutex = Mutex()
-
-    /**
-     * Mints a fresh [`MessageId`] for one LLM iteration: the reasoning deltas and the
-     * assistant text of the same iteration share one id so the client groups them into a
-     * single message, while consecutive iterations get distinct ids. UUIDv7 (time-ordered,
-     * RFC 9562) so ids sort chronologically.
-     */
-    private fun newMessageId(): MessageId = MessageId(UuidCreator.getTimeOrderedEpoch().toString())
-
-    @Volatile
-    private var deleted = false
-
-    private var title: String? = restored?.title?.takeIf { it.isNotEmpty() }
-
-    /**
-     * A restored session starts in its persisted mode, which is also reported
-     * as the default mode of the restored session.
-     */
-    private val initialMode: SessionModeId = restoredModeOrDefault()
-
-    @Volatile
-    private var currentMode: SessionModeId = initialMode
-
-    private fun restoredModeOrDefault(): SessionModeId {
-        val restoredMode = restored?.mode?.let { SessionModeId(it) }
-            ?.takeIf { candidate -> candidate == MODE_BUILD || candidate == MODE_PLAN || candidate == MODE_BASH }
-        return restoredMode ?: DEFAULT_MODE
-    }
-
-    @Volatile
-    private var currentModel: String = restored?.model?.takeIf { it.isNotBlank() } ?: config.openRouterModel
-
-    /**
-     * The selected reasoning effort ("" = not yet chosen; the effective
-     * effort falls back to the model's default, "none" = reasoning off).
-     */
-    private var reasoningSelection: String = restored?.reasoning?.takeIf { it.isNotBlank() } ?: ""
-
-    private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == currentModel }
-
-    private fun reasoningOptionState(): ReasoningSelector? {
-        val capability = modelInfo()?.reasoning ?: return null
-        val options = (capability.supportedEfforts?.takeIf { it.isNotEmpty() } ?: DEFAULT_REASONING_LEVELS)
-            .map { level -> ReasoningOption(level, reasoningEffortName(level)) }
-            .toMutableList()
-        if (!capability.mandatory) {
-            options += ReasoningOption(REASONING_OFF, "Off", "Disable reasoning; falls back to the model default")
-        }
-        var current = reasoningSelection
-        if (options.none { it.value == current }) {
-            current = capability.defaultEffort ?: ""
-            if (options.none { it.value == current }) {
-                current = REASONING_OFF
-                if (options.none { it.value == current }) {
-                    current = options.first().value
-                }
-            }
-        }
-        return ReasoningSelector(options, current)
-    }
-
-    /**
-     * The reasoning effort to send on the next chat request: `null` when
-     * reasoning is off or unsupported (the request field is omitted).
-     */
-    private fun effectiveReasoning(): String? {
-        val selector = reasoningOptionState() ?: return null
-        return selector.current.takeIf { it != REASONING_OFF }
-    }
-
-    /**
-     * Reports the context window usage of the last completed model call. The
-     * update is skipped when the model reports no usage or context length, so
-     * the client keeps its previous indicator.
-     */
-    private suspend fun emitUsageUpdate(usage: OpenAIUsage?) {
-        val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
-        val used = usage?.promptTokens ?: return
-        if (used <= 0) return
-        val size = modelInfo()?.contextLength ?: return
-        if (size <= 0) return
-        client.notify(SessionUpdate.UsageUpdate(used = used.toLong(), size = size.toLong()))
-    }
+    private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
 
     override val availableModes: List<SessionMode> = listOf(
         SessionMode(MODE_BUILD, "Build", "Read, write, move and delete files to implement the task"),
@@ -147,68 +55,27 @@ internal class AgentSessionImpl(
         SessionMode(MODE_BASH, "Bash", "Build plus a bash tool; every command asks the user for permission"),
     )
 
-    override val defaultMode: SessionModeId = initialMode
+    private val sessionConfigOptions = SessionConfigOptions(availableModes, models, state)
+
+    private val toolCallExecutor = ToolCallExecutor(cwd, toolRegistry, state)
+
+    private val promptRunner = PromptRunner(
+        state = state,
+        systemPrompt = systemPrompt,
+        chatCompleter = llm,
+        providerRouting = providerRouting,
+        sessionConfigOptions = sessionConfigOptions,
+        toolRegistry = toolRegistry,
+        toolCallExecutor = toolCallExecutor,
+        maxTurnRequests = config.maxTurnRequests,
+        models = models,
+    )
+
+    override val defaultMode: SessionModeId = state.initialMode
 
     @OptIn(UnstableApi::class)
     override val configOptions: List<SessionConfigOption>
-        get() {
-            val options = mutableListOf<SessionConfigOption>(
-                SessionConfigOption.select(
-                    id = "mode",
-                    name = "Session Mode",
-                    currentValue = currentMode.value,
-                    options = SessionConfigSelectOptions.Flat(
-                        availableModes.map { mode ->
-                            SessionConfigSelectOption(
-                                value = SessionConfigValueId(mode.id.value),
-                                name = mode.name,
-                                description = mode.description,
-                            )
-                        }
-                    ),
-                    description = "Build modifies files; Plan is read-only; Bash is build plus a permission-gated shell",
-                    category = SessionConfigOptionCategory.MODE,
-                )
-            )
-            if (models.isNotEmpty()) {
-                options += SessionConfigOption.select(
-                    id = "model",
-                    name = "Model",
-                    currentValue = currentModel,
-                    options = SessionConfigSelectOptions.Flat(
-                        models.map { model ->
-                            SessionConfigSelectOption(
-                                value = SessionConfigValueId(model.id),
-                                name = model.name ?: model.id,
-                                description = model.description,
-                            )
-                        }
-                    ),
-                    description = "OpenRouter model used for this session",
-                    category = SessionConfigOptionCategory.MODEL,
-                )
-            }
-            val reasoningSelector = reasoningOptionState()
-            if (reasoningSelector != null) {
-                options += SessionConfigOption.select(
-                    id = "reasoning",
-                    name = "Reasoning",
-                    currentValue = reasoningSelector.current,
-                    options = SessionConfigSelectOptions.Flat(
-                        reasoningSelector.options.map { option ->
-                            SessionConfigSelectOption(
-                                value = SessionConfigValueId(option.value),
-                                name = option.name,
-                                description = option.description,
-                            )
-                        }
-                    ),
-                    description = "Reasoning effort applied to the selected model",
-                    category = SessionConfigOptionCategory.THOUGHT_LEVEL,
-                )
-            }
-            return options
-        }
+        get() = sessionConfigOptions.options()
 
     @OptIn(UnstableApi::class)
     override val availableModels: List<ModelInfo>
@@ -222,12 +89,12 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     override val defaultModel: ModelId
-        get() = ModelId(currentModel)
+        get() = ModelId(state.currentModel)
 
     override suspend fun setMode(modeId: SessionModeId, _meta: JsonElement?): SetSessionModeResponse {
-        applyMode(modeId)
+        sessionConfigOptions.apply(SessionConfigId("mode"), SessionConfigOptionValue.of(modeId.value))
         notifyModeState()
-        persistSession()
+        state.persist()
         return SetSessionModeResponse()
     }
 
@@ -237,66 +104,24 @@ internal class AgentSessionImpl(
         value: SessionConfigOptionValue,
         _meta: JsonElement?
     ): SetSessionConfigOptionResponse {
-        when (configId.value) {
-            "mode" -> {
-                val modeValue = value as? SessionConfigOptionValue.StringValue
-                    ?: jsonRpcInvalidParams("config option \"mode\" expects a string value")
-                applyMode(SessionModeId(modeValue.value))
-            }
-
-            "model" -> {
-                val modelValue = value as? SessionConfigOptionValue.StringValue
-                    ?: jsonRpcInvalidParams("config option \"model\" expects a string value")
-                applyModel(modelValue.value)
-            }
-
-            "reasoning" -> {
-                val reasoningValue = value as? SessionConfigOptionValue.StringValue
-                    ?: jsonRpcInvalidParams("config option \"reasoning\" expects a string value")
-                applyReasoning(reasoningValue.value)
-            }
-
-            else -> jsonRpcInvalidParams("unknown config option \"${configId.value}\"")
-        }
+        sessionConfigOptions.apply(configId, value)
         notifyModeState()
-        persistSession()
+        state.persist()
         return SetSessionConfigOptionResponse(configOptions)
     }
 
     @OptIn(UnstableApi::class)
     override suspend fun setModel(modelId: ModelId, _meta: JsonElement?): SetSessionModelResponse {
-        applyModel(modelId.value)
+        sessionConfigOptions.applyModel(modelId.value)
         notifyModeState()
-        persistSession()
+        state.persist()
         return SetSessionModelResponse()
-    }
-
-    private fun applyModel(modelId: String) {
-        if (modelId.isBlank()) jsonRpcInvalidParams("model id must not be empty")
-        currentModel = modelId
-        reasoningSelection = ""
-    }
-
-    private fun applyReasoning(value: String) {
-        val selector = reasoningOptionState()
-            ?: jsonRpcInvalidParams("model \"$currentModel\" does not expose a reasoning option")
-        if (selector.options.none { it.value == value }) {
-            jsonRpcInvalidParams("unknown reasoning value \"$value\"")
-        }
-        reasoningSelection = value
-    }
-
-    private fun applyMode(modeId: SessionModeId) {
-        if (availableModes.none { it.id == modeId }) {
-            jsonRpcInvalidParams("unknown mode \"${modeId.value}\"")
-        }
-        currentMode = modeId
     }
 
     @OptIn(UnstableApi::class)
     private suspend fun notifyModeState() {
         val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
-        client.notify(SessionUpdate.CurrentModeUpdate(currentMode))
+        client.notify(SessionUpdate.CurrentModeUpdate(state.currentMode))
         client.notify(SessionUpdate.ConfigOptionUpdate(configOptions))
     }
 
@@ -313,8 +138,8 @@ internal class AgentSessionImpl(
 
     private fun replayHistory(): List<SessionUpdate> {
         val updates = mutableListOf<SessionUpdate>()
-        synchronized(historyLock) {
-            history.forEach { message ->
+        val (history, plan) = state.replaySnapshot()
+        history.forEach { message ->
                 when (message) {
                     is OpenAIMessage.User ->
                         message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
@@ -352,7 +177,6 @@ internal class AgentSessionImpl(
                 }
             }
             plan.takeIf { it.isNotEmpty() }?.let { updates += SessionUpdate.PlanUpdate(it) }
-        }
         return updates
     }
 
@@ -366,103 +190,8 @@ internal class AgentSessionImpl(
         entries: List<PlanEntry>,
         client: com.agentclientprotocol.common.ClientSessionOperations?
     ) {
-        synchronized(historyLock) { plan = entries }
+        state.setPlan(entries)
         client?.notify(SessionUpdate.PlanUpdate(entries))
-    }
-
-    private fun appendToHistory(message: OpenAIMessage) {
-        synchronized(historyLock) { history.add(message) }
-    }
-
-    private fun historySnapshot(): List<OpenAIMessage> = synchronized(historyLock) { history.toList() }
-
-    /**
-     * Writes the session record to disk. Failures are logged to stderr but
-     * never propagate, so persistence never blocks or fails session work.
-     */
-    private suspend fun persistSession() {
-        val store = sessionStore ?: return
-        persistMutex.withLock {
-            if (deleted) return
-            runCatching { store.save(buildRecord()) }
-                .onFailure { logger.warn(it) { "Failed to persist session ${sessionId.value}" } }
-        }
-    }
-
-    /**
-     * Flags the session as deleted and removes its record under the persist
-     * mutex, so no in-flight persist can write the file back afterwards.
-     */
-    internal suspend fun delete() {
-        persistMutex.withLock {
-            deleted = true
-            val store = sessionStore ?: return@withLock
-            runCatching { store.delete(sessionId.value) }
-                .onFailure { logger.warn(it) { "Failed to delete session record ${sessionId.value}" } }
-        }
-        closeResources()
-    }
-
-    private fun buildRecord(): SessionRecord {
-        val snapshot = historySnapshot()
-        val recordTitle = title
-            ?: deriveTitle(snapshot)?.also { title = it }
-            ?: ""
-        return SessionRecord(
-            sessionId = sessionId.value,
-            cwd = cwd,
-            mode = currentMode.value,
-            title = recordTitle,
-            updatedAt = System.currentTimeMillis(),
-            history = snapshot,
-            model = currentModel,
-            reasoning = reasoningSelection,
-            plan = synchronized(historyLock) { plan },
-        )
-    }
-
-    private fun deriveTitle(history: List<OpenAIMessage>): String? =
-        history.filterIsInstance<OpenAIMessage.User>()
-            .firstOrNull()
-            ?.content
-            ?.textOrNull()
-            ?.trim()
-            ?.let { trimmed -> truncatedTitle(trimmed.ifEmpty { "(empty message)" }) }
-
-    private fun truncatedTitle(title: String): String =
-        if (title.codePointCount(0, title.length) <= MAX_TITLE_LENGTH) title
-        else title.substring(0, title.offsetByCodePoints(0, MAX_TITLE_LENGTH)) + "…"
-
-    private fun systemPrompt(mode: SessionModeId, instructions: AgentsInstructions?): String = buildString {
-        appendLine("You are acp-agent, a fast and compact coding agent embedded in the user's IDE via the Agent Client Protocol.")
-        appendLine("Agent build: ${BuildInfo.commit}")
-        appendLine()
-        appendLine("Session working directory: $cwd")
-        appendLine("Today's date: ${todayProvider()}")
-        appendLine("Current mode: ${mode.value}. ${modeDescription(mode)}")
-        appendLine()
-        appendLine("Operating rules:")
-        appendLine("- Use the provided tools; do not claim to have run tools you have not called.")
-        appendLine("- When several tool calls are independent, request them together in one block.")
-        appendLine("- Create the execution plan with update_plan before starting work and keep its statuses current.")
-        appendLine("- Implement exactly what was asked; do not add features, abstractions, or refactors beyond the task.")
-        appendLine("- Cite code as file_path:line_number where it helps navigation.")
-        appendLine("- Keep responses terse; skip preamble and filler.")
-        appendLine("- After finishing, summarize the result concisely in Markdown.")
-        append(instructionsSection(instructions))
-    }
-
-    private fun modeDescription(mode: SessionModeId): String = when (mode.value) {
-        "build" -> "You may read, write, move and delete files to implement the user's task."
-        "bash" ->
-            "You may read, modify files, and run shell commands via the 'bash' tool. " +
-                    "Every command is confirmed by the user first; do not retry a rejected command. " +
-                    "Commands run in the session working directory."
-
-        else ->
-            "You are in PLAN mode. You must not modify files: research, evaluate, and analyze the " +
-                    "codebase, presenting findings or a concise implementation plan in Markdown as the task demands. " +
-                    "Do not call write tools even if offered."
     }
 
     @OptIn(UnstableApi::class)
@@ -471,14 +200,14 @@ internal class AgentSessionImpl(
         val client = runCatching { context.client }.getOrNull()
         val clientCapabilities = runCatching { context.clientInfo.capabilities }.getOrNull()
             ?: com.agentclientprotocol.model.ClientCapabilities()
-        val mode = currentMode
+        val mode = state.currentMode
         val instructions = loadAgentsInstructions(cwd)
 
         val userContent = contentBlocksToLlmContent(
             blocks = content,
             modelSupportsImage = modelInfo()?.architecture?.inputModalities?.contains("image") == true,
         )
-        appendToHistory(OpenAIMessage.User(userContent))
+        state.appendToHistory(OpenAIMessage.User(userContent))
 
         val toolContext = ToolContext(
             cwd = cwd,
@@ -490,312 +219,7 @@ internal class AgentSessionImpl(
             bashTimeoutSeconds = config.bashTimeoutSeconds,
         )
 
-        var iterations = 0
-        var usage: OpenAIUsage? = null
-        while (iterations < config.maxTurnRequests) {
-            iterations++
-            val iterationMessageId = newMessageId()
-            val messages = listOf(OpenAIMessage.System(Content.Text(systemPrompt(mode, instructions)))) + history
-            val tools = toolRegistry.availableForMode(mode).map { tool ->
-                OpenAITool(
-                    function = OpenAIToolFunction(
-                        name = tool.name,
-                        description = tool.description,
-                        parameters = tool.parameters,
-                    ),
-                )
-            }
-
-            val assistantText = StringBuilder()
-            val toolCallAccum = mutableMapOf<Int, MutableStreamToolCall>()
-
-            llm.chatCompletion(
-                messages = messages,
-                tools = tools,
-                reasoning = effectiveReasoning(),
-                model = currentModel,
-                provider = providerRouting?.providerFor(currentModel),
-            ).collect { chunk ->
-                chunk.usage?.let { usage = it }
-                chunk.choices.firstOrNull()?.let { choice ->
-                    choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentThoughtChunk(ContentBlock.Text(reasoning), iterationMessageId)))
-                    }
-                    choice.delta.content?.takeIf { it.isNotEmpty() }?.let { text ->
-                        assistantText.append(text)
-                        emit(Event.SessionUpdateEvent(SessionUpdate.AgentMessageChunk(ContentBlock.Text(text), iterationMessageId)))
-                    }
-                    choice.delta.toolCalls?.forEach { tc ->
-                        val acc = toolCallAccum.getOrPut(tc.index) { MutableStreamToolCall() }
-                        tc.id?.takeIf { it.isNotBlank() }?.let { acc.id = it }
-                        tc.function?.name?.takeIf { it.isNotBlank() }?.let { acc.name = it }
-                        tc.function?.arguments?.let { acc.arguments += it }
-                    }
-                }
-            }
-
-            if (toolCallAccum.isEmpty()) {
-                appendToHistory(OpenAIMessage.Assistant(content = Content.Text(assistantText.toString())))
-                persistSession()
-                emitUsageUpdate(usage)
-                emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
-                return@flow
-            }
-
-            val calls = toolCallAccum.values.map { it.toToolCall() }
-            appendToHistory(
-                OpenAIMessage.Assistant(
-                    content = Content.Text(assistantText.toString()),
-                    toolCalls = calls.map { tc ->
-                        OpenAIToolCall(tc.id, OpenAIFunction(tc.name, tc.arguments))
-                    },
-                )
-            )
-
-            for (call in calls) {
-                val toolCallId = ToolCallId(call.id)
-                val disabled = toolRegistry.disabledInMode(call.name, mode)
-                if (disabled != null) {
-                    val msg = disabledToolMessage(disabled, mode)
-                    emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.ToolCallUpdate(
-                                toolCallId = toolCallId,
-                                title = "Disabled in current mode",
-                                kind = ToolKind.OTHER,
-                                status = ToolCallStatus.FAILED,
-                                content = listOf(
-                                    ToolCallContent.Content(ContentBlock.Text(msg))
-                                ),
-                            )
-                        )
-                    )
-                    appendToHistory(OpenAIMessage.Tool(Content.Text(msg), toolCallId = call.id))
-                    continue
-                }
-                val tool = toolRegistry.get(call.name)
-                if (tool == null) {
-                    val msg = "Error: unknown tool \"${call.name}\""
-                    emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.ToolCallUpdate(
-                                toolCallId = toolCallId,
-                                title = "Unknown tool",
-                                kind = ToolKind.OTHER,
-                                status = ToolCallStatus.FAILED,
-                                content = listOf(
-                                    ToolCallContent.Content(ContentBlock.Text(msg))
-                                ),
-                            )
-                        )
-                    )
-                    appendToHistory(OpenAIMessage.Tool(Content.Text(msg), toolCallId = call.id))
-                    continue
-                }
-
-                val arguments = parseArguments(call.arguments)
-                emit(
-                    Event.SessionUpdateEvent(
-                        SessionUpdate.ToolCall(
-                            toolCallId = toolCallId,
-                            title = tool.title(arguments) ?: tool.name,
-                            kind = tool.kind,
-                            status = ToolCallStatus.IN_PROGRESS,
-                            locations = toolLocations(tool, arguments),
-                            rawInput = arguments,
-                        )
-                    )
-                )
-
-                val allowed = shouldAllow(tool, client, toolCallId, arguments)
-                if (!allowed) {
-                    val msg = "Permission denied for tool ${tool.name}"
-                    emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.ToolCallUpdate(
-                                toolCallId = toolCallId,
-                                title = tool.title(arguments) ?: tool.name,
-                                status = ToolCallStatus.FAILED,
-                                content = listOf(ToolCallContent.Content(ContentBlock.Text(msg))),
-                                rawOutput = JsonPrimitive(msg)
-                            )
-                        )
-                    )
-                    appendToHistory(OpenAIMessage.Tool(Content.Text(msg), toolCallId = call.id))
-                    continue
-                }
-
-                val result = try {
-                    tool.execute(parseArguments(call.arguments), toolContext)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    ToolResult("Tool ${tool.name} failed: ${e.message}", true)
-                }
-
-                emit(
-                    Event.SessionUpdateEvent(
-                        SessionUpdate.ToolCallUpdate(
-                            toolCallId = toolCallId,
-                            title = tool.title(arguments) ?: tool.name,
-                            status = if (result.isError) ToolCallStatus.FAILED else ToolCallStatus.COMPLETED,
-                            content = toolCallContent(result),
-                            rawOutput = JsonPrimitive(result.text),
-                        )
-                    )
-                )
-                appendToHistory(OpenAIMessage.Tool(Content.Text(result.text), toolCallId = call.id))
-            }
-        }
-
-        // The turn has consumed the whole tool-iteration budget while the model kept
-        // requesting tool calls. Run one final text-only synthesis pass (tools omitted, so
-        // no tool call is possible) so the user gets a summary of what was done and what
-        // remains instead of an abrupt stop.
-        val windDownMessageId = newMessageId()
-        val windDownText = StringBuilder()
-        val windDownMessages = buildList {
-            add(OpenAIMessage.System(Content.Text(systemPrompt(mode, instructions))))
-            addAll(history)
-            add(OpenAIMessage.User(Content.Text(WIND_DOWN_PROMPT)))
-        }
-        llm.chatCompletion(
-            messages = windDownMessages,
-            tools = emptyList(),
-            reasoning = effectiveReasoning(),
-            model = currentModel,
-            provider = providerRouting?.providerFor(currentModel),
-        ).collect { chunk ->
-            chunk.usage?.let { usage = it }
-            chunk.choices.firstOrNull()?.let { choice ->
-                choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
-                    emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.AgentThoughtChunk(
-                                ContentBlock.Text(reasoning),
-                                windDownMessageId
-                            )
-                        )
-                    )
-                }
-                choice.delta.content?.takeIf { it.isNotEmpty() }?.let { text ->
-                    windDownText.append(text)
-                    emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.AgentMessageChunk(
-                                ContentBlock.Text(text),
-                                windDownMessageId
-                            )
-                        )
-                    )
-                }
-            }
-        }
-        appendToHistory(OpenAIMessage.Assistant(Content.Text(windDownText.toString())))
-
-        persistSession()
-        emitUsageUpdate(usage)
-        emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.MAX_TURN_REQUESTS)))
-    }
-
-    /**
-     * Decides whether the tool call may run. Path-scoped tools inside the
-     * session working directory are allowed outright; anything else that is
-     * mutating (bash) or reaches outside the project (path-scoped reads,
-     * writes, searches) asks the user for permission.
-     */
-    private suspend fun shouldAllow(
-        tool: AgentTool,
-        client: com.agentclientprotocol.common.ClientSessionOperations?,
-        toolCallId: ToolCallId,
-        arguments: JsonObject,
-    ): Boolean {
-        if (!permissionNeeded(cwd, tool, arguments)) return true
-        if (client == null) return true
-        permanentPermissions[tool.name]?.let { return it }
-        val options = listOf(
-            PermissionOption(PermissionOptionId("allow_once"), "Allow once", PermissionOptionKind.ALLOW_ONCE),
-            PermissionOption(
-                PermissionOptionId("allow_always"),
-                "Always allow",
-                PermissionOptionKind.ALLOW_ALWAYS
-            ),
-            PermissionOption(
-                PermissionOptionId("reject_once"),
-                "Reject once",
-                PermissionOptionKind.REJECT_ONCE
-            ),
-            PermissionOption(
-                PermissionOptionId("reject_always"),
-                "Always reject",
-                PermissionOptionKind.REJECT_ALWAYS
-            ),
-        )
-        val update = SessionUpdate.ToolCallUpdate(
-            toolCallId = toolCallId,
-            title = tool.title(arguments) ?: tool.name,
-            kind = tool.kind,
-            status = ToolCallStatus.IN_PROGRESS,
-            locations = toolLocations(tool, arguments),
-            rawInput = arguments,
-        )
-        return try {
-            val response = client.requestPermissions(toolCall = update, permissions = options)
-            when (val outcome = response.outcome) {
-                is RequestPermissionOutcome.Selected -> {
-                    when (outcome.optionId.value) {
-                        "allow_always" -> permanentPermissions[tool.name] = true
-                        "reject_always" -> permanentPermissions[tool.name] = false
-                    }
-                    outcome.optionId.value.startsWith("allow")
-                }
-
-                is RequestPermissionOutcome.Cancelled -> false
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun disabledToolMessage(tool: AgentTool, mode: SessionModeId): String {
-        val modes = tool.modes.joinToString(", ") { it.value }
-        return "Error: tool \"${tool.name}\" is disabled in ${mode.value} mode (it is only available in: $modes) " +
-                "and was not executed. It may have been available earlier in this conversation while a different mode " +
-                "was active, but it is not available now. Do not attempt it again; ask the user to switch to one " +
-                "of those modes to apply this action."
-    }
-
-    private class MutableStreamToolCall {
-        var id: String = ""
-        var name: String = ""
-        var arguments: String = ""
-        fun toToolCall() = StreamToolCall(id, name, arguments)
-    }
-
-    private fun parseArguments(arguments: String): JsonObject {
-        return runCatching { ACPJson.parseToJsonElement(arguments) as? JsonObject }
-            .getOrNull()
-            ?: buildJsonObject { put("arguments", JsonPrimitive(arguments)) }
-    }
-
-    /**
-     * File locations of a path-scoped tool call, driving the client's
-     * "follow the agent" surface (tool_call creation, permission prompts and
-     * load replay all carry them).
-     */
-    private fun toolLocations(tool: AgentTool, arguments: JsonObject): List<ToolCallLocation> =
-        tool.targetPaths(arguments).map { ToolCallLocation(it) }
-
-    /**
-     * Renderable tool-call content: the result text always, plus the optional
-     * diff payload for edit-kind tools. Kept out of `rawOutput` so the raw
-     * wire shape stays unchanged.
-     */
-    private fun toolCallContent(result: ToolResult): List<ToolCallContent> = buildList {
-        add(ToolCallContent.Content(ContentBlock.Text(result.text)))
-        result.diff?.let { add(ToolCallContent.Diff(it.path, it.newText, it.oldText)) }
+        promptRunner.run(this, mode, instructions, toolContext)
     }
 
     /**
@@ -814,8 +238,12 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     override suspend fun close(_meta: JsonElement?): CloseSessionResponse {
-        closeResources()
+        state.close()
         return CloseSessionResponse()
+    }
+
+    internal suspend fun delete() {
+        state.delete()
     }
 }
 
@@ -932,35 +360,6 @@ private fun imagePart(block: ContentBlock.Image, modelSupportsImage: Boolean): O
     return OpenAIContentPart.Image(OpenAIContentPart.ImageUrl("data:$mime;base64,${block.data}"))
 }
 
-private val MODE_BUILD = SessionModeId("build")
-private val MODE_PLAN = SessionModeId("plan")
-private val MODE_BASH = SessionModeId("bash")
-private val DEFAULT_MODE = MODE_PLAN
-private const val MAX_TITLE_LENGTH = 72
 private const val WIND_DOWN_PROMPT =
     "The per-prompt tool iteration limit has been reached. Summarize what has been accomplished " +
             "so far and what remains to be done; do not call any tools."
-
-private const val REASONING_OFF = "none"
-private val DEFAULT_REASONING_LEVELS = listOf("max", "xhigh", "high", "medium", "low", "minimal")
-private val REASONING_NAMES = mapOf(
-    "max" to "Max",
-    "xhigh" to "Extra high",
-    "high" to "High",
-    "medium" to "Medium",
-    "low" to "Low",
-    "minimal" to "Minimal",
-)
-
-private fun reasoningEffortName(effort: String): String = REASONING_NAMES[effort] ?: effort
-
-private data class ReasoningOption(
-    val value: String,
-    val name: String,
-    val description: String? = null,
-)
-
-private data class ReasoningSelector(
-    val options: List<ReasoningOption>,
-    val current: String,
-)

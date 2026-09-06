@@ -1,0 +1,252 @@
+package net.dontdrinkandroot.acpagent.agent
+
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIStreamFunction
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIStreamToolCall
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAITool
+import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
+import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamChoice
+import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamDelta
+import com.agentclientprotocol.common.Event
+import com.agentclientprotocol.model.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.llm.ChatCompleter
+import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
+import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
+import net.dontdrinkandroot.acpagent.tools.AgentTool
+import net.dontdrinkandroot.acpagent.tools.ToolContext
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
+import net.dontdrinkandroot.acpagent.tools.ToolResult
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/** Collects emitted events for assertions. */
+private class PromptRecordingEmitter : FlowCollector<Event> {
+    val events = mutableListOf<Event>()
+    override suspend fun emit(value: Event) {
+        events += value
+    }
+}
+
+/** Fake stream that replays the given chunk scripts, one per request. */
+private class FakeCompleter(
+    vararg val scripts: List<OpenRouterChatCompletionStreamResponse>,
+) : ChatCompleter {
+    val requests = mutableListOf<List<OpenAIMessage>>()
+    private var next = 0
+
+    override fun chatCompletion(
+        messages: List<OpenAIMessage>,
+        tools: List<OpenAITool>,
+        reasoning: String?,
+        model: String,
+        provider: ProviderPreferences?,
+    ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
+        requests += messages
+        scripts[next++ % scripts.size].forEach { emit(it) }
+    }
+}
+
+class PromptRunnerTest {
+
+    private val testModel = OpenRouterModel(
+        id = "test-model",
+        name = "Test Model",
+        supportedParameters = listOf("tools"),
+        contextLength = 100_000,
+    )
+
+    private class RecordingTool(
+        override val name: String,
+        override val mutating: Boolean,
+    ) : AgentTool {
+        override val description = "test tool"
+        override val parameters: JsonObject = buildJsonObject { }
+        override val kind: ToolKind = ToolKind.OTHER
+        var executed = false
+        override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
+            executed = true
+            return ToolResult("ran")
+        }
+    }
+
+    private fun state() = SessionState(
+        sessionId = SessionId("sess_prompttest0001"),
+        cwd = "/project",
+        config = Config("k", "test-model", "http://127.0.0.1:1"),
+        restored = null,
+        sessionStore = null,
+        closeResources = {},
+    )
+
+    private fun toolContext() = ToolContext(
+        cwd = "/project",
+        client = null,
+        clientCapabilities = com.agentclientprotocol.model.ClientCapabilities(),
+        sessionId = SessionId("sess_prompttest0001"),
+    )
+
+    private fun chunk(content: String? = null, reasoning: String? = null): OpenRouterChatCompletionStreamResponse =
+        OpenRouterChatCompletionStreamResponse(
+            choices = listOf(
+                OpenRouterStreamChoice(
+                    delta = OpenRouterStreamDelta(content = content, reasoning = reasoning),
+                    finishReason = null,
+                )
+            ),
+            created = 0,
+            id = "chunk-id",
+            model = "test-model",
+        )
+
+    private fun toolChunk(
+        index: Int,
+        id: String?,
+        functionName: String?,
+        arguments: String?,
+    ): OpenRouterChatCompletionStreamResponse =
+        OpenRouterChatCompletionStreamResponse(
+            choices = listOf(
+                OpenRouterStreamChoice(
+                    delta = OpenRouterStreamDelta(
+                        toolCalls = listOf(
+                            OpenAIStreamToolCall(
+                                index = index,
+                                id = id,
+                                function = OpenAIStreamFunction(functionName, arguments),
+                            )
+                        )
+                    ),
+                    finishReason = null,
+                )
+            ),
+            created = 0,
+            id = "chunk-id",
+            model = "test-model",
+        )
+
+    private fun runner(
+        fake: FakeCompleter,
+        state: SessionState,
+        registry: ToolRegistry = ToolRegistry()
+    ): PromptRunner =
+        PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(
+                    SessionMode(SessionModeId("build"), "Build", "desc"),
+                    SessionMode(SessionModeId("plan"), "Plan", "desc"),
+                ),
+                listOf(testModel),
+                state,
+            ),
+            toolRegistry = registry,
+            toolCallExecutor = ToolCallExecutor("/project", registry, state),
+            maxTurnRequests = 2,
+            models = listOf(testModel),
+        )
+
+    @Test
+    fun `no tool call ends the turn with END_TURN and persists history`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(content = "Hello "), chunk(content = "world"), chunk(reasoning = "thinking")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertTrue(
+            emitter.events.any { it is Event.SessionUpdateEvent && it.update is SessionUpdate.AgentThoughtChunk },
+            "reasoning deltas must be relayed as agent thought chunks",
+        )
+        val assistant = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>().single()
+        assertEquals("Hello world", assistant.content?.text())
+    }
+
+    @Test
+    fun `tool calls execute and the loop continues until END_TURN`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(
+                toolChunk(
+                    index = 0,
+                    id = "call_1",
+                    functionName = "write_text",
+                    arguments = """{"path":"/project/a.txt"}"""
+                ),
+            ),
+            listOf(chunk(content = "Done.")),
+        )
+        val state = state()
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertEquals(true, tool.executed, "tool call must execute")
+        assertEquals(
+            StopReason.END_TURN,
+            emitter.events.filterIsInstance<Event.PromptResponseEvent>().single().response.stopReason,
+        )
+        assertEquals(2, fake.requests.size, "tool iteration plus final plain-text iteration")
+    }
+
+    @Test
+    fun `exhausted budget produces a wind-down pass with MAX_TURN_REQUESTS`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(
+                toolChunk(
+                    index = 0,
+                    id = "call_1",
+                    functionName = "write_text",
+                    arguments = """{"path":"/project/a.txt"}"""
+                ),
+            ),
+            listOf(chunk(content = "Summary.")),
+        )
+        val state = state()
+        val runner = PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
+                listOf(testModel),
+                state,
+            ),
+            toolRegistry = registry,
+            toolCallExecutor = ToolCallExecutor("/project", registry, state),
+            maxTurnRequests = 1,
+            models = listOf(testModel),
+        )
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.MAX_TURN_REQUESTS, response.response.stopReason)
+        assertEquals(2, fake.requests.size, "one tool iteration plus one wind-down pass")
+        assertTrue(
+            state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>().any { it.content?.text() == "Summary." },
+            "wind-down text must be appended to history",
+        )
+    }
+}

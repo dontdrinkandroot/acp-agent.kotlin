@@ -79,7 +79,7 @@ public class LlmClient(
     apiKey: String,
     baseUrl: String,
     private val model: String,
-) {
+) : ChatCompleter {
     private val json = llmWireJson
     private val client = HttpClient(CIO) {
         engine {
@@ -104,12 +104,12 @@ public class LlmClient(
         }
     }
 
-    public fun chatCompletion(
+    public override fun chatCompletion(
         messages: List<OpenAIMessage>,
         tools: List<OpenAITool>,
-        reasoning: String? = null,
-        model: String = this.model,
-        provider: ProviderPreferences? = null,
+        reasoning: String?,
+        model: String,
+        provider: ProviderPreferences?,
     ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
         val body = json.encodeToString(
             OpenRouterChatCompletionRequest(
