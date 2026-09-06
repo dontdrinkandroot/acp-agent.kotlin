@@ -72,7 +72,21 @@ class FileToolsTest {
         assertFalse(read.isError, read.text)
         // A windowed read (limit set, no line) covering the whole file is
         // numbered, with no footer.
-        assertEquals("   1  line1\n   2  line2\n   3  line3", read.text)
+        assertEquals("   1│line1\n   2│line2\n   3│line3", read.text)
+    }
+
+    @Test
+    fun `read preserves exact indentation after the line number delimiter`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/indented.kt"
+        val content = "fun foo() {\n    val x = 1\n        return x\n}"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", content) }, context(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, context(dir))
+        assertFalse(read.isError, read.text)
+        // Everything after the '|' is the raw line: the leading spaces belong
+        // to the code, so the indentation is readable directly off the output
+        // instead of having to be inferred from a whitespace-only prefix.
+        assertEquals("   1│fun foo() {\n   2│    val x = 1\n   3│        return x\n   4│}", read.text)
     }
 
     @Test
@@ -188,9 +202,9 @@ class FileToolsTest {
         assertFalse(read.isError, read.text)
         val lines = read.text.split("\n")
         assertEquals(3, lines.size, read.text)
-        assertTrue(lines[1].startsWith("   2  z"), lines[1])
+        assertTrue(lines[1].startsWith("   2│z"), lines[1])
         assertTrue(lines[1].endsWith("... [truncated]"), lines[1])
-        assertEquals(2000, lines[1].removePrefix("   2  ").removeSuffix("... [truncated]").length)
+        assertEquals(2000, lines[1].removePrefix("   2│").removeSuffix("... [truncated]").length)
     }
 
     @Test
@@ -249,7 +263,7 @@ class FileToolsTest {
         // Explicit window: 1-indexed numbered lines plus a truncated-footer
         // telling the model what range was shown and where to continue.
         assertEquals(
-            "   2  b\n   3  c\n\n(Showing lines 2-3 of 5. Use line=4 and limit to continue.)",
+            "   2│b\n   3│c\n\n(Showing lines 2-3 of 5. Use line=4 and limit to continue.)",
             read.text,
         )
     }
@@ -262,7 +276,7 @@ class FileToolsTest {
         val read =
             ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 4); put("limit", 2) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("   4  d\n   5  e", read.text)
+        assertEquals("   4│d\n   5│e", read.text)
     }
 
     @Test
@@ -275,7 +289,7 @@ class FileToolsTest {
         assertFalse(read.isError, read.text)
         // The trailing newline is a terminator, not a third line: the window
         // reaches the last visible line, so no footer may claim more below.
-        assertEquals("   2  b", read.text)
+        assertEquals("   2│b", read.text)
     }
 
     @Test
@@ -295,15 +309,15 @@ class FileToolsTest {
         // A stale or truncated window would return the same small excerpt for
         // every limit; the numbered line count must grow with the limit and
         // the line numbers must match the requested window.
-        assertTrue(small.text.startsWith("   1  1\n"), small.text)
-        assertTrue(large.text.startsWith("   1  1\n"), large.text)
-        assertEquals("  10  10", small.text.lines()[9], small.text)
+        assertTrue(small.text.startsWith("   1│1\n"), small.text)
+        assertTrue(large.text.startsWith("   1│1\n"), large.text)
+        assertEquals("  10│10", small.text.lines()[9], small.text)
         assertEquals(12, small.text.lines().size, "the footer block adds lines: ${small.text}")
-        assertEquals(" 500  500", large.text.lines()[499], large.text)
+        assertEquals(" 500│500", large.text.lines()[499], large.text)
         assertEquals(502, large.text.lines().size, "the footer block adds lines: ${large.text}")
         // A full read whose limit covers the whole file: numbered, no footer.
-        assertTrue(full.text.startsWith("   1  1\n"), full.text)
-        assertEquals("1000  1000", full.text.lines()[999], full.text)
+        assertTrue(full.text.startsWith("   1│1\n"), full.text)
+        assertEquals("1000│1000", full.text.lines()[999], full.text)
         assertEquals(1000, full.text.lines().size, "a whole-file window has no footer: ${full.text}")
     }
 
@@ -355,7 +369,7 @@ class FileToolsTest {
         assertFalse(read.isError, read.text)
         // Full read (limit covers the file): numbered, trailing terminator
         // dropped so the phantom empty line is not rendered, no footer.
-        assertEquals("   1  a\n   2  b\n   3  c", read.text)
+        assertEquals("   1│a\n   2│b\n   3│c", read.text)
     }
 
     @Test
@@ -369,7 +383,7 @@ class FileToolsTest {
         )
         assertFalse(read.isError, read.text)
         assertEquals(
-            "   2  b\n\n(Showing lines 2-2 of 3. Use line=3 and limit to continue.)",
+            "   2│b\n\n(Showing lines 2-2 of 3. Use line=3 and limit to continue.)",
             read.text,
         )
     }
@@ -405,7 +419,7 @@ class FileToolsTest {
         assertTrue(tooLargeLimit.text.contains("2000"), tooLargeLimit.text)
         val atBound = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 2000) }, context(dir))
         assertFalse(atBound.isError, atBound.text)
-        assertEquals("   1  a\n   2  b\n   3  c", atBound.text)
+        assertEquals("   1│a\n   2│b\n   3│c", atBound.text)
     }
 
     @Test
@@ -534,7 +548,7 @@ class FileToolsTest {
 
         val read = ReadFileTool().execute(buildJsonObject { put("path", "sub/a.txt"); put("limit", 1) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("   1  x", read.text)
+        assertEquals("   1│x", read.text)
 
         val edit = EditFileTool().execute(
             buildJsonObject { put("path", "sub/a.txt"); put("old_string", "x"); put("new_string", "y") },

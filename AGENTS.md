@@ -175,12 +175,15 @@ Config comes from environment variables:
   follows them by default, which could smuggle reads outside the project). `read/write/edit`
   use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
   the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
-  local store; `read_file` renders all reads as cat -n style 1-indexed numbered
-  lines, byte-identical except for the stripped trailing newline terminator, plus a
+  local store; `read_file` renders all reads as fixed-width 1-indexed `number│content`
+  lines (the content - including its leading indentation - is verbatim after the `│`, so
+  the model can read indentation directly off the line rather than inferring it from a
+  whitespace-only prefix), byte-identical except for the stripped trailing newline
+  terminator, plus a
   `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
   not cover the whole file, so a truncated read is
   unambiguous and the model can page forward (line numbers are display-only - `edit_file`
-  matches raw content, so the model must strip the prefixes; the client fs proxy returns no
+  matches raw content, so the model must strip the `number│` prefix; the client fs proxy returns no
   total, so the footer total comes from the local store, not the proxy; a proxy window of
   exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
   line). Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in

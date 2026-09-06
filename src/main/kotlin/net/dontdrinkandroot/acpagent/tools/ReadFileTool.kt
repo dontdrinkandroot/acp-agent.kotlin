@@ -7,8 +7,10 @@ public class ReadFileTool : AgentTool {
     override val name = "read_file"
     override val description =
         "Read a text file. When the client supports it, reads via the IDE client (sees unsaved editor state). " +
-                "Lines are prefixed with 1-based line numbers (cat -n style); the prefix is display-only — edit_file " +
-                "matches raw content, so strip the numbers before using a line in old_string/new_string. " +
+                "Each line is prefixed with a fixed-width 1-based line number followed by a '│'; the content — " +
+                "including its leading indentation — is verbatim after the '│'. The prefix is display-only — " +
+                "edit_file matches raw content, so strip the 'number│' prefix before using a line in " +
+                "old_string/new_string. " +
                 "When the returned window does not cover the whole file a footer shows the shown range and the " +
                 "'line' to continue from. Read the whole file by leaving line unset and using a limit at least " +
                 "the file's size (all lines are numbered), or page with line/limit."
@@ -50,19 +52,21 @@ public class ReadFileTool : AgentTool {
     }
 
     /**
-     * Renders the read window as 1-indexed numbered lines (cat -n style),
-     * stripping CRLF carriage returns and the phantom trailing empty line
-     * (a trailing newline is a line terminator, not an extra empty line) so
-     * CRLF and trailing-newline files render by visual lines. When [footer]
-     * is set appends a footer stating the shown range and how to continue,
-     * so a truncated read is unambiguous and the model can page forward.
+     * Renders the read window as 1-indexed numbered lines: a fixed-width line
+     * number followed by a '│' delimiter, then the line content verbatim —
+     * leading indentation is preserved exactly after the '│'. CRLF carriage
+     * returns and the phantom trailing empty line (a trailing newline is a
+     * line terminator, not an extra empty line) are stripped so CRLF and
+     * trailing-newline files render by visual lines. When [footer] is set
+     * appends a footer stating the shown range and how to continue, so a
+     * truncated read is unambiguous and the model can page forward.
      */
     private fun formatRead(content: String, start: Int, total: Int?, footer: Boolean = false): String {
         var lines = content.split('\n')
         if (content.endsWith("\n") && lines.last().isEmpty()) lines = lines.dropLast(1)
         val body = lines.mapIndexed { index, text ->
             val cleaned = if (text.endsWith("\r")) text.dropLast(1) else text
-            "${(start + index).toString().padStart(4)}  $cleaned"
+            "${(start + index).toString().padStart(4)}│$cleaned"
         }.joinToString("\n")
         return if (footer) {
             val shownEnd = start + lines.size - 1
