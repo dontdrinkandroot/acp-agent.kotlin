@@ -38,7 +38,7 @@ public class LlmException(message: String) : Exception(message)
  * App attribution: OpenRouter shows usage in Logs/rankings under this app.
  * See https://openrouter.ai/docs/app-attribution.
  */
-private const val APP_TITLE = "DdrAcpAgentKotlin"
+private const val APP_TITLE = "DdrAcpAgent"
 private const val APP_URL = "https://github.com/dontdrinkandroot/acp-agent.kotlin"
 
 @Serializable
