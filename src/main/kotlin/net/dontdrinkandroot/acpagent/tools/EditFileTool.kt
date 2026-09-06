@@ -45,7 +45,7 @@ public class EditFileTool : AgentTool {
         val newString = arguments["new_string"]?.jsonPrimitive?.content ?: ""
 
         return runCatching {
-            val content = context.fileStore.readFile(path, null, null)
+            val content = context.fileStore.readFile(path, null, null).content
             // Count non-overlapping occurrences via indexOf so the number
             // matches exactly what String.replace replaces: overlapping
             // occurrences (e.g. old_string "aa" in "aaaa") are counted as

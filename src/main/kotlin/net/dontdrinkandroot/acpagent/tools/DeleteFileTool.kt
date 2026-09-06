@@ -61,7 +61,7 @@ public class DeleteFileTool : AgentTool {
  */
 private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolResultDiff? {
     val oldText = try {
-        context.fileStore.readFile(path, null, null)
+        context.fileStore.readFile(path, null, null).content
     } catch (e: Exception) {
         return null
     }

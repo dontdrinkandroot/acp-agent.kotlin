@@ -156,7 +156,14 @@ Config comes from environment variables:
   follows them by default, which could smuggle reads outside the project). `read/write/edit`
   use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
   the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
-  local store; listing/search always use the local disk (ACP has no client-side search), and so
+  local store; `read_file` renders all reads as cat -n style 1-indexed numbered
+  lines, byte-identical except for the stripped trailing newline terminator, plus a
+  `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
+  not cover the whole file, so a truncated read is
+  unambiguous and the model can page forward (line numbers are display-only - `edit_file`
+  matches raw content, so the model must strip the prefixes; the client fs proxy returns no
+  total, so the footer total comes from the local store, not the proxy). listing/search always use the local disk (ACP
+  has no client-side search), and so
   do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
   `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
   `move_directory` rename (java.nio `Files.move`, no overwrite - an existing destination is

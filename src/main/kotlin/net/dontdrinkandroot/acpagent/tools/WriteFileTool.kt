@@ -51,7 +51,7 @@ public class WriteFileTool : AgentTool {
  */
 private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
     val oldText = try {
-        context.fileStore.readFile(path, null, null)
+        context.fileStore.readFile(path, null, null).content
     } catch (e: FileStoreException) {
         return ToolResultDiff(path, newText, null)
     } catch (e: Exception) {

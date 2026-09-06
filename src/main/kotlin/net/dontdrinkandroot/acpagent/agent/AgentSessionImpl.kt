@@ -486,7 +486,7 @@ internal class AgentSessionImpl(
             clientCapabilities = clientCapabilities,
             sessionId = sessionId,
             updatePlan = { entries -> setPlan(entries, client) },
-            fileStore = selectFileStore(client, clientCapabilities, sessionId, config.fsProxyEnabled),
+            fileStore = selectFileStore(client, clientCapabilities, config.fsProxyEnabled),
             bashTimeoutSeconds = config.bashTimeoutSeconds,
         )
 
@@ -846,12 +846,11 @@ internal fun permissionNeeded(cwd: String, tool: AgentTool, arguments: JsonObjec
 internal fun selectFileStore(
     client: com.agentclientprotocol.common.ClientSessionOperations?,
     capabilities: com.agentclientprotocol.model.ClientCapabilities,
-    sessionId: com.agentclientprotocol.model.SessionId,
     fsProxyEnabled: Boolean,
 ): FileStore {
     val fs = capabilities.fs
     return if (fsProxyEnabled && client != null && fs?.readTextFile == true && fs?.writeTextFile == true) {
-        ClientFileStore(client, sessionId)
+        ClientFileStore(client)
     } else {
         LocalFileStore()
     }

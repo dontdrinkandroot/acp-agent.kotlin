@@ -44,7 +44,9 @@ class FileToolsTest {
 
         val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 3) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("line1\nline2\nline3", read.text)
+        // A windowed read (limit set, no line) covering the whole file is
+        // numbered, with no footer.
+        assertEquals("   1  line1\n   2  line2\n   3  line3", read.text)
     }
 
     @Test
@@ -86,7 +88,7 @@ class FileToolsTest {
     fun `write skips the diff when the old content cannot be read`() = runBlocking {
         val dir = tmpDir()
         val failingReadStore = object : FileStore {
-            override suspend fun readFile(path: String, line: Int?, limit: Int?): String =
+            override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult =
                 throw RuntimeException("boom")
 
             override suspend fun writeFile(path: String, content: String) = Unit
@@ -110,7 +112,65 @@ class FileToolsTest {
         WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc\nd\ne") }, context(dir))
         val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 2); put("limit", 2) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("b\nc", read.text)
+        // Explicit window: 1-indexed numbered lines plus a truncated-footer
+        // telling the model what range was shown and where to continue.
+        assertEquals(
+            "   2  b\n   3  c\n\n(Showing lines 2-3 of 5. Use line=4 and limit to continue.)",
+            read.text,
+        )
+    }
+
+    @Test
+    fun `read window reaching the end of the file omits the footer`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc\nd\ne") }, context(dir))
+        val read =
+            ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 4); put("limit", 2) }, context(dir))
+        assertFalse(read.isError, read.text)
+        assertEquals("   4  d\n   5  e", read.text)
+    }
+
+    @Test
+    fun `read window reaching the last visible line of a trailing newline file omits the footer`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/trailing.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\n") }, context(dir))
+        val read =
+            ReadFileTool().execute(buildJsonObject { put("path", path); put("line", 2); put("limit", 1) }, context(dir))
+        assertFalse(read.isError, read.text)
+        // The trailing newline is a terminator, not a third line: the window
+        // reaches the last visible line, so no footer may claim more below.
+        assertEquals("   2  b", read.text)
+    }
+
+    @Test
+    fun `read of a large file honors growing limits without truncation`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/large.txt"
+        WriteFileTool().execute(
+            buildJsonObject { put("path", path); put("content", (1..1000).joinToString("\n") { it.toString() }) },
+            context(dir),
+        )
+        val small = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, context(dir))
+        val large = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 500) }, context(dir))
+        val full = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 2000) }, context(dir))
+        assertFalse(small.isError, small.text)
+        assertFalse(large.isError, large.text)
+        assertFalse(full.isError, full.text)
+        // A stale or truncated window would return the same small excerpt for
+        // every limit; the numbered line count must grow with the limit and
+        // the line numbers must match the requested window.
+        assertTrue(small.text.startsWith("   1  1\n"), small.text)
+        assertTrue(large.text.startsWith("   1  1\n"), large.text)
+        assertEquals("  10  10", small.text.lines()[9], small.text)
+        assertEquals(12, small.text.lines().size, "the footer block adds lines: ${small.text}")
+        assertEquals(" 500  500", large.text.lines()[499], large.text)
+        assertEquals(502, large.text.lines().size, "the footer block adds lines: ${large.text}")
+        // A full read whose limit covers the whole file: numbered, no footer.
+        assertTrue(full.text.startsWith("   1  1\n"), full.text)
+        assertEquals("1000  1000", full.text.lines()[999], full.text)
+        assertEquals(1000, full.text.lines().size, "a whole-file window has no footer: ${full.text}")
     }
 
     @Test
@@ -159,7 +219,9 @@ class FileToolsTest {
         WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc\n") }, context(dir))
         val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("a\nb\nc\n", read.text)
+        // Full read (limit covers the file): numbered, trailing terminator
+        // dropped so the phantom empty line is not rendered, no footer.
+        assertEquals("   1  a\n   2  b\n   3  c", read.text)
     }
 
     @Test
@@ -172,7 +234,10 @@ class FileToolsTest {
             context(dir),
         )
         assertFalse(read.isError, read.text)
-        assertEquals("b", read.text)
+        assertEquals(
+            "   2  b\n\n(Showing lines 2-2 of 3. Use line=3 and limit to continue.)",
+            read.text,
+        )
     }
 
     @Test
@@ -206,7 +271,7 @@ class FileToolsTest {
         assertTrue(tooLargeLimit.text.contains("2000"), tooLargeLimit.text)
         val atBound = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 2000) }, context(dir))
         assertFalse(atBound.isError, atBound.text)
-        assertEquals("a\nb\nc", atBound.text)
+        assertEquals("   1  a\n   2  b\n   3  c", atBound.text)
     }
 
     @Test
@@ -335,7 +400,7 @@ class FileToolsTest {
 
         val read = ReadFileTool().execute(buildJsonObject { put("path", "sub/a.txt"); put("limit", 1) }, context(dir))
         assertFalse(read.isError, read.text)
-        assertEquals("x", read.text)
+        assertEquals("   1  x", read.text)
 
         val edit = EditFileTool().execute(
             buildJsonObject { put("path", "sub/a.txt"); put("old_string", "x"); put("new_string", "y") },
@@ -627,7 +692,7 @@ class MoveDeleteToolsTest {
         val recordingStore = object : FileStore {
             val reads = mutableListOf<String>()
             val writes = mutableListOf<String>()
-            override suspend fun readFile(path: String, line: Int?, limit: Int?): String {
+            override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult {
                 reads += path
                 throw RuntimeException("must not be used")
             }

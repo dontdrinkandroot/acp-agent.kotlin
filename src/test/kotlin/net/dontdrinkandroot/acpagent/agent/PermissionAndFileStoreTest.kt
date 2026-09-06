@@ -140,13 +140,11 @@ class PermissionAndFileStoreTest {
 
     @Test
     fun `selectFileStore uses the client proxy only when enabled and both caps are present`() {
-        val sessionId = SessionId("sess_0000000000000001")
         val client = RecordingClient()
         assertTrue(
             selectFileStore(
                 client,
                 ClientCapabilities(fs = FileSystemCapability(readTextFile = true, writeTextFile = true)),
-                sessionId,
                 fsProxyEnabled = true,
             ) is ClientFileStore
         )
@@ -154,7 +152,6 @@ class PermissionAndFileStoreTest {
             selectFileStore(
                 client,
                 ClientCapabilities(fs = FileSystemCapability(readTextFile = true, writeTextFile = true)),
-                sessionId,
                 fsProxyEnabled = false,
             ) is LocalFileStore
         )
@@ -162,7 +159,6 @@ class PermissionAndFileStoreTest {
             selectFileStore(
                 client,
                 ClientCapabilities(fs = FileSystemCapability(readTextFile = true)),
-                sessionId,
                 fsProxyEnabled = true,
             ) is LocalFileStore
         )
@@ -170,7 +166,6 @@ class PermissionAndFileStoreTest {
             selectFileStore(
                 client,
                 ClientCapabilities(),
-                sessionId,
                 fsProxyEnabled = true,
             ) is LocalFileStore
         )
@@ -178,12 +173,10 @@ class PermissionAndFileStoreTest {
 
     @Test
     fun `selectFileStore falls back to local without a client`() {
-        val sessionId = SessionId("sess_0000000000000001")
         assertTrue(
             selectFileStore(
                 null,
                 ClientCapabilities(fs = FileSystemCapability(readTextFile = true, writeTextFile = true)),
-                sessionId,
                 fsProxyEnabled = true,
             ) is LocalFileStore
         )
