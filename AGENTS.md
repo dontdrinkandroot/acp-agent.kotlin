@@ -38,6 +38,21 @@ LLM provider bullet below). kotlin-logging 8.0.4 is declared explicitly because
 Koog/ktor/ACP pull 7.0.0 and 8.0.01 transitives; pinning 8.0.4 pins the
 banner-suppressing API.
 
+## Conventions
+
+* We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
+  uses speaking variable and function names.
+* Use Kotlin sugar to make the code more readable.
+* When fixing bugs add regression tests if reasonably possible.
+* _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
+* Secrets come from env vars only (`OPENROUTER_API_KEY`, ...); never commit or print them.
+  *`build/` is generated output - never edit or commit it.
+* **Never commit without the user requesting it**: the agent must not run
+  `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
+  unless the user explicitly asks. The `git` run config is for read-only
+  inspection (`status`, `diff`, `log`) unless the user requested a mutating
+  git command.
+
 ## Building / running
 
 ```bash
@@ -150,9 +165,15 @@ Config comes from environment variables:
   `test` (full `test` suite), `test_class` (single class via `{args}`), `install_dist`
   (relink the e2e launcher), `dependency_updates` (stable-only), `lint_scripts`
   (`bash -n` + `shellcheck` on the launchers/build script). The agent's own `.ai/run.json`
-  additionally carries `test_single_fqn` (single test class by fully-qualified name) and
+  additionally carries `test_single_fqn` (single test class by fully-qualified name),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
-  `.ai/scripts/show-test-failures.sh`) - added while debugging a flaky test hang. A
+  `.ai/scripts/show-test-failures.sh`) - added while debugging a flaky test hang - and
+  `sdk_sources` (extract a `*-sources.jar` from the Gradle cache for inspection via
+  `.ai/scripts/sdk-sources.sh`, for the SDK contract checks). The gradle configs are
+  wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
+  a hung daemon surfaces as a timeout instead of stalling the agent, and a generic `git`
+  config (`git {args}`, arbitrary arguments) covers read-only inspection (status, diff,
+  log). A
   `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
   leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
@@ -524,16 +545,6 @@ surface to Koog.
 
 **Definition of done**: a change is done when `./gradlew build` passes (compile + all
 tests incl. the black-box e2e).
-
-## Conventions
-
-* We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
-  uses speaking variable and function names.
-* Use Kotlin sugar to make the code more readable.
-* When fixing bugs add regression tests if reasonably possible.
-* _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
-* Secrets come from env vars only (`OPENROUTER_API_KEY`, ...); never commit or print them.
-  *`build/` is generated output - never edit or commit it.
 
 ## Boundaries (do not silently change)
 

@@ -1,38 +1,46 @@
 {
     "compile": {
-        "command": "./gradlew compileKotlin",
-        "description": "Compile main sources (fastest loop)"
+        "command": "timeout 60 ./gradlew compileKotlin",
+        "description": "Compile main sources (fastest loop; 60s timeout to catch hangs)"
     },
     "build": {
-        "command": "./gradlew build",
-        "description": "Compile + run all unit and black-box e2e tests"
+        "command": "timeout 120 ./gradlew build",
+        "description": "Compile + run all unit and black-box e2e tests (120s: full suite)"
     },
     "test": {
-        "command": "./gradlew test",
-        "description": "Run the full test suite"
+        "command": "timeout 120 ./gradlew test",
+        "description": "Run the full test suite (120s: full suite)"
     },
     "test_class": {
-        "command": "./gradlew test --tests \"{args}\"",
-        "description": "Run a single test class, e.g. LlmRequestTest (re-links installDist first)"
+        "command": "timeout 60 ./gradlew test --tests \"{args}\"",
+        "description": "Run a single test class (or Class.method), e.g. LlmRequestTest (re-links installDist first)"
     },
     "install_dist": {
-        "command": "./gradlew installDist",
+        "command": "timeout 60 ./gradlew installDist",
         "description": "Produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
     },
     "dependency_updates": {
-        "command": "./gradlew dependencyUpdates -Drevision=release",
+        "command": "timeout 60 ./gradlew dependencyUpdates -Drevision=release",
         "description": "Report outdated dependencies (stable releases only)"
     },
     "lint_scripts": {
-        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker",
-        "description": "Validate launcher + build scripts"
+        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker .ai/scripts/*.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker .ai/scripts/*.sh",
+        "description": "Validate launcher, build and .ai helper scripts"
     },
     "test_single_fqn": {
-        "command": "./gradlew test --tests \"{args}\" 2>&1 | tail -40",
+        "command": "timeout 60 ./gradlew test --tests \"{args}\" 2>&1 | tail -40",
         "description": "Run a single test class by FQN"
     },
     "show_failures": {
         "command": "bash .ai/scripts/show-test-failures.sh",
         "description": "Print failure messages from the latest JUnit XML reports"
+    },
+    "sdk_sources": {
+        "command": "bash .ai/scripts/sdk-sources.sh {args}",
+        "description": "Extract a *-sources.jar from the Gradle cache to /tmp/acp-sdk-sources for inspection (args: coordinate substring [version])"
+    },
+    "git": {
+        "command": "git {args}",
+        "description": "Run any git command with arbitrary arguments (e.g. status, diff, log)"
     }
 }
