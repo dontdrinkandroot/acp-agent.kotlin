@@ -114,7 +114,7 @@ internal class SessionConfigOptions(
                 if (availableModes.none { it.id == modeId }) {
                     jsonRpcInvalidParams("unknown mode \"${modeId.value}\"")
                 }
-                state.currentMode = modeId
+                state.switchMode(modeId)
             }
 
             "model" -> applyModel(value.stringValue("model"))

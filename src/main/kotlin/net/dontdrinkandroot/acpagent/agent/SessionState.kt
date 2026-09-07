@@ -9,6 +9,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.concurrent.Volatile
 
 internal val MODE_BUILD = SessionModeId("build")
@@ -27,6 +28,7 @@ private const val MAX_TITLE_LENGTH = 72
 internal class SessionState(
     private val sessionId: SessionId,
     private val cwd: String,
+    private val toolRegistry: ToolRegistry,
     config: Config,
     restored: SessionRecord?,
     private val sessionStore: SessionStore?,
@@ -93,6 +95,50 @@ internal class SessionState(
         val restoredMode = restored?.mode?.let { SessionModeId(it) }
             ?.takeIf { candidate -> candidate == MODE_BUILD || candidate == MODE_PLAN || candidate == MODE_BASH }
         return restoredMode ?: DEFAULT_MODE
+    }
+
+    /**
+     * The "mode status" message that states the current mode and the tools
+     * available in it. It lives in the conversation history as an
+     * [OpenAIMessage.System] entry and is LLM-internal (never rendered by the
+     * client); the client UI gets its own mode notifications.
+     */
+    private fun modeStatusText(mode: SessionModeId): String {
+        val names = toolRegistry.availableForMode(mode).joinToString(", ") { tool -> tool.name }
+        return "You are now in ${mode.value} mode. Available tools: $names."
+    }
+
+    /**
+     * Appends the mode status message for [mode] to the history. Same-value
+     * mode re-sets (a no-op that should never render a message) are skipped by
+     * the caller; this method only appends what it is told to.
+     */
+    fun appendModeStatusMessage(mode: SessionModeId) {
+        appendToHistory(OpenAIMessage.System(Content.Text(modeStatusText(mode))))
+    }
+
+    /**
+     * Sets the current mode and, when it actually changes, appends the mode
+     * status message to the history (so the model always sees the mode at the
+     * point it changed). Same-value re-sets are a no-op and render no message.
+     */
+    fun switchMode(mode: SessionModeId) {
+        synchronized(historyLock) {
+            if (mode == currentMode) return
+            currentMode = mode
+            appendModeStatusMessage(mode)
+        }
+    }
+
+    init {
+        // A fresh session starts with a status message stating its initial
+        // (default) mode and the tools available in it, so the model always
+        // knows the mode from the start of the conversation. Restored sessions
+        // reuse their persisted trail as-is (a trail without mode status
+        // messages, i.e. a session created before this feature, stays silent).
+        if (restored == null) {
+            appendModeStatusMessage(initialMode)
+        }
     }
 
     fun buildRecord(): SessionRecord {

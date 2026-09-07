@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
@@ -65,6 +66,7 @@ class ToolCallExecutorTest {
     private fun state() = SessionState(
         sessionId = SessionId("sess_tooltest000001"),
         cwd = "/project",
+        toolRegistry = ToolRegistry(),
         config = Config("k", "m", "http://127.0.0.1:1"),
         restored = null,
         sessionStore = null,
@@ -109,7 +111,17 @@ class ToolCallExecutorTest {
         val update = toolCallUpdates(emitter).single()
         assertEquals(ToolCallStatus.FAILED, update.status)
         assertEquals("Disabled in current mode", update.title)
-        assertEquals(1, state.historySnapshot.size, "the disabled tool result is recorded for the model")
+        // The disabled tool result is recorded for the model (besides the mode status
+        // seed)and nothing else is appended by the execution.
+        val historyAfter = state.historySnapshot
+        assertTrue(
+            historyAfter.last() is OpenAIMessage.Tool,
+            "the denied tool result must be the last history entry",
+        )
+        assertEquals(
+            2, historyAfter.size,
+            "history: mode status seed + denied tool result; nothing else appended",
+        )
     }
 
     @Test

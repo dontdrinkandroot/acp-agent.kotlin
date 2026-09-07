@@ -77,9 +77,10 @@ class PromptRunnerTest {
         }
     }
 
-    private fun state() = SessionState(
+    private fun state(toolRegistry: ToolRegistry = ToolRegistry()) = SessionState(
         sessionId = SessionId("sess_prompttest0001"),
         cwd = "/project",
+        toolRegistry = toolRegistry,
         config = Config("k", "test-model", "http://127.0.0.1:1"),
         restored = null,
         sessionStore = null,
@@ -192,7 +193,7 @@ class PromptRunnerTest {
             ),
             listOf(chunk(content = "Done.")),
         )
-        val state = state()
+        val state = state(registry)
         val runner = runner(fake, state, registry)
         val emitter = PromptRecordingEmitter()
 
@@ -221,7 +222,7 @@ class PromptRunnerTest {
             ),
             listOf(chunk(content = "Summary.")),
         )
-        val state = state()
+        val state = state(registry)
         val runner = PromptRunner(
             state = state,
             systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),

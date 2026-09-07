@@ -1,14 +1,17 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.SessionConfigId
-import com.agentclientprotocol.model.SessionConfigOptionValue
-import com.agentclientprotocol.model.SessionMode
-import com.agentclientprotocol.model.SessionModeId
+import ai.koog.prompt.executor.clients.openai.base.models.Content
+import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ReasoningCapability
+import net.dontdrinkandroot.acpagent.tools.AgentTool
+import net.dontdrinkandroot.acpagent.tools.ToolContext
+import net.dontdrinkandroot.acpagent.tools.ToolResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -35,11 +38,57 @@ class SessionConfigOptionsTest {
     private fun state() = SessionState(
         sessionId = com.agentclientprotocol.model.SessionId("sess_configtest0001"),
         cwd = "/tmp",
+        toolRegistry = net.dontdrinkandroot.acpagent.tools.ToolRegistry(),
         config = Config("k", "test-model", "http://127.0.0.1:1"),
         restored = null,
         sessionStore = null,
         closeResources = {},
     )
+
+    @Test
+    fun `mode switches append mode status messages with per-mode tool lists`() {
+        val registry = net.dontdrinkandroot.acpagent.tools.ToolRegistry().apply {
+            register(ToolStub("read_file", mutating = false, modes = emptyList()))
+            register(
+                ToolStub(
+                    "write_file",
+                    mutating = true,
+                    modes = listOf(SessionModeId("build"), SessionModeId("bash"))
+                )
+            )
+            register(ToolStub("bash", mutating = true, modes = listOf(SessionModeId("bash"))))
+        }
+        val s = SessionState(
+            sessionId = com.agentclientprotocol.model.SessionId("sess_configtest0001"),
+            cwd = "/tmp",
+            toolRegistry = registry,
+            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            restored = null,
+            sessionStore = null,
+            closeResources = {},
+        )
+        // Fresh session seeds the current (default) mode status message.
+
+        assertEquals(
+            "You are now in plan mode. Available tools: read_file.",
+            s.historySnapshot.single()
+                .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
+                .text(),
+        )
+        // Switching modes appends a new status message with the new mode's tools.
+
+        s.switchMode(SessionModeId("build"))
+        assertEquals(
+            "You are now in build mode. Available tools: read_file, write_file.",
+            s.historySnapshot.last()
+                .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
+                .text(),
+        )
+        // Same-value re-set appends nothing.
+
+        s.switchMode(SessionModeId("build"))
+        assertEquals(2, s.historySnapshot.size, "same-value mode re-set must not append a status message")
+    }
 
     @Test
     fun `mode option can be applied and validated`() {
@@ -90,4 +139,16 @@ class SessionConfigOptionsTest {
         }
         assertEquals(JsonRpcErrorCode.INVALID_PARAMS.code, e.code)
     }
+}
+
+private class ToolStub(
+    override val name: String,
+    override val mutating: Boolean,
+    override val modes: List<SessionModeId>,
+) : AgentTool {
+    override val description = "test tool"
+    override val parameters: JsonObject = buildJsonObject { }
+    override val kind: ToolKind = ToolKind.OTHER
+    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
+        ToolResult("ran")
 }

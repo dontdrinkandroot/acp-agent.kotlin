@@ -1,14 +1,15 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.SessionModeId
 import net.dontdrinkandroot.acpagent.BuildInfo
 import net.dontdrinkandroot.acpagent.tools.RunConfig
 
 /**
- * Builds the system prompt for a prompt turn. Pure text assembly: the prompt
- * is derived from the session mode, the working directory, today's date, the
- * run configurations and the AGENTS.md instructions, so it is independent of
- * the session's mutable state and trivially testable.
+ * Builds the system prompt for a prompt turn. The prompt is static with
+ * respect to the session's mode: it describes the available modes and holds
+ * no "current mode" statement (that lives in the mode status messages inside
+ * the conversation history). It is re-read from disk per turn only for the
+ * run configurations and the AGENTS.md instructions, so mid-session edits to
+ * either apply.
  */
 internal class SystemPromptBuilder(
     private val cwd: String,
@@ -16,13 +17,30 @@ internal class SystemPromptBuilder(
     private val runConfigsProvider: () -> List<RunConfig> = { emptyList() },
 ) {
 
-    fun build(mode: SessionModeId, instructions: AgentsInstructions?): String = buildString {
+    fun build(instructions: AgentsInstructions?): String = buildString {
         appendLine("You are acp-agent, a fast and compact coding agent embedded in the user's IDE via the Agent Client Protocol.")
         appendLine("Agent build: ${BuildInfo.commit}")
         appendLine()
         appendLine("Session working directory: $cwd")
         appendLine("Today's date: ${todayProvider()}")
-        appendLine("Current mode: ${mode.value}. ${modeDescription(mode)}")
+        appendLine()
+        appendLine("## Modes")
+        appendLine()
+        appendLine(
+            "The session runs in one of the following modes. The current mode is stated in a status " +
+                    "message in the conversation, together with the tools available in that mode; the tool schemas " +
+                    "in the request are the tools you may call right now. Yours must respect the current mode."
+        )
+        appendLine()
+        appendLine(
+            "- plan: read-only. You may research and analyze, listing files, reading files, searching and " +
+                    "updating the plan, but you must not modify files."
+        )
+        appendLine("- build: read-write. Adds the file write/edit/move/delete tools and the run-config management tools.")
+        appendLine(
+            "- bash: build plus the permission-gated bash tool. Commands run in the session working directory " +
+                    "and every command is confirmed by the user first."
+        )
         appendLine()
         appendLine("Operating rules:")
         appendLine("- Use the provided tools; do not claim to have run tools you have not called.")
@@ -34,7 +52,12 @@ internal class SystemPromptBuilder(
         appendLine("- After finishing, summarize the result concisely in Markdown.")
         appendLine("- Modify existing code with `edit_file` deltas; use `write_file` only for new files or an intentional whole-file rewrite (read the full file first - a hasty rewrite can drop the tail).")
         appendLine("- When asserting behavior in a test, derive the expectation from the code being tested or its existing tests, not from assumptions.")
-        appendLine("- Prefer the `run` tool's named configurations for the standard build/test/compile loop over raw `bash` shells.")
+        appendLine("- Prefer the `run` tool's named configurations for the standard build/test/compile loop over `bash` shells.")
+        appendLine(
+            "- On a mode switch, continue with the mode stated in the latest status message; tool schemas " +
+                    "in the request are already filtered to that mode. If a tool you wanted is not available, ask the " +
+                    "user to switch mode rather than attempting a workaround."
+        )
         append(runConfigsSection(runConfigsProvider()))
         append(instructionsSection(instructions))
     }
@@ -53,18 +76,5 @@ internal class SystemPromptBuilder(
                         "configurations whose command contains the {args} placeholder."
             )
         }
-    }
-
-    private fun modeDescription(mode: SessionModeId): String = when (mode.value) {
-        "build" -> "You may read, write, move and delete files to implement the user's task."
-        "bash" ->
-            "You may read, modify files, and run shell commands via the 'bash' tool. " +
-                    "Every command is confirmed by the user first; do not retry a rejected command. " +
-                    "Commands run in the session working directory."
-
-        else ->
-            "You are in PLAN mode. You must not modify files: research, evaluate, and analyze the " +
-                    "codebase, presenting findings or a concise implementation plan in Markdown as the task demands. " +
-                    "Do not call write tools even if offered."
     }
 }

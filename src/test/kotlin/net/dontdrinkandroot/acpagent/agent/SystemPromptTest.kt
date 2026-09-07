@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.SessionModeId
 import net.dontdrinkandroot.acpagent.tools.RunConfig
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -10,31 +9,31 @@ class SystemPromptTest {
     private val builder = SystemPromptBuilder("/project", { "2026-09-03" })
 
     @Test
-    fun `prompt embeds cwd, date, build hash and mode description`() {
-        val prompt = builder.build(SessionModeId("build"), null)
+    fun `prompt embeds cwd, date, build hash and the static modes table`() {
+        val prompt = builder.build(null)
         assertTrue(prompt.contains("Session working directory: /project"), prompt)
         assertTrue(prompt.contains("Today's date: 2026-09-03"), prompt)
         assertTrue(prompt.contains("Agent build: "), prompt)
-        assertTrue(prompt.contains("Current mode: build. You may read, write, move and delete files"), prompt)
+        assertTrue(prompt.contains("- plan: read-only"), prompt)
+        assertTrue(prompt.contains("- build: read-write"), prompt)
+        assertTrue(prompt.contains("- bash: build plus the permission-gated bash tool"), prompt)
     }
 
     @Test
-    fun `bash and plan modes render their own descriptions`() {
-        val bash = builder.build(SessionModeId("bash"), null)
-        assertTrue(bash.contains("run shell commands via the 'bash' tool"), bash)
-        val plan = builder.build(SessionModeId("plan"), null)
-        assertTrue(plan.contains("You are in PLAN mode. You must not modify files"), plan)
-    }
-
-    @Test
-    fun `unknown mode falls back to the plan description`() {
-        val prompt = builder.build(SessionModeId("research"), null)
-        assertTrue(prompt.contains("You are in PLAN mode"), prompt)
+    fun `prompt is mode-invariant and holds no current mode statement`() {
+        val prompt = builder.build(null)
+        assertTrue(!prompt.contains("Current mode"), prompt)
+        // The current mode and the available tools live in the conversation's
+        // mode status messages, not in the prompt.
+        assertTrue(
+            prompt.contains("The current mode is stated in a status message in the conversation"),
+            prompt,
+        )
     }
 
     @Test
     fun `operating rules cover edit-file deltas, source-derived test expectations and the run tool`() {
-        val prompt = builder.build(SessionModeId("build"), null)
+        val prompt = builder.build(null)
         assertTrue(prompt.contains("Modify existing code with `edit_file` deltas"), prompt)
         assertTrue(prompt.contains("derive the expectation from the code being tested"), prompt)
         assertTrue(prompt.contains("Prefer the `run` tool's named configurations"), prompt)
@@ -53,20 +52,20 @@ class SystemPromptTest {
                 )
             },
         )
-        val prompt = builder.build(SessionModeId("build"), null)
+        val prompt = builder.build(null)
         assertTrue(prompt.contains("Available run configurations"), prompt)
         assertTrue(prompt.contains("- compile: ./gradlew compileKotlin — Compile main sources (fastest loop)"), prompt)
         assertTrue(prompt.contains("- test_class: ./gradlew test --tests \"{args}\" — Run a single test class"), prompt)
         assertTrue(prompt.contains("- relint: npm run lint"), prompt)
         assertTrue(
             prompt.contains("pass `args` only for configurations whose command contains the {args} placeholder"),
-            prompt
+            prompt,
         )
     }
 
     @Test
     fun `run configurations section is omitted when none are defined`() {
-        val prompt = builder.build(SessionModeId("build"), null)
+        val prompt = builder.build(null)
         assertTrue(!prompt.contains("Available run configurations"), prompt)
         assertTrue(!prompt.contains(".ai/run.json"), prompt)
     }
@@ -74,7 +73,6 @@ class SystemPromptTest {
     @Test
     fun `project instructions are appended after the rules`() {
         val prompt = builder.build(
-            SessionModeId("plan"),
             AgentsInstructions("/project/AGENTS.md", "Project rules here"),
         )
         assertTrue(prompt.contains("## Project Instructions (from AGENTS.md)"), prompt)
@@ -83,7 +81,7 @@ class SystemPromptTest {
 
     @Test
     fun `prompt without instructions omits the project instructions section`() {
-        val prompt = builder.build(SessionModeId("plan"), null)
+        val prompt = builder.build(null)
         assertTrue(!prompt.contains("Project Instructions"), prompt)
     }
 }

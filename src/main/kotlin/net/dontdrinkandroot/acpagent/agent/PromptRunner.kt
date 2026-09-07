@@ -46,7 +46,7 @@ internal class PromptRunner(
             iterations++
             val messageId = newMessageId()
             val messages = buildList {
-                add(OpenAIMessage.System(Content.Text(systemPrompt.build(mode, instructions))))
+                add(OpenAIMessage.System(Content.Text(systemPrompt.build(instructions))))
                 addAll(state.historySnapshot)
             }
             val tools = toolRegistry.availableForMode(mode).map { tool ->
@@ -90,7 +90,7 @@ internal class PromptRunner(
         // remains instead of an abrupt stop.
         val windDownMessageId = newMessageId()
         val windDownMessages = buildList {
-            add(OpenAIMessage.System(Content.Text(systemPrompt.build(mode, instructions))))
+            add(OpenAIMessage.System(Content.Text(systemPrompt.build(instructions))))
             addAll(state.historySnapshot)
             add(OpenAIMessage.User(Content.Text(WIND_DOWN_PROMPT)))
         }

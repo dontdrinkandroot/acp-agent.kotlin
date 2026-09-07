@@ -39,6 +39,7 @@ internal class AgentSessionImpl(
     private val state = SessionState(
         sessionId = sessionId,
         cwd = cwd,
+        toolRegistry = toolRegistry,
         config = config,
         restored = restored,
         sessionStore = sessionStore,
