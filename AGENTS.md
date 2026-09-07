@@ -276,11 +276,21 @@ Config comes from environment variables:
 - **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
   see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
   relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
-  reasoning-capable providers alongside `delta.reasoning`) is filtered so reasoning deltas
+  reasoning-capable providers alongside `delta.reasoning`)is filtered so reasoning deltas
   emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
   stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
   so a failed or truncated turn fails loudly instead of executing partial tool calls or
-  emitting an empty END_TURN.
+  emitting an empty END_TURN. A `length` (or other non-`stop`/`tool_calls`/
+  `content_filter`) finish reason, or an iteration with no text and no tool calls, triggers
+  exactly one continuation pass:the partial text (if any) is kept, ALL tool calls (including complete ones) are dropped
+  and never executed - the model re-issues them
+  after the continuation -, a synthetic user "continue" prompt is appended, and the retry
+  runs even when the tool-iteration budget is exhausted. A second truncation/empty
+  completion ends the turn with an honest "response interrupted" note (+ `end_turn`,
+  no exception); `content_filter` ends immediately with a "blocked by content filtering"
+  note (never retried). Both cases log to stderr (`warn` on first, `error` when still
+  broken) so the problem stays visible. Replay renders the synthetic "continue" user
+  message as a normal bubble (accepted).
   Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
   UUIDv7 `messageId` (time-ordered, `com.github.f4b6a3:uuid-creator`; fresh per iteration) so
   clients group the iteration's reasoning and reply into a single message; pinned e2e at

@@ -25,6 +25,7 @@ import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.ToolResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Collects emitted events for assertions. */
@@ -40,6 +41,7 @@ private class FakeCompleter(
     vararg val scripts: List<OpenRouterChatCompletionStreamResponse>,
 ) : ChatCompleter {
     val requests = mutableListOf<List<OpenAIMessage>>()
+    val toolRequests = mutableListOf<List<OpenAITool>>()
     private var next = 0
 
     override fun chatCompletion(
@@ -50,6 +52,7 @@ private class FakeCompleter(
         provider: ProviderPreferences?,
     ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
         requests += messages
+        toolRequests += tools
         scripts[next++ % scripts.size].forEach { emit(it) }
     }
 }
@@ -94,12 +97,16 @@ class PromptRunnerTest {
         sessionId = SessionId("sess_prompttest0001"),
     )
 
-    private fun chunk(content: String? = null, reasoning: String? = null): OpenRouterChatCompletionStreamResponse =
+    private fun chunk(
+        content: String? = null,
+        reasoning: String? = null,
+        finishReason: String? = null,
+    ): OpenRouterChatCompletionStreamResponse =
         OpenRouterChatCompletionStreamResponse(
             choices = listOf(
                 OpenRouterStreamChoice(
                     delta = OpenRouterStreamDelta(content = content, reasoning = reasoning),
-                    finishReason = null,
+                    finishReason = finishReason,
                 )
             ),
             created = 0,
@@ -112,6 +119,7 @@ class PromptRunnerTest {
         id: String?,
         functionName: String?,
         arguments: String?,
+        finishReason: String? = null,
     ): OpenRouterChatCompletionStreamResponse =
         OpenRouterChatCompletionStreamResponse(
             choices = listOf(
@@ -125,7 +133,7 @@ class PromptRunnerTest {
                             )
                         )
                     ),
-                    finishReason = null,
+                    finishReason = finishReason,
                 )
             ),
             created = 0,
@@ -249,5 +257,161 @@ class PromptRunnerTest {
             state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>().any { it.content?.text() == "Summary." },
             "wind-down text must be appended to history",
         )
+    }
+
+    @Test
+    fun `empty completion with stop reason retries once with a continuation prompt`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "stop")),
+            listOf(chunk(content = "Actually done.")),
+        )
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertEquals(2, fake.requests.size, "the empty completion must be retried once")
+        assertTrue(
+            fake.toolRequests[1].isNotEmpty(),
+            "the retry must keep tools available so the model can resume tool work",
+        )
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(1, users.size, "a continuation user message must be appended")
+        assertTrue(users.single().content?.text()!!.contains("empty"), users.single().content?.text())
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(listOf("Actually done."), assistants.map { it.content?.text() })
+    }
+
+    @Test
+    fun `truncated length keeps the partial text and retries with a continue prompt`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(content = "Partial", finishReason = "length")),
+            listOf(chunk(content = " done.")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertEquals(2, fake.requests.size)
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(listOf("Partial", " done."), assistants.map { it.content?.text() })
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(1, users.size)
+        assertTrue(users.single().content?.text()!!.contains("cut off"), users.single().content?.text())
+    }
+
+    @Test
+    fun `truncated length drops a complete tool call so the tool never executes`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "length")),
+            listOf(chunk(content = "Done.")),
+        )
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertFalse(tool.executed, "a truncated tool call must never execute")
+        assertTrue(
+            emitter.events.none { it is Event.SessionUpdateEvent && it.update is SessionUpdate.ToolCall },
+            "dropped tool calls must not surface as tool_call updates",
+        )
+        assertEquals(2, fake.requests.size)
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(
+            listOf("Done."),
+            assistants.map { it.content?.text() },
+            "the dropped call must not appear in history"
+        )
+    }
+
+    @Test
+    fun `a second truncation ends the turn with a note instead of an exception`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "length")),
+            listOf(chunk(finishReason = "length")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertEquals(2, fake.requests.size, "exactly one retry")
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(1, assistants.size)
+        assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
+    }
+
+    @Test
+    fun `content filter ends the turn immediately with a notice and no retry`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(content = "Some", finishReason = "content_filter")),
+            listOf(chunk(content = "must not be requested")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertEquals(1, fake.requests.size, "content_filter must not be retried")
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(
+            listOf("Some", "The response was blocked by content filtering."),
+            assistants.map { it.content?.text() })
+    }
+
+    @Test
+    fun `empty completion in the last iteration still gets its one retry`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "stop")),
+            listOf(chunk(finishReason = "length")),
+        )
+        val state = state()
+        val runner = PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
+                listOf(testModel),
+                state,
+            ),
+            toolRegistry = ToolRegistry(),
+            toolCallExecutor = ToolCallExecutor("/project", ToolRegistry(), state),
+            maxTurnRequests = 1,
+            models = listOf(testModel),
+        )
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        assertEquals(
+            2,
+            fake.requests.size,
+            "the truncated last iteration must still get its one retry despite the cap",
+        )
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
     }
 }
