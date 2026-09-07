@@ -102,7 +102,9 @@ class E2eWireConformanceTest : E2eAgentTest() {
 
             assertTrue(session.modesSupported)
             assertEquals(SessionModeId("plan"), session.currentMode.value)
-            assertEquals(listOf("build", "plan", "bash"), session.availableModes.map { it.id.value })
+            assertEquals(
+                listOf("plan", "build", "bash"),
+                session.availableModes.map { it.id.value }) // plan->build->bash is the advertised order
             assertTrue(session.configOptionsSupported)
             val modeOption = session.configOptions.value
                 .filterIsInstance<SessionConfigOption.Select>()

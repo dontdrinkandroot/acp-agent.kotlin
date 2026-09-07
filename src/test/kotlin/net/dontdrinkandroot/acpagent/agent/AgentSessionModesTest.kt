@@ -26,7 +26,7 @@ class AgentSessionModesTest {
     @Test
     fun `modes are advertised with plan as default`() {
         val s = session()
-        assertEquals(listOf("build", "plan", "bash"), s.availableModes.map { it.id.value })
+        assertEquals(listOf("plan", "build", "bash"), s.availableModes.map { it.id.value })
         assertEquals(SessionModeId("plan"), s.defaultMode)
         assertTrue(s.availableModes.all { it.description != null })
         assertTrue(s.availableModes.all { it.name.isNotBlank() })
@@ -40,7 +40,7 @@ class AgentSessionModesTest {
         assertEquals(SessionConfigOptionCategory.MODE, option.category)
         assertEquals("plan", option.currentValue.value)
         val flat = option.options as SessionConfigSelectOptions.Flat
-        assertEquals(listOf("build", "plan", "bash"), flat.options.map { it.value.value })
+        assertEquals(listOf("plan", "build", "bash"), flat.options.map { it.value.value })
     }
 
     @Test

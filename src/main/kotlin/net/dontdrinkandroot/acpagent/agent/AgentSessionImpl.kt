@@ -55,8 +55,8 @@ internal class AgentSessionImpl(
     private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
 
     override val availableModes: List<SessionMode> = listOf(
-        SessionMode(MODE_BUILD, "Build", "Read, write, move and delete files to implement the task"),
         SessionMode(MODE_PLAN, "Plan", "Read-only: research the code and present an implementation plan"),
+        SessionMode(MODE_BUILD, "Build", "Read, write, move and delete files to implement the task"),
         SessionMode(MODE_BASH, "Bash", "Build plus a bash tool; every command asks the user for permission"),
     )
 
