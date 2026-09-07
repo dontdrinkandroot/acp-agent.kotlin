@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
+import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -50,6 +51,13 @@ class RunToolTest {
                 },
             ),
         )
+    }
+
+    @Test
+    fun `tool is execute kind, non-mutating and thus prompt-free in every mode`() {
+        val tool = RunTool(tempDir())
+        assertEquals(ToolKind.EXECUTE, tool.kind)
+        assertFalse(tool.mutating)
     }
 
     @Test

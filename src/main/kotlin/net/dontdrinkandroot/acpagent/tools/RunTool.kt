@@ -201,7 +201,7 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
             "placeholder in the configuration command."
 
     override val kind = ToolKind.EXECUTE
-    override val mutating = true
+    override val mutating = false
     override val modes = emptyList<SessionModeId>()
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 

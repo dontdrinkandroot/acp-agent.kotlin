@@ -131,11 +131,10 @@ Config comes from environment variables:
   via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
   leaked a literal `{args}` into the shell for multi-placeholder
   configs),
-  configs without the placeholder reject arguments. `mutating = true` so every `run` asks the
-  user for permission regardless of mode; the config file is project-controlled (same trust
-  tier as AGENTS.md), so the name + args shown in the permission prompt are the real gate (the resolved command itself
-  stays in `.ai/run.json`; see the tool-call title note under
-  Permissions).
+  configs without the placeholder reject arguments. `mutating = false` so `run` never asks for
+  permission in any mode (incl. plan); the trust model is that the config file is
+  project-controlled (same trust tier as AGENTS.md). The `title` override (`run(config: ...)`,
+  see the tool-call title note under Permissions) still renders in tool-call progress.
   Configs are managed by explicit dedicated tools (`tools/RunConfigTools.kt`, also read from
   local disk): `list_run_configs` (read-only, every mode) and `create_run_config` /
   `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
@@ -439,9 +438,9 @@ provider routing (`provider` object with median cap, fail-open on endpoints erro
 disabled via env), the system prompt's `Agent build:` hash round-tripped from the
 classpath `git.properties`, and path-aware permissions + the client fs proxy (in-project
 read/write without a prompt, out-of-project read prompts, proxy disabled via
-`FS_PROXY_ENABLED=0` falls back to the local store), the `run` tool
-(mutating permission prompt in plan mode, side effect verified on disk, unknown
-config fails loudly), the run-config management tools (`create_run_config`
+`FS_PROXY_ENABLED=0` falls back to the local store), the `run` tool (prompt-free in every mode since it is non-mutating,
+side effect verified on
+disk, unknown config fails loudly), the run-config management tools (`create_run_config`
 persists `.ai/run.json` after a build-mode permission prompt; in plan mode the
 write tools are absent while `list_run_configs` runs without a prompt), and the
 move/delete tools (in-project `move_file`/`delete_file` without a prompt with the
