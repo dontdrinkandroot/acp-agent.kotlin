@@ -68,6 +68,9 @@ Config comes from environment variables:
   the automatic provider routing, see Features)
 - `FS_PROXY_ENABLED` (default enabled; `0` uses the local store even when the
   client advertises fs capabilities, see Features)
+- `MCP_TRUST_ANNOTATIONS` (default enabled; `0` ignores MCP tool behavior
+  annotations, keeping the pessimistic always-prompt permission default, see
+  Permissions)
 - `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
   after this many seconds, killing the whole process tree, see Features)
 - `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
@@ -234,7 +237,13 @@ Config comes from environment variables:
   be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
-  `session/request_permission` (all MCP tools are treated as mutating, so they always prompt).
+  `session/request_permission`. MCP tools always prompt **unless** the server annotates the
+  tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
+  enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the
+  pessimistic always-prompt default). The trusted `title` annotation replaces the bare tool
+  name in permission prompts and tool-call progress (MCP names are often machine-prefixed);
+  the display kind derives from `readOnlyHint`/`destructiveHint` (read-only `other`,
+  non-destructive `edit`, potentially destructive `delete`) and is cosmetic only.
   A tool's targets come from `AgentTool.targetPaths(arguments)` (`tools/Tool.kt`, defaults to
   the single `targetPath`; `move_file`/`move_directory` override it with source + destination)
   and every target must lie inside the cwd for a prompt-free call - a move with an
@@ -272,7 +281,14 @@ Config comes from environment variables:
     load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
-  `mcpCapabilities.http/sse`.
+  `mcpCapabilities.http/sse`. The streamable-HTTP client (`McpConnector.connectHttp`)
+  installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
+  a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
+  MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
+  trusted (`MCP_TRUST_ANNOTATIONS`, default enabled; see Permissions) - pinned black-box by
+  `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
+  mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
+  tools carry the mandatory `inputSchema`).
 - **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
   see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
   relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
@@ -329,8 +345,8 @@ Config comes from environment variables:
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
   home (`ACP_DOCKER_HOME_VOLUME` -> named volume), non-root user matching host UID/GID,
   host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables), host session state
-  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_BASH_TIMEOUT_SECONDS`/
-  `ACP_MAX_TURN_REQUESTS` forwarded,
+  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
+  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS` forwarded,
   host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
   `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
   `./build-docker`. Launcher output is stderr-only - ACP travels over the container
@@ -344,7 +360,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # factory (AgentSessionFactory: create/restore), store
                                      # wiring, transport, isoDateToday
     BuildInfo.kt                     # build commit hash from git.properties (classpath)
-    config/Config.kt                 # env config (OPENROUTER_*, FS_PROXY_ENABLED)
+    config/Config.kt                 # env config (OPENROUTER_*, FS_PROXY_ENABLED,
+                                     # MCP_TRUST_ANNOTATIONS)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
     llm/ChatCompleter.kt             # chat-completion seam (LlmClient implements it) so the prompt
@@ -354,8 +371,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
                                      # provider endpoints feed)
     providerrouting/ProviderRouting.kt  # auto provider routing: throughput sort + median completion cap
-    mcp/McpBridge.kt                 # MCP ServerConnection, McpTool, JsonObject->Any map
-    mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM)
+    mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
+                                     # mutating/kind/title), JsonObject->Any map
+    mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE)
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt)
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
@@ -400,6 +418,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # lifecycle (withE2eAgent), connect helpers, prompt helpers
         MockOpenAiServer.kt          # mock OpenRouter server (SSE chunks, models + endpoints feed)
                                      # + MockToolCall / pathArgs
+        MockMcpServer.kt             # in-process streamable-HTTP MCP mock (JSON POST responses,
+                                     # 202 initialized, 405 GET/DELETE) with annotated tools
+                                     # (readOnly+title / unannotated / destructive+title) + marker file
         ClientOperations.kt          # client session ops doubles: TestClientOperations
                                      # (records requests/notifications, allow_once) +
                                      # SuspendingPermissionOperations (stuck permission prompt)
@@ -415,6 +436,10 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + move/delete tools (in-project without prompt, out-of-project
                                      # move destination prompts)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
+        E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
+                                     # (trusted), unannotated prompts + executes,
+                                     # MCP_TRUST_ANNOTATIONS=0 prompts, destructive annotated
+                                     # title, mcpCapabilities.http advertisement
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
                                         # sources are newer than the installDist binary, then
@@ -455,7 +480,12 @@ persists `.ai/run.json` after a build-mode permission prompt; in plan mode the
 write tools are absent while `list_run_configs` runs without a prompt), and the
 move/delete tools (in-project `move_file`/`delete_file` without a prompt with the
 side effect verified on disk; an out-of-project move destination routed through
-`session/request_permission`). Plus a
+`session/request_permission`), and the MCP tool annotations (`E2eMcpToolPermissionTest` over the in-process
+`MockMcpServer`: trusted
+`readOnlyHint: true` runs prompt-free with the annotated `title`, an unannotated
+tool prompts and executes when allowed, `MCP_TRUST_ANNOTATIONS=0` restores the
+pessimistic prompt with the bare tool name, a destructive tool prompts with the
+annotated title while `rawInput` keeps the arguments). Plus a
 **persistence scenario
 across three agent restarts** (`session/list` ->
 `session/load` with replay -> `session/resume` -> delete).
@@ -464,9 +494,11 @@ timeout**, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-
 truncation and past-EOF error, listing caps, grep match/line caps and the binary/oversized
 skips, the `.git` walker skip) are unit-tested in `BashToolTest`/`ToolsTest`; move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
-payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip, and
-the strict JSON-null argument rejections are unit-tested in
-`ToolsTest`/`PermissionAndFileStoreTest`. **e2e change policy**: e2e scenarios pin the agent's **wire contract** -
+payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip, the
+strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted
+`readOnlyHint`, kind mapping, `title` annotation) are unit-tested in
+`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`. **e2e change policy**: e2e scenarios pin the agent's **wire
+contract** -
 protocol message flow,
 security boundaries (permission routing, mode restrictions, containment caps), observable side
 effects, and session/replay semantics - not internal orchestration (LLM call counts, mock filler

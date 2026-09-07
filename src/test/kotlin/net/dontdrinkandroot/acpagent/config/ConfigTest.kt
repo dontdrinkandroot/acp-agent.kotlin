@@ -75,6 +75,20 @@ class ConfigParseTest {
     }
 
     @Test
+    fun `mcp trust annotations parsing honours the zero toggle`() {
+        assertTrue(Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).mcpTrustAnnotations)
+        assertTrue(
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "MCP_TRUST_ANNOTATIONS" to "garbage"))
+                .mcpTrustAnnotations,
+        )
+        assertEquals(
+            false,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "MCP_TRUST_ANNOTATIONS" to "0"))
+                .mcpTrustAnnotations,
+        )
+    }
+
+    @Test
     fun `bash timeout defaults to 600 seconds`() {
         assertEquals(
             600,

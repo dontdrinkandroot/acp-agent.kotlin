@@ -2,10 +2,10 @@ package net.dontdrinkandroot.acpagent.mcp
 
 import com.agentclientprotocol.model.HttpHeader
 import com.agentclientprotocol.model.McpServer
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.sse.SSE
-import io.ktor.client.request.header
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.sse.*
+import io.ktor.client.request.*
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.StdioClientTransport
 import io.modelcontextprotocol.kotlin.sdk.client.mcpSseTransport
@@ -56,7 +56,13 @@ private suspend fun connectHttp(
     headers: List<HttpHeader>,
     clientInfo: Implementation
 ): McpServerConnection = withContext(Dispatchers.IO) {
-    val httpClient = HttpClient(CIO)
+    // The SSE plugin is required even for JSON-only streamable-HTTP servers:
+    // after `notifications/initialized` the client probes the optional GET SSE
+    // stream via `sseSession()`, which throws when the plugin is missing. A
+    // 405 response then cleanly disables the stream ("stream disabled").
+    val httpClient = HttpClient(CIO) {
+        install(SSE)
+    }
     val transport = httpClient.mcpStreamableHttpTransport(url) {
         headers.forEach { header(it.name, it.value) }
     }

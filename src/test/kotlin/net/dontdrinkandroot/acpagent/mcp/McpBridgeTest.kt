@@ -1,21 +1,12 @@
 package net.dontdrinkandroot.acpagent.mcp
 
+import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
+import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertIs
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
+import kotlinx.serialization.json.*
+import kotlin.test.*
 
 class McpBridgeTest {
 
@@ -98,9 +89,63 @@ class McpBridgeTest {
         val mcpTool = McpTool(
             McpServerConnection("srv", Client(clientInfo = createMcpClientInfo())),
             tool,
+            trustAnnotations = true,
         )
         val parameters = mcpTool.parameters
         assertEquals("object", parameters["type"]?.jsonPrimitive?.content)
         assertNotNull(parameters["properties"])
+    }
+
+    private fun mcpTool(
+        annotations: ToolAnnotations? = null,
+        trustAnnotations: Boolean = true,
+    ): McpTool = McpTool(
+        McpServerConnection("srv", Client(clientInfo = createMcpClientInfo())),
+        Tool(name = "tool", inputSchema = ToolSchema(), annotations = annotations),
+        trustAnnotations = trustAnnotations,
+    )
+
+    @Test
+    fun `trusted read only hint makes the tool non mutating and other kinded`() {
+        val mcpTool = mcpTool(annotations = ToolAnnotations(readOnlyHint = true))
+        assertEquals(false, mcpTool.mutating)
+        assertEquals(ToolKind.OTHER, mcpTool.kind)
+    }
+
+    @Test
+    fun `untrusted read only hint keeps the pessimistic mutating default`() {
+        val mcpTool = mcpTool(annotations = ToolAnnotations(readOnlyHint = true), trustAnnotations = false)
+        assertEquals(true, mcpTool.mutating)
+        assertEquals(ToolKind.OTHER, mcpTool.kind)
+        assertNull(mcpTool.title(buildJsonObject { }))
+    }
+
+    @Test
+    fun `absent or hint-less annotations stay mutating`() {
+        assertEquals(true, mcpTool(annotations = null).mutating)
+        assertEquals(true, mcpTool(annotations = ToolAnnotations()).mutating)
+        assertEquals(true, mcpTool(annotations = ToolAnnotations(idempotentHint = true)).mutating)
+    }
+
+    @Test
+    fun `destructive hint drives the display kind`() {
+        assertEquals(
+            ToolKind.DELETE,
+            mcpTool(annotations = ToolAnnotations(readOnlyHint = false, destructiveHint = true)).kind,
+        )
+        assertEquals(
+            ToolKind.EDIT,
+            mcpTool(annotations = ToolAnnotations(readOnlyHint = false, destructiveHint = false)).kind,
+        )
+        assertEquals(ToolKind.DELETE, mcpTool(annotations = ToolAnnotations(readOnlyHint = false)).kind)
+    }
+
+    @Test
+    fun `trusted title annotation is surfaced and untrusted is not`() {
+        val annotated = mcpTool(annotations = ToolAnnotations(title = "Create issue"))
+        assertEquals("Create issue", annotated.title(buildJsonObject { }))
+        val untrusted = mcpTool(annotations = ToolAnnotations(title = "Create issue"), trustAnnotations = false)
+        assertNull(untrusted.title(buildJsonObject { }))
+        assertNull(mcpTool(annotations = null).title(buildJsonObject { }))
     }
 }

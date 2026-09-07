@@ -6,6 +6,7 @@ public data class Config(
     val openRouterBaseUrl: String,
     val autoThroughputSortingEnabled: Boolean = true,
     val fsProxyEnabled: Boolean = true,
+    val mcpTrustAnnotations: Boolean = true,
     val bashTimeoutSeconds: Int = 600,
     val maxTurnRequests: Int = 100,
 ) {
@@ -25,6 +26,7 @@ public data class Config(
                 openRouterBaseUrl = env["OPENROUTER_BASE_URL"] ?: DEFAULT_BASE_URL,
                 autoThroughputSortingEnabled = env["OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED"] != "0",
                 fsProxyEnabled = env["FS_PROXY_ENABLED"] != "0",
+                mcpTrustAnnotations = env["MCP_TRUST_ANNOTATIONS"] != "0",
                 bashTimeoutSeconds = (env["ACP_BASH_TIMEOUT_SECONDS"]?.toIntOrNull()
                     ?: DEFAULT_BASH_TIMEOUT_SECONDS).coerceAtLeast(1),
                 maxTurnRequests = (env["ACP_MAX_TURN_REQUESTS"]?.toIntOrNull()

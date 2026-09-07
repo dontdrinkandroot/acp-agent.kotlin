@@ -73,7 +73,7 @@ public fun runAgent(args: Array<String>) {
                 .onSuccess { tools ->
                     tools.forEach { tool ->
                         if (registry.get(tool.name) == null) {
-                            registry.register(McpTool(connection, tool))
+                            registry.register(McpTool(connection, tool, config.mcpTrustAnnotations))
                         } else {
                             logger.warn {
                                 "MCP server ${server.name} tool \"${tool.name}\" collides with an existing " +
