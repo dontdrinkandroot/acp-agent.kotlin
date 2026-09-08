@@ -9,6 +9,7 @@ import com.github.f4b6a3.uuid.UuidCreator
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.serialization.json.JsonElement
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
@@ -33,8 +34,9 @@ private val logger = KotlinLogging.logger {}
 
 
  * A `content_filter` finish reason is not retried:the turn ends immediately
- * with the partial text and a notice. Both cases are logged to stderr so the
- * problem stays visible. Transport-level failures (a stream ending without
+ * with the partial text and a notice. Both cases are logged to stderr
+ * (with the full unfiltered completion) so the problem stays visible.
+ * Transport-level failures (a stream ending without
  * `[DONE]` / finish reason) remain loud `LlmException`s. */
 @OptIn(UnstableApi::class)
 internal class PromptRunner(
@@ -84,18 +86,9 @@ internal class PromptRunner(
                 iteration.truncated && !continuationUsed -> {
                     continuationUsed = true
                     continuationPending = true
-                    val reason = iteration.finishReason ?: "empty"
                     val empty = iteration.text.isEmpty()
                     val partial = iteration.text.takeIf { it.isNotEmpty() }
-                    if (partial == null) {
-                        logger.warn {
-                            "Truncated/empty chat completion ($reason; empty, iteration $iterations): continuing with one retry"
-                        }
-                    } else {
-                        logger.warn {
-                            "Truncated/empty chat completion ($reason; ${partial.length} chars, iteration $iterations): continuing with one retry"
-                        }
-                    }
+                    logAbnormalRetry(iteration, iterations)
                     // All tool calls are dropped - including complete ones - so a
                     // truncated call is never executed and the model re-issues them.
 
@@ -109,11 +102,7 @@ internal class PromptRunner(
                 }
 
                 iteration.truncated -> {
-
-                    val reason = iteration.finishReason ?: "empty"
-                    logger.error {
-                        "Truncated/empty chat completion ($reason) survived the retry: ending the turn with an incomplete-response note"
-                    }
+                    logAbnormalEnd(iteration, "survived the retry")
                     val note = "The response was interrupted before completion;the task may need a new prompt."
                     state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
                     state.persist()
@@ -180,12 +169,7 @@ internal class PromptRunner(
         usage = windDown.usage ?: usage
 
         if (windDown.truncated) {
-
-
-            val reason = windDown.finishReason ?: "empty"
-            logger.error {
-                "Truncated/empty chat completion ($reason) in the wind-down pass: ending the turn with an incomplete-response note"
-            }
+            logAbnormalEnd(windDown, "in the wind-down pass")
             val note = "The response was interrupted before completion;the task may need a new prompt."
             state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
             emitTextChunk(emitter, note, newMessageId())
@@ -204,10 +188,12 @@ internal class PromptRunner(
     /**
      * Streams one chat completion and relays its deltas: reasoning as
      * thought chunks, text as message chunks (accumulating the reply)and
-     * tool-call deltas merged into a per-index accumulator. The first choice's
-     * last non-null finish reason is captured so the caller can distinguish a
-     * truncated or blocked completion from a natural stop. (OpenRouter repeats
-     * the reason in the final chunk, so the last value is authoritative.)
+     * tool-call deltas merged into a per-index accumulator. Every non-null
+     * content and reasoning delta is additionally accumulated unfiltered
+     * (empty included) so abnormal completions can be logged verbatim;the
+     * first choice's last non-null finish reasons are captured so the caller can
+     * distinguish a truncated or blocked completion from a natural stop. (OpenRouter
+     * repeats the reason in the final chunk, so the last value is authoritative.)
      */
     private suspend fun streamChat(
         emitter: FlowCollector<Event>,
@@ -215,10 +201,15 @@ internal class PromptRunner(
         tools: List<OpenAITool>,
         messageId: MessageId,
     ): StreamedIteration {
-        val text = StringBuilder()
+        val rawContent = StringBuilder()
+        var contentSeen = false
+        val rawReasoning = StringBuilder()
+        var reasoningSeen = false
+        val reasoningDetailsAccum = mutableListOf<JsonElement>()
         val toolCallAccum = mutableMapOf<Int, MutableStreamToolCall>()
         var usage: OpenAIUsage? = null
         var finishReason: String? = null
+        var nativeFinishReason: String? = null
         chatCompleter.chatCompletion(
             messages = messages,
             tools = tools,
@@ -229,26 +220,35 @@ internal class PromptRunner(
             chunk.usage?.let { usage = it }
             chunk.choices.firstOrNull()?.let { choice ->
                 choice.finishReason?.let { finishReason = it }
-                choice.delta.reasoning?.takeIf { it.isNotEmpty() }?.let { reasoning ->
-                    emitter.emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.AgentThoughtChunk(
-                                ContentBlock.Text(reasoning),
-                                messageId
+                choice.nativeFinishReason?.let { nativeFinishReason = it }
+                choice.delta.reasoning?.let { reasoning ->
+                    reasoningSeen = true
+                    rawReasoning.append(reasoning)
+                    if (reasoning.isNotEmpty()) {
+                        emitter.emit(
+                            Event.SessionUpdateEvent(
+                                SessionUpdate.AgentThoughtChunk(
+                                    ContentBlock.Text(reasoning),
+                                    messageId
+                                )
                             )
                         )
-                    )
+                    }
                 }
-                choice.delta.content?.takeIf { it.isNotEmpty() }?.let { chunkText ->
-                    text.append(chunkText)
-                    emitter.emit(
-                        Event.SessionUpdateEvent(
-                            SessionUpdate.AgentMessageChunk(
-                                ContentBlock.Text(chunkText),
-                                messageId
+                choice.delta.reasoningDetails?.let { reasoningDetailsAccum += it }
+                choice.delta.content?.let { chunkText ->
+                    contentSeen = true
+                    rawContent.append(chunkText)
+                    if (chunkText.isNotEmpty()) {
+                        emitter.emit(
+                            Event.SessionUpdateEvent(
+                                SessionUpdate.AgentMessageChunk(
+                                    ContentBlock.Text(chunkText),
+                                    messageId
+                                )
                             )
                         )
-                    )
+                    }
                 }
                 choice.delta.toolCalls?.forEach { tc ->
                     val acc = toolCallAccum.getOrPut(tc.index) { MutableStreamToolCall() }
@@ -259,10 +259,13 @@ internal class PromptRunner(
             }
         }
         return StreamedIteration(
-            text.toString(),
+            rawContent = rawContent.toString().takeIf { contentSeen },
             toolCallAccum.values.map { it.toToolCall() },
             usage,
             finishReason,
+            nativeFinishReason,
+            rawReasoning = rawReasoning.toString().takeIf { reasoningSeen },
+            reasoningDetailsAccum.takeIf { it.isNotEmpty() },
         )
     }
 
@@ -299,12 +302,27 @@ internal class PromptRunner(
     }
 }
 
-private data class StreamedIteration(
-    val text: String,
+/**
+ * One streamed chat completion:the accumulated unfiltered deltas, the
+ * finish reasons and usage. [rawContent]/[rawReasoning] are null when the
+ * provider sent no such delta at all, "" when it sent only empty ones, and
+ * the concatenated text otherwise;so an empty-but-present field stays
+ * distinguishable from an absent one. [text] is the usable content;
+ * [renderLog] dumps everything verbatim for abnormal-completion diagnostics.
+
+ */
+internal data class StreamedIteration(
+    val rawContent: String?,
     val toolCalls: List<StreamToolCall>,
     val usage: OpenAIUsage?,
     val finishReason: String? = null,
+    val nativeFinishReason: String? = null,
+    val rawReasoning: String? = null,
+    val reasoningDetails: List<JsonElement>? = null,
 ) {
+    val text: String
+        get() = rawContent.orEmpty()
+
     /**
      * The iteration produced no text and no tool calls, or ended with a truncation
      * finish reason (`length`, or any reason that is neither a natural stop nor
@@ -318,6 +336,45 @@ private data class StreamedIteration(
             finishReason != null && finishReason != "stop" && finishReason != "tool_calls" -> true
             else -> text.isEmpty() && toolCalls.isEmpty()
         }
+
+    /**
+     * Dumps the full, unfiltered completion for diagnostics: the raw content
+     * and reasoning exactly as received (present-but-empty distinct from
+     * absent), the raw provider finish reason and any structured reasoning
+     * details. Used when an abnormal completion (truncation, empty,..)
+     * makes the turn fail or retry, so the problem stays visible in stderr.
+
+     */
+    fun renderLog(): String = buildString {
+        append("finishReason=").append(finishReason ?: "<none>")
+        append(" nativeFinishReason=").append(nativeFinishReason ?: "<none>")
+        append(" content=").append(rawContent.asLogValue())
+        append(" reasoning=").append(rawReasoning.asLogValue())
+        append(" reasoningDetails=")
+        reasoningDetails?.let { details ->
+            append(details.joinToString { it.toString() })
+        } ?: append("<absent>")
+        append(" toolCalls=").append(toolCalls)
+    }
+}
+
+private fun logAbnormalRetry(iteration: StreamedIteration, iterations: Int) {
+
+    logger.warn {
+        "Truncated/empty chat completion (iteration $iterations): continuing with one retry: ${iteration.renderLog()}"
+    }
+}
+
+private fun logAbnormalEnd(iteration: StreamedIteration, context: String) {
+    logger.error {
+        "Truncated/empty chat completion $context: ${iteration.renderLog()}"
+    }
+}
+
+private fun String?.asLogValue(): String = when {
+    this == null -> "<absent>"
+    isEmpty() -> "<empty>"
+    else -> replace("\r", "\\r").replace("\n", "\\n")
 }
 
 private const val WIND_DOWN_PROMPT =

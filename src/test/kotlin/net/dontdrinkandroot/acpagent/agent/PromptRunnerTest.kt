@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
@@ -101,12 +102,14 @@ class PromptRunnerTest {
         content: String? = null,
         reasoning: String? = null,
         finishReason: String? = null,
+        nativeFinishReason: String? = null,
     ): OpenRouterChatCompletionStreamResponse =
         OpenRouterChatCompletionStreamResponse(
             choices = listOf(
                 OpenRouterStreamChoice(
                     delta = OpenRouterStreamDelta(content = content, reasoning = reasoning),
                     finishReason = finishReason,
+                    nativeFinishReason = nativeFinishReason,
                 )
             ),
             created = 0,
@@ -413,5 +416,58 @@ class PromptRunnerTest {
         )
         val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
         assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
+    }
+
+    @Test
+    fun `renderLog dumps the unfiltered completion including empty-but-present fields`() {
+        val iteration = StreamedIteration(
+            rawContent = "Partial\nrest",
+            toolCalls = emptyList(),
+            usage = null,
+            finishReason = "length",
+            nativeFinishReason = "length",
+            rawReasoning = "",
+            reasoningDetails = listOf(JsonPrimitive("redacted")),
+        )
+        val log = iteration.renderLog()
+        assertTrue(log.contains("finishReason=length"), log)
+        assertTrue(log.contains("nativeFinishReason=length"), log)
+        assertTrue(log.contains("content=Partial\\nrest"), log)
+        assertTrue(log.contains("reasoning=<empty>"), log)
+        assertTrue(log.contains("""reasoningDetails="redacted""""), log)
+        assertEquals("Partial\nrest", iteration.text)
+    }
+
+    @Test
+    fun `renderLog marks absent fields distinctly from empty ones`() {
+        val iteration = StreamedIteration(
+            rawContent = "Partial",
+            toolCalls = emptyList(),
+            usage = null,
+            finishReason = "length",
+        )
+        val log = iteration.renderLog()
+        assertTrue(log.contains("reasoning=<absent>"), log)
+        assertTrue(log.contains("reasoningDetails=<absent>"), log)
+        assertTrue(log.contains("nativeFinishReason=<none>"), log)
+        assertEquals("Partial", iteration.text)
+    }
+
+    @Test
+    fun `empty-but-present reasoning in a truncation still gets its one retry`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(content = "Partial", reasoning = "", finishReason = "length", nativeFinishReason = "length")),
+            listOf(chunk(content = " done.")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(1, users.size, "a continuation user message must be appended")
     }
 }
