@@ -89,27 +89,9 @@ if [ -f "$project_dir/.env.local" ]; then
 fi
 
 cache_mounts=()
+cache_env_overrides=()
 mounted_dsts=" "
 mounted_caches=
-
-mount_cache() {
-    local host_dir=$1 dst=$2 label=$3
-    if [ -z "$host_dir" ] || [ "$host_dir" = / ]; then
-        return 0
-    fi
-    case "$host_dir" in
-        "$project_dir"|"$project_dir"/*) return 0 ;;
-    esac
-    case "$mounted_dsts" in
-        *" $dst "*) return 0 ;;
-    esac
-    if [ ! -d "$host_dir" ]; then
-        mkdir -p "$host_dir" 2>/dev/null || return 0
-    fi
-    cache_mounts+=(--mount "type=bind,src=$host_dir,dst=$dst")
-    mounted_dsts="$mounted_dsts $dst "
-    mounted_caches="$mounted_caches $label($host_dir)"
-}
 
 add_tool_cache() {
     local label=$1 dst=$2 env_name=$3
@@ -121,8 +103,15 @@ add_tool_cache() {
             /*) ;;
             *) host_dir= ;;
         esac
+        # An explicitly configured dir is created if missing (docker bind mounts
+        # need an existing source); on failure it is dropped like an unset var.
+        if [ -n "$host_dir" ] && [ ! -d "$host_dir" ]; then
+            mkdir -p "$host_dir" 2>/dev/null || host_dir=
+        fi
     fi
     if [ -z "$host_dir" ]; then
+        # Fallback: only an already existing host default dir is shared - never
+        # created (the tool then keeps its ephemeral in-container default).
         for candidate in "${candidates[@]}"; do
             if [ -d "$candidate" ]; then
                 host_dir=$candidate
@@ -130,7 +119,23 @@ add_tool_cache() {
             fi
         done
     fi
-    mount_cache "$host_dir" "$dst" "$label"
+    if [ -z "$host_dir" ] || [ "$host_dir" = / ]; then
+        return 0
+    fi
+    case "$host_dir" in
+        "$project_dir"|"$project_dir"/*) return 0 ;;
+    esac
+    case "$mounted_dsts" in
+        *" $dst "*) return 0 ;;
+    esac
+    cache_mounts+=(--mount "type=bind,src=$host_dir,dst=$dst")
+    mounted_dsts="$mounted_dsts $dst "
+    mounted_caches="$mounted_caches $label($host_dir)"
+    if [ -n "$env_name" ]; then
+        # Pin the tool to the mounted dir inside the container: the dst is the
+        # tool's in-container default, so the value matches for existing tools.
+        cache_env_overrides+=(--env "$env_name=$dst")
+    fi
 }
 
 if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
@@ -148,7 +153,7 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache pub "$container_home/.pub-cache" PUB_CACHE "$HOME/.pub-cache"
     add_tool_cache pnpm-store "$container_data_dir/pnpm/store" "" "$host_data_home/pnpm/store"
     add_tool_cache pnpm-cache "$container_cache_dir/pnpm" "" "$host_cache_home/pnpm"
-    add_tool_cache konan "$container_cache_dir/konan" KONAN_DATA_DIR "$host_data_home/konan"
+    add_tool_cache konan "$container_home/.konan" KONAN_DATA_DIR "$HOME/.konan"
     if [ -n "$mounted_caches" ]; then
         printf 'Mounting host caches:%s\n' "$mounted_caches" >&2
     fi
@@ -170,7 +175,7 @@ if [ ${#state_mounts[@]} -gt 0 ]; then
 fi
 
 forwarded_env=(--env "OPENROUTER_API_KEY=$OPENROUTER_API_KEY")
-for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS KONAN_DATA_DIR; do
+for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS; do
     if [ -n "${!var_name:-}" ]; then
         forwarded_env+=(--env "$var_name=${!var_name}")
     fi
@@ -222,6 +227,7 @@ exec "$docker_bin" run --rm --init -i \
     --tmpfs /tmp:rw,nosuid,nodev,exec,size=1g \
     "${git_identity_env[@]}" \
     "${forwarded_env[@]}" \
+    "${cache_env_overrides[@]}" \
     --env "HOME=$container_home" \
     --env "TERM=${TERM:-}" \
     --env "XDG_CONFIG_HOME=$container_home/.config" \

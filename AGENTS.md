@@ -365,10 +365,13 @@ Config comes from environment variables:
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
   home (`ACP_DOCKER_HOME_VOLUME` -> named volume), non-root user matching host UID/GID,
-  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables; incl. `KONAN_DATA_DIR`
-  -> Kotlin/Native data dir, host fallback `$XDG_DATA_HOME/konan`), host session state
+  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables) when the tool's env var
+  (absolute; created if missing) points at a custom dir or the host default dir already
+  exists (never created) - mounted at the tool's in-container default with the env var
+  pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
+  ...), host session state
   always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`KONAN_DATA_DIR` forwarded,
+  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS` forwarded,
   host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
   `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
   `./build-docker`. Launcher output is stderr-only - ACP travels over the container
