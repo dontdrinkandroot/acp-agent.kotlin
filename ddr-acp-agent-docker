@@ -148,6 +148,7 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache pub "$container_home/.pub-cache" PUB_CACHE "$HOME/.pub-cache"
     add_tool_cache pnpm-store "$container_data_dir/pnpm/store" "" "$host_data_home/pnpm/store"
     add_tool_cache pnpm-cache "$container_cache_dir/pnpm" "" "$host_cache_home/pnpm"
+    add_tool_cache konan "$container_cache_dir/konan" KONAN_DATA_DIR "$host_data_home/konan"
     if [ -n "$mounted_caches" ]; then
         printf 'Mounting host caches:%s\n' "$mounted_caches" >&2
     fi
@@ -169,7 +170,7 @@ if [ ${#state_mounts[@]} -gt 0 ]; then
 fi
 
 forwarded_env=(--env "OPENROUTER_API_KEY=$OPENROUTER_API_KEY")
-for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS; do
+for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS KONAN_DATA_DIR; do
     if [ -n "${!var_name:-}" ]; then
         forwarded_env+=(--env "$var_name=${!var_name}")
     fi
