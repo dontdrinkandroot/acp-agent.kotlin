@@ -203,7 +203,8 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
     override val kind = ToolKind.EXECUTE
     override val mutating = false
     override val modes = emptyList<SessionModeId>()
-    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
+    override fun title(arguments: JsonObject): String? =
+        formatRunToolTitle(arguments.stringArg("config"), arguments.stringArg("args"))
 
     override val parameters: JsonObject = jsonSchema(
         required("config", PropType.STRING, "Name of the run configuration to execute"),

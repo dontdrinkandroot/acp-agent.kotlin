@@ -181,8 +181,11 @@ class RunConfigToolsTest {
 
     @Test
     fun `titles show the write arguments`() {
+        // Behavioral change: titles lead with the config name now and are
+        // order-independent, so client-side elision cannot hide which config
+        // a write tool touches.
         assertEquals(
-            "create_run_config(name: test, command: echo hello, description: unit)",
+            "create_run_config(test: echo hello, description: unit)",
             CreateRunConfigTool("/tmp").title(
                 buildJsonObject {
                     put("name", "test")
@@ -192,7 +195,7 @@ class RunConfigToolsTest {
             ),
         )
         assertEquals(
-            "update_run_config(name: test, command: echo new)",
+            "update_run_config(test: echo new)",
             UpdateRunConfigTool("/tmp").title(
                 buildJsonObject {
                     put("name", "test")
@@ -201,7 +204,7 @@ class RunConfigToolsTest {
             ),
         )
         assertEquals(
-            "delete_run_config(name: test)",
+            "delete_run_config(test)",
             DeleteRunConfigTool("/tmp").title(buildJsonObject { put("name", "test") }),
         )
     }

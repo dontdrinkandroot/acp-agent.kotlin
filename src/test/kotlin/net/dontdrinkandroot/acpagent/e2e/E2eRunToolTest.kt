@@ -47,7 +47,8 @@ class E2eRunToolTest : E2eAgentTest() {
                 assertTrue(ops.permissionRequests.isEmpty(), "run is non-mutating and must not ask permission")
                 val toolCalls = updates.filterIsInstance<SessionUpdate.ToolCall>()
                 assertEquals(1, toolCalls.size)
-                assertEquals("run(config: marker)", toolCalls.single().title)
+                // Behavioral change: run titles lead with the config name now.
+                assertEquals("run(marker)", toolCalls.single().title)
                 assertEquals(ToolKind.EXECUTE, toolCalls.single().kind)
                 val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     .filter { it.toolCallId == toolCalls.single().toolCallId }

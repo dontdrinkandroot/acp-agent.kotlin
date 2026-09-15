@@ -7,13 +7,45 @@ import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.*
 
-private const val MAX_TITLE_ARGUMENTS_LENGTH = 50
-private const val MAX_TITLE_ARGUMENTS_KEEP = 47
+private const val MAX_TITLE_ARGUMENTS_LENGTH = 100
+private const val MAX_TITLE_ARGUMENTS_KEEP = 97
+
+/**
+ * Formats a tool-call title for the `run` tool: `run(config)` or
+ * `run(config: args)`. The config name always leads and is never truncated
+ * (it identifies *what* runs); only the args part is capped at
+ * [MAX_TITLE_ARGUMENTS_LENGTH] so long args cannot push the name out of the
+ * title. Order-independent: reads named keys instead of the JSON insertion
+ * order the model chose.
+ */
+public fun formatRunToolTitle(config: String?, args: String?): String = when {
+    config == null -> "run"
+    args.isNullOrBlank() -> "run($config)"
+    else -> "run($config: ${args.flattenForTitle().truncateForTitle()})"
+}
+
+/**
+ * Formats a tool-call title for the run-config write tools:
+ * `create_run_config(name)` / `create_run_config(name: command, ...)`. The
+ * config name always leads and is never truncated; the optional command and
+ * description follow, each capped at [MAX_TITLE_ARGUMENTS_LENGTH].
+ * Order-independent.
+ */
+public fun formatRunConfigToolTitle(toolName: String, name: String, command: String?, description: String?): String =
+    buildString {
+        append(toolName).append('(').append(name)
+        command?.takeIf { it.isNotBlank() }?.let { append(": ").append(it.flattenForTitle().truncateForTitle()) }
+        description?.takeIf { it.isNotBlank() }?.let { append(", description: ").append(it.flattenForTitle().truncateForTitle()) }
+        append(')')
+    }
+
+private fun String.truncateForTitle(): String =
+    if (length > MAX_TITLE_ARGUMENTS_LENGTH) take(MAX_TITLE_ARGUMENTS_KEEP) + "..." else this
 
 /**
  * Formats a human-readable tool-call title as `name(key: value, ...)` for
  * permission prompts and tool-call progress. Values are shown unquoted, blank
- * values are skipped and the argument part is trimmed when it exceeds 50
+ * values are skipped and the argument part is trimmed when it exceeds 100
  * characters.
  *
  * The JetBrains ACP client renders only the `title` of a tool call in its
@@ -24,15 +56,10 @@ private const val MAX_TITLE_ARGUMENTS_KEEP = 47
 public fun formatToolTitle(name: String, arguments: JsonObject): String {
     val rendered = arguments.mapNotNull { (key, value) ->
         val content = value.primitiveContentOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        "$key: ${content.flattenForTitle()}"
+        "$key: ${content.flattenForTitle().truncateForTitle()}"
     }
     val joined = rendered.joinToString(", ")
-    val args = if (joined.length > MAX_TITLE_ARGUMENTS_LENGTH) {
-        joined.take(MAX_TITLE_ARGUMENTS_KEEP) + "..."
-    } else {
-        joined
-    }
-    return if (args.isEmpty()) name else "$name($args)"
+    return if (joined.isEmpty()) name else "$name($joined)"
 }
 
 private fun JsonElement.primitiveContentOrNull(): String? = when (this) {

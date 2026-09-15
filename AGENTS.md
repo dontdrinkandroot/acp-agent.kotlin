@@ -55,19 +55,19 @@ banner-suppressing API.
 
 ## Building / running
 
-```bash
-./gradlew compileKotlin          # compile main (fastest loop)
-./gradlew installDist            # produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin
-./ddr-acp-agent                  # run the agent directly (no docker); auto-rebuilds via
-                                 # installDist when src/ or the build scripts are newer
-                                 # than the binary, then execs the installDist launcher
-./gradlew test                   # unit tests + black-box e2e (drives installDist launcher)
-./gradlew test --tests "net.dontdrinkandroot.acpagent.llm.LlmRequestTest"   # single test class (re-links installDist; IDE-only runs may use a stale binary - see Pitfalls)
-./gradlew build                  # assemble + test
-./gradlew dependencyUpdates      # report outdated deps + Gradle (settings plugin; `-Drevision=release` for stable-only)
-```
+Use the `run` tool's configurations for the standard dev loop:
 
-The launcher takes no args; env config only (`OPENROUTER_API_KEY` required).
+- `compile` — compile main sources (fastest loop)
+- `test` — full suite (unit + black-box e2e; drives the installDist launcher)
+- `test_class` — single test class/method via `{args}` (re-links installDist)
+- `build` — assemble + all tests
+- `install_dist` — relink the e2e launcher
+- `dependency_updates` — outdated deps (stable-only)
+
+The launchers take no args; env config only (`OPENROUTER_API_KEY` required):
+
+- `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
+- `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README)
 
 **Shutdown**: `runAgent` loops until `transport.state.value == Transport.State.CLOSED`
 (small delay) then `protocol.close()`.
@@ -162,18 +162,17 @@ Config comes from environment variables:
   (temp + move) and refuse to touch a corrupt/unparseable file; unknown entry fields
   round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
-  `test` (full `test` suite), `test_class` (single class via `{args}`), `install_dist`
-  (relink the e2e launcher), `dependency_updates` (stable-only), `lint_scripts`
-  (`bash -n` + `shellcheck` on the launchers/build script). The agent's own `.ai/run.json`
-  additionally carries `test_single_fqn` (single test class by fully-qualified name),
+  `test` (full `test` suite), `test_class` (single class/method via `{args}`),
+  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only),
+  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build script),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
-  `.ai/scripts/show-test-failures.sh`) - added while debugging a flaky test hang - and
-  `sdk_sources` (extract a `*-sources.jar` from the Gradle cache for inspection via
-  `.ai/scripts/sdk-sources.sh`, for the SDK contract checks). The gradle configs are
+  `.ai/scripts/show-test-failures.sh`) and `sdk_sources` (extract a `*-sources.jar` from
+  the Gradle cache for inspection via `.ai/scripts/sdk-sources.sh`, for the SDK contract
+  checks). The gradle configs are
   wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
-  a hung daemon surfaces as a timeout instead of stalling the agent, and a generic `git`
-  config (`git {args}`, arbitrary arguments) covers read-only inspection (status, diff,
-  log). A
+  a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
+  config (`git {args}`, arbitrary arguments, read-only inspection only) and a `gradleStop`
+  config (stop daemons and kill lingering processes holding cache locks). A
   `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
   leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
@@ -275,9 +274,33 @@ Config comes from environment variables:
   `reject_once` apply once. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call in
   permission prompts and progress - it ignores the `rawInput` field that carries the actual
   arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with
+  **Observed (JetBrains, 2026-09)**: the permission dialog in practice showed the bare
+  argument value (`echo permission-test`) instead of our `bash(command: ...)` title - the
+  "only title is rendered" claim did not hold for the permission surface. Keep titles
+  argument-bearing anyway (other clients render them) and make commands self-describing;
+  re-verify against a concrete client rather than assuming. Working hypothesis
+  (unverified, no matching JetBrains bug report found 2026-09): the dialog
+  special-cases a `command` value in `rawInput` and renders it as a
+  syntax-highlighted runnable block, falling back to the title otherwise - this
+  fits `create_run_config`/`bash` showing their `command` argument while `run`
+  (`config`/`args` keys) and `delete_run_config` (`name` only) showed their
+  titles, and matches the JetBrains rendering behavior reported in
+  google-gemini/gemini-cli#23018 (title rendered as command block) and the
+  "bug in how the IntelliJ ACP client renders tool call parameters" confirmation
+  on the Cursor forum. All of this is hypothesis until verified against a
+  concrete client. Tools with
   meaningful arguments therefore override `AgentTool.title(arguments)` (hook in
-  `tools/Tool.kt`, default `null` = bare tool name) returning `formatToolTitle(name, args)`
-  - a `name(key: value, ...)` summary, gemini-cli style, arg part trimmed at 50 chars;
+  `tools/Tool.kt`, default `null` = bare tool name). The `run` tool and the
+  run-config write tools lead with the config name
+  (`run(echo)`, `run(echo: <args>)`, `create_run_config(echo: <command>)`,
+  `delete_run_config(echo)`) so client-side title elision cannot hide which
+  configuration is executed/created - `formatRunToolTitle` /
+  `formatRunConfigToolTitle` in `tools/Tool.kt` read named keys, so titles are
+  order-independent regardless of the JSON key order the model chose. The
+  remaining tools use `formatToolTitle(name, args)` - a `name(key: value, ...)`
+  summary, gemini-cli style - and every formatter caps each value part at 100
+  chars (ellipsized; was 50 for the whole argument part, which could push the
+  identifying name out of the title);
     `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
     implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
     safety-critical: a bare title would leave the user confirming a
@@ -420,6 +443,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # sessions, AgentSessionFactory interface, randomSessionId)
     tools/Tool.kt                    # AgentTool, ToolContext, ToolResult
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
+    tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
     tools/BashTool.kt                # bash tool (ProcessBuilder)
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
@@ -462,15 +486,20 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + move/delete tools (in-project without prompt, out-of-project
                                      # move destination prompts)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
+        E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
+        E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
+                                     # unknown config fails loudly
+        E2eRunConfigCrudTest.kt      # create/update/delete_run_config: .ai/run.json persistence
+                                     # and permission prompts
         E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
                                      # (trusted), unannotated prompts + executes,
                                      # MCP_TRUST_ANNOTATIONS=0 prompts, destructive annotated
                                      # title, mcpCapabilities.http advertisement
 README.md                               # user-facing readme (install, IDE setup, config, troubleshooting)
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
-ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
-                                        # sources are newer than the installDist binary, then
-                                        # execs it; embedded Gradle stdout is redirected to stderr
+ddr-acp-agent                           # direct launcher (no docker): always runs installDist
+                                        # first, then execs the binary; embedded Gradle stdout
+                                        # is redirected to stderr
 ddr-acp-agent-docker                    # docker launcher: sandboxed `docker run` for the agent
 build-docker                            # local image build script (tags
                                         # ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest)
@@ -479,8 +508,12 @@ build-docker                            # local image build script (tags
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
 ```
 
-## Tools
+## Tool Usage
 
+* **Run configurations**: the `run` tool's named configurations serve the standard
+  build/test/lint loop (see Building / running). They are managed via
+  `list_run_configs` / `create_run_config` / `update_run_config` /
+  `delete_run_config`, and surface in the system prompt.
 * **Web research**: use the `exa_web_search_exa` and `exa_web_fetch_exa` tools for research, validating information and
   looking things up when unsure — do not guess. Search first with `exa_web_search_exa`, then fetch the full page with
   `exa_web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
@@ -488,58 +521,64 @@ build-docker                            # local image build script (tags
 
 ## Testing
 
-`./gradlew test` runs unit tests plus the **black-box e2e** harness (feature-area scenario classes in
-`net/dontdrinkandroot/acpagent/e2e` sharing the `E2eAgentTest` base), which drives the linked
-`installDist` launcher as a separate OS process with the **real official ACP SDK client** and a local mock OpenRouter
-server. It asserts the core wire flow (incl. model/reasoning switches, `update_plan`, the
-chat request's `reasoning` effort and the `usage_update` indicator), capability
-advertising (`promptCapabilities` image/embeddedContext + `mcpCapabilities` http/sse),
-AGENTS.md injection and multimodal prompt conversion (image data URI + inlined
-resource), the `$/cancel_request` dismissal of a stuck permission prompt, the auto
-provider routing (`provider` object with median cap, fail-open on endpoints error,
-disabled via env), the system prompt's `Agent build:` hash round-tripped from the
-classpath `git.properties`, and path-aware permissions + the client fs proxy (in-project
-read/write without a prompt, out-of-project read prompts, proxy disabled via
-`FS_PROXY_ENABLED=0` falls back to the local store), the `run` tool (prompt-free in every mode since it is non-mutating,
-side effect verified on
-disk, unknown config fails loudly), the run-config management tools (`create_run_config`
-persists `.ai/run.json` after a build-mode permission prompt; in plan mode the
-write tools are absent while `list_run_configs` runs without a prompt), and the
-move/delete tools (in-project `move_file`/`delete_file` without a prompt with the
-side effect verified on disk; an out-of-project move destination routed through
-`session/request_permission`), and the MCP tool annotations (`E2eMcpToolPermissionTest` over the in-process
-`MockMcpServer`: trusted
-`readOnlyHint: true` runs prompt-free with the annotated `title`, an unannotated
-tool prompts and executes when allowed, `MCP_TRUST_ANNOTATIONS=0` restores the
-pessimistic prompt with the bare tool name, a destructive tool prompts with the
-annotated title while `rawInput` keeps the arguments). Plus a
-**persistence scenario
-across three agent restarts** (`session/list` ->
-`session/load` with replay -> `session/resume` -> delete).
-The output caps (bash/run tail truncation **and progressive capture through a drain
-timeout**, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
-truncation and past-EOF error, listing caps, grep match/line caps and the binary/oversized
-skips, the `.git` walker skip) are unit-tested in `BashToolTest`/`ToolsTest`; move/delete
-semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
-payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip, the
-strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted
-`readOnlyHint`, kind mapping, `title` annotation) are unit-tested in
-`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`. **e2e change policy**: e2e scenarios pin the agent's **wire
-contract** -
-protocol message flow,
-security boundaries (permission routing, mode restrictions, containment caps), observable side
-effects, and session/replay semantics - not internal orchestration (LLM call counts, mock filler
-text, delta chunk splits). A behavioral change (feature/fix) that requires updating an e2e
-assertion is expected: update it in the **same commit** with a one-line comment, preferring a pin
-of equal strength. An e2e failure without a behavioral change is a test-design smell: fix the
-test by asserting the effect/shape, not the feature. Favor effect-based over exact-count
+Drive the suites through the run configurations: `test` for the whole suite,
+`test_class` (single class/method via `{args}`; re-links installDist) for one
+target, `show_failures` for the failure messages of the last run.
+
+The suite is unit tests plus a **black-box e2e harness** (feature-area scenario
+classes in `net/dontdrinkandroot/acpagent/e2e` sharing the `E2eAgentTest` base).
+The e2e scenarios run the linked `installDist` launcher as a separate OS process
+with the **real ACP SDK client** and a local mock OpenRouter server, and pin the
+agent's **wire contract**:
+
+- **Wire flow** — initialize/session/config-option/prompt/tool-call/permission,
+  model/reasoning switches, the chat request's `reasoning` effort, `usage_update`,
+  UUIDv7 messageIds, attribution headers.
+- **Capabilities** — `promptCapabilities` (image/embeddedContext) + multimodal
+  conversion (image data URI, inlined resources), `mcpCapabilities` (http/sse),
+  AGENTS.md injection, the `Agent build:` hash round-tripped from `git.properties`.
+- **Security & permissions** — path-aware permissions + client fs proxy
+  (in-project prompt-free, out-of-project read prompts, `FS_PROXY_ENABLED=0`
+  local-store fallback), run tool prompt-free in every mode, run-config tools
+  (build-mode permission prompt, plan-mode absence of write tools), move/delete
+  tools (out-of-project move destination prompts), MCP tool annotations
+  (`E2eMcpToolPermissionTest` over `MockMcpServer`), `$/cancel_request` dismissal
+  of a stuck permission prompt.
+- **Sessions** — persistence across three restarts (`session/list` ->
+  `session/load` with replay -> `session/resume` -> delete), `update_plan`
+  persistence/replay.
+- **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
+  provider routing (median cap, fail-open, disabled).
+
+The **output caps** (bash/run tail truncation + progressive capture through a drain
+timeout, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
+truncation and past-EOF error, listing caps, grep match/line caps and the
+binary/oversized skips, the `.git` walker skip) are unit-tested in
+`BashToolTest`/`ToolsTest`; move/delete semantics (destination-exists refusal,
+symlink refusal, dir/file type mismatches, diff payloads, local-disk-only), the
+whole-file diff convention and the fs-proxy diff skip, the strict JSON-null argument
+rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
+mapping, `title` annotation) are unit-tested in
+`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`.
+
+**e2e change policy**: e2e scenarios pin the agent's **wire contract** — protocol
+message flow, security boundaries (permission routing, mode restrictions,
+containment caps) and session/replay semantics — not internal orchestration (LLM
+call counts, mock filler text, delta chunk splits). A behavioral change
+(feature/fix) that requires updating an e2e assertion is expected: update it in the
+**same commit** with a one-line comment, preferring a pin of equal strength. An e2e
+failure without a behavioral change is a test-design smell: fix the test by
+asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
-Docker: validate the launcher with `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
-build the image with `./build-docker` and smoke-test by piping an `initialize` request into
-`OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC response on stdout).
-Direct launcher: validate with `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the same
-way via `./ddr-acp-agent` (keep stdin open briefly after the request - closing it immediately races
-the transport teardown and swallows the response).
+
+Manual validation (the run configurations cannot do this):
+- Docker: validate `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
+  build with `./build-docker` and smoke-test by piping an `initialize` request into
+  `OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC
+  response on stdout).
+- Direct: validate `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the
+  same way via `./ddr-acp-agent` (keep stdin open briefly after the request — closing
+  it immediately races the transport teardown and swallows the response).
 
 **Koog upgrade checklist**: on every Koog version bump, re-verify the three hand-rolled
 surfaces against the new version (see the "No more Koog" bullet under Boundaries) and
@@ -549,8 +588,8 @@ update this file: (1) `GET /models` wire types - still `internal`? still without
 permission flow/modes/usage indicator/replay? The moment any of these closes, port that
 surface to Koog.
 
-**Definition of done**: a change is done when `./gradlew build` passes (compile + all
-tests incl. the black-box e2e).
+**Definition of done**: a change is done when the `build` run configuration passes
+(compile + all tests incl. the black-box e2e).
 
 ## Boundaries (do not silently change)
 

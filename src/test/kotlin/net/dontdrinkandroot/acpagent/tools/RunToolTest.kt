@@ -41,9 +41,11 @@ class RunToolTest {
     }
 
     @Test
-    fun `title shows config and args without resolving the command`() {
+    fun `title leads with the config name and truncates only args`() {
+        // Behavioral change: run(config: ..., args: ...) hid the config when
+        // args were long; the config name now always leads, untruncated.
         assertEquals(
-            "run(config: test, args: --watch)",
+            "run(test: --watch)",
             RunTool(tempDir()).title(
                 buildJsonObject {
                     put("config", "test")
@@ -51,6 +53,10 @@ class RunToolTest {
                 },
             ),
         )
+        val longArgs = "arg ".repeat(40)
+        val title = RunTool(tempDir()).title(buildJsonObject { put("config", "test"); put("args", longArgs) }) ?: ""
+        assertTrue(title.startsWith("run(test: "), title)
+        assertTrue(title.contains("..."), title)
     }
 
     @Test

@@ -67,7 +67,8 @@ internal class CreateRunConfigTool internal constructor(private val cwd: String)
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
-    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
+    override fun title(arguments: JsonObject): String? =
+        formatRunConfigToolTitle(name, arguments.stringArg("name").orEmpty(), arguments.stringArg("command"), arguments.stringArg("description"))
     override val parameters: JsonObject = configRunWriteParameters(mutable = true)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
@@ -97,7 +98,8 @@ internal class UpdateRunConfigTool internal constructor(private val cwd: String)
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
-    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
+    override fun title(arguments: JsonObject): String? =
+        formatRunConfigToolTitle(name, arguments.stringArg("name").orEmpty(), arguments.stringArg("command"), arguments.stringArg("description"))
     override val parameters: JsonObject = configRunWriteParameters(mutable = false)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
@@ -130,7 +132,9 @@ internal class DeleteRunConfigTool internal constructor(private val cwd: String)
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
-    override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
+    override fun title(arguments: JsonObject): String? =
+        formatRunConfigToolTitle(name, arguments.stringArg("name").orEmpty(), null, null)
+
     override val parameters: JsonObject = jsonSchema(
         required("name", PropType.STRING, "Name of the run configuration to delete"),
     )

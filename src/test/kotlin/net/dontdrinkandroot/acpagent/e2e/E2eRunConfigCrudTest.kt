@@ -56,11 +56,12 @@ class E2eRunConfigCrudTest : E2eAgentTest() {
 
                 assertEquals(1, ops.permissionRequests.size, "create_run_config is mutating and must ask permission")
                 val permissionTitle = requireNotNull(ops.permissionRequests.single().title)
-                assertTrue(
-                    permissionTitle.startsWith("create_run_config(name: test, command: "),
+                // Behavioral change: write-tool titles lead with the config
+                // name now (`create_run_config(test: <command>)`).
+                assertEquals(
+                    "create_run_config(test: echo hello > marker.txt, description: run the test suite)",
                     permissionTitle,
                 )
-                assertTrue(permissionTitle.endsWith("...)"), permissionTitle)
 
                 val runJson = File(projectDir, ".ai/run.json")
                 assertTrue(runJson.isFile, "create_run_config must persist .ai/run.json")

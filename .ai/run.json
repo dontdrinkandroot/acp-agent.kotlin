@@ -27,10 +27,6 @@
         "command": "bash -n ddr-acp-agent ddr-acp-agent-docker .ai/scripts/*.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker .ai/scripts/*.sh",
         "description": "Validate launcher, build and .ai helper scripts"
     },
-    "test_single_fqn": {
-        "command": "timeout 60 ./gradlew test --tests \"{args}\" 2>&1 | tail -40",
-        "description": "Run a single test class by FQN"
-    },
     "show_failures": {
         "command": "bash .ai/scripts/show-test-failures.sh",
         "description": "Print failure messages from the latest JUnit XML reports"
@@ -39,21 +35,9 @@
         "command": "bash .ai/scripts/sdk-sources.sh {args}",
         "description": "Extract a *-sources.jar from the Gradle cache to /tmp/acp-sdk-sources for inspection (args: coordinate substring [version])"
     },
-    "gitStatus": {
-        "command": "git status --short --branch {args}",
-        "description": "Show compact status with branch info (optional args: pathspec)"
-    },
-    "gitDiff": {
-        "command": "git diff {args}",
-        "description": "Show diff (optional args: e.g. HEAD, HEAD~1..HEAD, or pathspec)"
-    },
-    "gitAdd": {
-        "command": "git add {args}",
-        "description": "Stage files (git add)"
-    },
-    "gitShow": {
-        "command": "git show {args}",
-        "description": "Inspect a commit (git show)"
+    "git": {
+        "command": "git {args}",
+        "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
     },
     "gradleStop": {
         "command": "./gradlew --stop; pkill -f GradleDaemon || true; sleep 2",
