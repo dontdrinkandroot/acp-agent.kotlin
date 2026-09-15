@@ -128,19 +128,29 @@ Config comes from environment variables:
   execution: a tool call for a registered tool that is disabled in the
   current mode fails with the "disabled in current mode" update and never reaches the permission
   flow (so a model carrying a tool call over from an earlier mode switch cannot execute it; see
-  `E2eModeRestrictionTest`). The system prompt is **mode-invariant**: it holds
+  `E2eModeRestrictionTest` and `E2eDeferredModeSwitchTest`). The system prompt is **mode-invariant**: it holds
   a static "Modes" table (what plan/build/bash mean) and no current-mode
   statement; the current mode and the tools available in it are stated in the
   conversation history instead — modal status messages (`OpenAIMessage.System`,
   LLM-internal, never rendered by the client`: a fresh session seeds one at
-  session start (`SessionState.init`) and every actual mode switch appends one
-  (`switchMode`, same-value re-sets skip)), each listing the tools available in
-  that mode (`ToolRegistry.availableForMode`). The prompt is still rebuilt per
+  session start (`SessionState.init`) and every applied mode change appends one,
+  each stating the mode's semantics ("Mode: ... Read-only / Read-write / ...")
+  plus the tools available in it (`ToolRegistry.availableForMode`)). **Mode
+  switches are deferred**: a `mode` request while a prompt turn is running only
+  records a pending mode on `SessionState` (`requestMode`, latest wins) and is
+  applied as a single flush when the turn hands control back
+  (`flushPendingMode` in the prompt flow's try, before `setPromptActive(false)`),
+  with one `current_mode_update` at that point; the `finally` drops whatever is
+  still pending and clears `promptActive` (so a cancelled turn never leaks its
+  requested mode into the next turn), and `notifyModeState` is suppressed only
+  while a mode is pending (`hasPendingMode`) so mid-turn model/reasoning
+  switches still notify immediately. Idle switches still
+  apply immediately. The prompt is still rebuilt per
   turn so mid-session `create_run_config` / `AGENTS.md` edits apply (it carries
   `cwd`, today's date, the available run configurations (name + command +
   description, re-read from local disk per iteration) and `Agent build: <sha>[-dirty]`).
-  A `mode` config option (`session/set_config_option` + legacy `set_mode`) emits `current_mode_update` +
-  `config_option_update`; unknown -> invalid-params.
+  A `mode` config option (`session/set_config_option` + legacy `set_mode`) echoes
+  the *governing* mode until the flush; unknown -> invalid-params.
 - **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
   configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
   read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,

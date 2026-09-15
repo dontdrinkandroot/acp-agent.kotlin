@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.e2e
 
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.net.InetAddress
@@ -35,12 +36,24 @@ internal class MockOpenAiServer(
     private val toolCall: MockToolCall? = null,
     private val firstTurnStreamDeltas: Boolean = false,
     private val alwaysToolCall: Boolean = false,
+    private val holdFirstRequest: Boolean = false,
 ) {
     val requestCount = AtomicInteger(0)
     var lastRequestBody: String? = null
     var lastRequestHeaders: Map<String, List<String>> = emptyMap()
     val endpointRequestCount = AtomicInteger(0)
     val requestBodies = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    /**
+     * With [holdFirstRequest] the first chat completion request is held until
+     * [releaseFirstRequest] completes, so a test can deterministically
+     * interleave a mode switch with a running turn instead of racing a fast
+     * mock turn. Default off: every other test's first request passes through.
+     */
+    val firstRequestStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val firstRequestGate = kotlinx.coroutines.CompletableDeferred<Unit>()
+    fun releaseFirstRequest() = firstRequestGate.complete(Unit)
+
     private var server: HttpServer? = null
     val port: Int
         get() = server!!.address.port
@@ -58,6 +71,13 @@ internal class MockOpenAiServer(
             lastRequestHeaders = exchange.requestHeaders
             requestBodies += lastRequestBody!!
             val n = requestCount.incrementAndGet()
+            // Hold the first chat request (only when the test armed the gate) so
+            // the test can deterministically interleave a mode switch with a
+            // running turn.
+            if (n == 1) {
+                firstRequestStarted.complete(Unit)
+                if (holdFirstRequest) runBlocking { firstRequestGate.await() }
+            }
             val body = when {
                 // Always-tool-call mode: requests that carry tools get a tool call, a request
                 // without the tools field (the wind-down pass) gets plain text.

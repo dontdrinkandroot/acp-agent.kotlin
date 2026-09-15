@@ -64,6 +64,22 @@ internal class SessionState(
 
     var currentMode: SessionModeId = initialMode
 
+    /**
+     * The mode the client requested while a prompt turn is in flight. It does
+     * not govern anything during the turn (the turn keeps the mode it started
+     * with, so tool gating stays consistent); the latest request wins and it
+     * is applied when the agent turns control back to the user.
+     */
+    @Volatile
+    private var pendingMode: SessionModeId? = null
+
+    /**
+     * True while a prompt turn is running; mode flushes are deferred until the
+     * turn ends, so a switch never applies mid-iteration.
+     */
+    @Volatile
+    private var promptActive = false
+
     var currentModel: String = restored?.model?.takeIf { it.isNotBlank() } ?: config.openRouterModel
 
     /**
@@ -105,28 +121,92 @@ internal class SessionState(
      */
     private fun modeStatusText(mode: SessionModeId): String {
         val names = toolRegistry.availableForMode(mode).joinToString(", ") { tool -> tool.name }
-        return "You are now in ${mode.value} mode. Available tools: $names."
+        return "Mode: ${mode.value}. ${modeDescription(mode)} Available tools: $names."
+    }
+
+    private fun modeDescription(mode: SessionModeId): String = when (mode) {
+        MODE_PLAN -> "Read-only: research, analyze and plan; do not modify files."
+        MODE_BUILD -> "Read-write: read, write, edit, move and delete files to implement the task."
+        MODE_BASH -> "Build plus a permission-gated shell; every command is confirmed by the user first."
+        else -> ""
     }
 
     /**
-     * Appends the mode status message for [mode] to the history. Same-value
-     * mode re-sets (a no-op that should never render a message) are skipped by
-     * the caller; this method only appends what it is told to.
+     * Applies the mode status message for [mode] to the history.
      */
-    fun appendModeStatusMessage(mode: SessionModeId) {
+    private fun appendModeStatusMessage(mode: SessionModeId) {
         appendToHistory(OpenAIMessage.System(Content.Text(modeStatusText(mode))))
     }
 
     /**
-     * Sets the current mode and, when it actually changes, appends the mode
-     * status message to the history (so the model always sees the mode at the
-     * point it changed). Same-value re-sets are a no-op and render no message.
+     * The mode reported by the "mode" config option: the currently governing
+     * mode, never a still-pending one (the client is not told about a pending
+     * switch, so it is never ahead of the loop's tool gating).
      */
-    fun switchMode(mode: SessionModeId) {
+    fun modeConfigValue(): SessionModeId = currentMode
+
+    /**
+     * Starts/ends a prompt turn. While active, [requestMode] defers the switch
+     * until [flushPendingMode] (turn end) or drops it on [cancelPrompt].
+     */
+    fun setPromptActive(active: Boolean) {
+        promptActive = active
+    }
+
+    fun isPromptActive(): Boolean = promptActive
+
+    /**
+     * True while a mode request is deferred (a turn is running and the switch
+     * has not been flushed yet).
+     */
+    fun hasPendingMode(): Boolean = pendingMode != null
+
+    /**
+     * Records a mode request. While a prompt turn is running the request only
+     * updates the pending mode (latest wins) and applies nothing; idle, it
+     * applies immediately (no turn to keep consistent). Same-value requests
+     * are no-ops in both cases.
+     */
+    fun requestMode(mode: SessionModeId) {
         synchronized(historyLock) {
-            if (mode == currentMode) return
-            currentMode = mode
-            appendModeStatusMessage(mode)
+            if (mode == currentMode) {
+                pendingMode = null
+                return
+            }
+            if (promptActive) {
+                pendingMode = mode
+            } else {
+                currentMode = mode
+                appendModeStatusMessage(mode)
+            }
+        }
+    }
+
+    /**
+     * Applies the pending mode (if any) exactly once: flips the current mode,
+     * appends its status message and clears the pending. Returns true when a
+     * mode was actually applied (so the caller knows to announce+persist it).
+     * No-op and false when nothing is pending.
+     */
+    fun flushPendingMode(): Boolean {
+        synchronized(historyLock) {
+            val pending = pendingMode ?: return false
+            pendingMode = null
+            if (pending == currentMode) return false
+            currentMode = pending
+            appendModeStatusMessage(pending)
+            return true
+        }
+    }
+
+    /**
+     * Drops a pending mode without applying it. Called when a turn is
+     * cancelled: the client was never told about the pending switch, so no
+     * update needs to be undone.
+     */
+    fun cancelPrompt() {
+        synchronized(historyLock) {
+            pendingMode = null
         }
     }
 

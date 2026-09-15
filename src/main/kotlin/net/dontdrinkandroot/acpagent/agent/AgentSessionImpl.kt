@@ -125,6 +125,11 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     private suspend fun notifyModeState() {
+        // A pending mode is never announced before it is applied at turn end
+        // (the flush announces it); announcing it here would put the client
+        // ahead of the loop's tool gating. Everything else (model, reasoning)
+        // applies immediately and is announced immediately.
+        if (state.hasPendingMode()) return
         val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
         client.notify(SessionUpdate.CurrentModeUpdate(state.currentMode))
         client.notify(SessionUpdate.ConfigOptionUpdate(configOptions))
@@ -224,7 +229,26 @@ internal class AgentSessionImpl(
             bashTimeoutSeconds = config.bashTimeoutSeconds,
         )
 
-        promptRunner.run(this, mode, instructions, toolContext)
+        state.setPromptActive(true)
+        try {
+            promptRunner.run(this, mode, instructions, toolContext)
+            // The turn handed control back: apply any mode requested while it
+            // ran (latest wins) as a single flush, then persist + announce it.
+            val changed = state.flushPendingMode()
+            state.persist()
+            if (changed) {
+                // The turn is over - clear the active flag so the flush is
+                // announced (notifyModeState skips it while a turn is active).
+                state.setPromptActive(false)
+                notifyModeState()
+            }
+        } finally {
+            // Drop whatever is still pending (a cancelled turn must not leak its
+            // requested mode into the next turn, where it would apply uninvited)
+            // and clear the active flag even when the flow is cancelled.
+            state.cancelPrompt()
+            state.setPromptActive(false)
+        }
     }
 
     /**

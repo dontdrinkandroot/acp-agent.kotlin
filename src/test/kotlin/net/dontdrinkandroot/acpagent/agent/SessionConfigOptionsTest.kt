@@ -70,23 +70,23 @@ class SessionConfigOptionsTest {
         // Fresh session seeds the current (default) mode status message.
 
         assertEquals(
-            "You are now in plan mode. Available tools: read_file.",
+            "Mode: plan. Read-only: research, analyze and plan; do not modify files. Available tools: read_file.",
             s.historySnapshot.single()
                 .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
                 .text(),
         )
         // Switching modes appends a new status message with the new mode's tools.
 
-        s.switchMode(SessionModeId("build"))
+        s.requestMode(SessionModeId("build"))
         assertEquals(
-            "You are now in build mode. Available tools: read_file, write_file.",
+            "Mode: build. Read-write: read, write, edit, move and delete files to implement the task. Available tools: read_file, write_file.",
             s.historySnapshot.last()
                 .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
                 .text(),
         )
         // Same-value re-set appends nothing.
 
-        s.switchMode(SessionModeId("build"))
+        s.requestMode(SessionModeId("build"))
         assertEquals(2, s.historySnapshot.size, "same-value mode re-set must not append a status message")
     }
 
