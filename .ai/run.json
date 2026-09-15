@@ -39,8 +39,24 @@
         "command": "bash .ai/scripts/sdk-sources.sh {args}",
         "description": "Extract a *-sources.jar from the Gradle cache to /tmp/acp-sdk-sources for inspection (args: coordinate substring [version])"
     },
-    "git": {
-        "command": "git {args}",
-        "description": "Run any git command with arbitrary arguments (e.g. status, diff, log)"
+    "gitStatus": {
+        "command": "git status --short --branch {args}",
+        "description": "Show compact status with branch info (optional args: pathspec)"
+    },
+    "gitDiff": {
+        "command": "git diff {args}",
+        "description": "Show diff (optional args: e.g. HEAD, HEAD~1..HEAD, or pathspec)"
+    },
+    "gitAdd": {
+        "command": "git add {args}",
+        "description": "Stage files (git add)"
+    },
+    "gitShow": {
+        "command": "git show {args}",
+        "description": "Inspect a commit (git show)"
+    },
+    "gradleStop": {
+        "command": "./gradlew --stop; pkill -f GradleDaemon || true; sleep 2",
+        "description": "Stop Gradle daemons and kill any lingering daemon processes holding cache locks"
     }
 }

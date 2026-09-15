@@ -369,8 +369,9 @@ Config comes from environment variables:
   (absolute; created if missing) points at a custom dir or the host default dir already
   exists (never created) - mounted at the tool's in-container default with the env var
   pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
-  ...), host session state
-  always shared rw, `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
+  ...), host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
+  host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
+  `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
   `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS` forwarded,
   host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
   `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
@@ -465,6 +466,7 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # (trusted), unannotated prompts + executes,
                                      # MCP_TRUST_ANNOTATIONS=0 prompts, destructive annotated
                                      # title, mcpCapabilities.http advertisement
+README.md                               # user-facing readme (install, IDE setup, config, troubleshooting)
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): auto-rebuilds when
                                         # sources are newer than the installDist binary, then

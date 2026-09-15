@@ -162,8 +162,15 @@ fi
 # Session state is always persisted on the host so conversations survive the
 # ephemeral tmpfs home. The host side mirrors container XDG_STATE_HOME, so
 # agent-side session/persist writes land in ~/.local/state/ddr-acp-agent.
+# ACP_DOCKER_STATE_DIR relocates the host side (e.g. out of an fscrypt v1
+# encrypted home, whose key no container can access: writes would fail with
+# "Required key not available").
 state_mounts=()
-state_host_dir=$host_state_home/ddr-acp-agent
+state_host_dir=${ACP_DOCKER_STATE_DIR:-$host_state_home/ddr-acp-agent}
+case "$state_host_dir" in
+    /*) ;;
+    *) state_host_dir=$host_state_home/ddr-acp-agent ;;
+esac
 if [ -n "$state_host_dir" ] && [ "$state_host_dir" != / ] &&
    [[ "$state_host_dir" != "$project_dir" && "$state_host_dir" != "$project_dir"/* ]] &&
    ! [[ " $mounted_dsts " == *" $container_home/.local/state/ddr-acp-agent "* ]]; then
