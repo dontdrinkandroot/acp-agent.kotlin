@@ -9,6 +9,7 @@ public data class Config(
     val mcpTrustAnnotations: Boolean = true,
     val bashTimeoutSeconds: Int = 600,
     val maxTurnRequests: Int = 100,
+    val webFetchAllowPrivate: Boolean = false,
 ) {
     public companion object {
         private const val DEFAULT_MODEL = "openrouter/auto"
@@ -31,6 +32,7 @@ public data class Config(
                     ?: DEFAULT_BASH_TIMEOUT_SECONDS).coerceAtLeast(1),
                 maxTurnRequests = (env["ACP_MAX_TURN_REQUESTS"]?.toIntOrNull()
                     ?: DEFAULT_MAX_TURN_REQUESTS).coerceAtLeast(1),
+                webFetchAllowPrivate = env["ACP_WEB_FETCH_ALLOW_PRIVATE"] == "1",
             )
         }
     }

@@ -227,6 +227,7 @@ internal class AgentSessionImpl(
             updatePlan = { entries -> setPlan(entries, client) },
             fileStore = selectFileStore(client, clientCapabilities, config.fsProxyEnabled),
             bashTimeoutSeconds = config.bashTimeoutSeconds,
+            webFetchAllowPrivate = config.webFetchAllowPrivate,
             modeStatusText = { state.modeStatusTextForCurrent() },
         )
 

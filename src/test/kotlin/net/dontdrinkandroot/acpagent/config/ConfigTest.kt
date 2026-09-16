@@ -152,4 +152,23 @@ class ConfigParseTest {
         )
     }
 
+    @Test
+    fun `web fetch private hosts default to blocked`() {
+        assertEquals(
+            false,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).webFetchAllowPrivate,
+        )
+        assertEquals(
+            true,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_WEB_FETCH_ALLOW_PRIVATE" to "1"))
+                .webFetchAllowPrivate,
+        )
+        // Anything but the exact "1" keeps the safe default.
+        assertEquals(
+            false,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_WEB_FETCH_ALLOW_PRIVATE" to "true"))
+                .webFetchAllowPrivate,
+        )
+    }
+
 }

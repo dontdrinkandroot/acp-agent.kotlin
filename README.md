@@ -21,6 +21,11 @@ edits your project, runs commands, and talks to LLMs via
   the editor (unsaved buffers are visible, changes show up as reviewable diffs).
 - **MCP tool consumption** — tools from MCP servers configured in the IDE are
   bridged in, with untrusted behavior annotations honored only if you opt in.
+- **Web fetch** — a built-in, prompt-free `web_fetch` tool retrieves HTTP(S) pages
+  as line-numbered text (HTML converted, JSON/markdown passed through), paged like
+  `read_file`. Binary payloads are refused loudly (download via `bash` instead),
+  and private/loopback hosts are blocked unless you opt in with
+  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`.
 - **Bounded output & budgets** — tool output is capped (no context explosions),
   shell commands are killed after a configurable timeout, and tool-calling turns are
   capped with a final synthesis pass.
@@ -96,6 +101,7 @@ All configuration is via environment variables.
 | `MCP_TRUST_ANNOTATIONS`                      | enabled                        | `0` treats all MCP tools as untrusted: always ask before running, even when the server claims read-only. |
 | `ACP_BASH_TIMEOUT_SECONDS`                   | `600`                          | Shell command timeout (whole process tree is killed).                                                    |
 | `ACP_MAX_TURN_REQUESTS`                      | `100`                          | Tool-calling LLM iterations per prompt before a final text-only summary.                                 |
+| `ACP_WEB_FETCH_ALLOW_PRIVATE`                | blocked                        | `1` lets the `web_fetch` tool reach private/loopback hosts (blocked by default to prevent SSRF).         |
 
 Docker launcher extras (host side, not forwarded into the container):
 

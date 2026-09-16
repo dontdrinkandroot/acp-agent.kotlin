@@ -48,6 +48,7 @@ public fun runAgent(args: Array<String>) {
         register(GlobTool())
         register(GrepTool())
         register(BashTool())
+        register(WebFetchTool())
         register(UpdatePlanTool())
         register(GetCurrentModeTool())
     }

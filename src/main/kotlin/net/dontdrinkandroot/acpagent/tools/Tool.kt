@@ -151,6 +151,12 @@ public class ToolContext internal constructor(
     internal val fileStore: FileStore = LocalFileStore(),
     internal val bashTimeoutSeconds: Int = 600,
     /**
+     * When true, `web_fetch` may reach private/loopback/link-local hosts
+     * (env `ACP_WEB_FETCH_ALLOW_PRIVATE=1`). Default false: the SSRF guard
+     * blocks them so a prompt cannot probe internal networks.
+     */
+    internal val webFetchAllowPrivate: Boolean = false,
+    /**
      * The mode status text of the turn-captured governing mode ("Mode: plan.
      * Read-only: ... Available tools: ...") - the same text the modal status
      * messages carry. Served by the `get_current_mode` tool; a lambda so the

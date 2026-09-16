@@ -24,6 +24,8 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 | ACP                    | `com.agentclientprotocol:acp`                                                         | 0.30.1                            |
 | MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                            |
 | HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                             |
+|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.5.1                             |
+| HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                            |
 | Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (resolved)                 |
 | IO                     | kotlinx-io-core                                                                       | 0.9.1                             |
 | JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (resolved; declared 1.9.0) |
@@ -91,6 +93,8 @@ Config comes from environment variables:
 - `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
   budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
   before the turn ends with `MAX_TURN_REQUESTS`)
+- `ACP_WEB_FETCH_ALLOW_PRIVATE` (default blocked; `1` lets `web_fetch` reach
+  private/loopback/link-local hosts - tests against a local mock server need this)
 
 ## Features
 
@@ -206,7 +210,23 @@ Config comes from environment variables:
   SDK routes session updates into the prompt event flow, not the `notify` callback.
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
-  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `update_plan` + `get_current_mode`
+  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP(S) GET via a
+  per-call ktor CIO client, `requestTimeout = 0` + 60s socket idle; manual redirect
+  loop (max 5) with per-hop SSRF re-validation - loopback/link-local/site-local/
+  any-local IPs and `localhost`/`*.local`/`.internal` by name refused unless
+  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, residual validate-then-fetch TOCTOU documented;
+  only http/https; gzip/deflate via `ktor-client-encoding` - the encoders must be
+  registered in the `install(ContentEncoding)` config block, the bare plugin rejects
+  every encoded response; 20 MB body cap enforced by Content-Length pre-check and a
+  progressive read; declared binary content types refused before download, lying
+  types caught by a NUL sniff, both failing loudly with a "download via bash (curl)"
+  hint - the tool never writes to disk; charset from Content-Type, UTF-8 fallback;
+  non-HTML passes through, HTML is converted to lines by `WebContentConverter`
+  (jsoup 1.23.2: block tags flush lines, `pre` verbatim, `li` bulleted, script/style
+  stripped) so read_file-style `startLine`/`maxLines` paging works; numbered `│`
+  lines, 2000-char line cap, continue footer; `ToolKind.FETCH`, non-mutating, no
+  filesystem targets -> prompt-free in every mode; kind is the SDK enum value added
+  for fetch tools) + `update_plan` + `get_current_mode`
   (`tools/GetCurrentModeTool.kt`; returns the turn-captured mode status text — mode,
   semantics and the tools available in it, the same text the modal status messages
   carry — threaded through `ToolContext.modeStatusText` so the model can verify the
@@ -410,7 +430,7 @@ Config comes from environment variables:
   ...), host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS` forwarded,
+  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded,
   host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
   `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
   `./build-docker`. Launcher output is stderr-only - ACP travels over the container
@@ -460,6 +480,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
     tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
     tools/BashTool.kt                # bash tool (ProcessBuilder)
+    tools/WebFetchTool.kt            # web_fetch tool (line-paged HTTP fetch, ToolKind.FETCH)
+    tools/WebFetcher.kt              # fetch pipeline: ktor CIO client, redirects + SSRF guard,
+                                     # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
+    tools/WebContentConverter.kt     # jsoup HTML -> line-based text (block tags, pre, li), pass-through otherwise
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
@@ -568,6 +592,15 @@ agent's **wire contract**:
   persistence/replay.
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
   provider routing (median cap, fail-open, disabled).
+- **Web fetch** — `web_fetch` over a loopback JDK `HttpServer` (`WebFetchToolTest`):
+  HTML conversion, JSON pass-through, paging + footer, declared-binary refusal,
+  NUL sniff, gzip, redirects, SSRF block/opt-out, scheme refusal, oversize,
+  strict args, HTTP error statuses, tool metadata; the redirect-hop SSRF
+  re-validation (public host redirecting into a private host) is pinned against
+  a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; RFC 5737 IP literal);
+  black-box e2e in
+  `E2eWebFetchTest` (prompt-free plan-mode fetch with
+  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
 timeout, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
@@ -681,6 +714,21 @@ communicate that with the user so we can review them.
 - **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
+- **Gradle build cache can report a false green**: outputs are cacheable, so a
+  `test`/`build` run that *just changed test sources or the classpath* may come
+  back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (observed: a new
+  `WebFetcherTest` failing but every `test`/`build` invocation "passing" from
+  cache because an earlier run had stored the up-to-date-looking output). When a
+  run reports no executed test task (`test FROM-CACHE` / `UP-TO-DATE` with no
+  `:test` execution line), distrust it: rerun with `./gradlew clean test
+  --tests <Class>` or `--rerun-tasks` before believing a green. Conversely a
+  fresh-looking `test` line means it really ran.
+- **ktor client-side redirect plugin vs. the manual redirect loop**: any client
+  used with `WebFetcher` (production `defaultClient` and every test client) must
+  set `followRedirects = false`. The plugin is on by default, consumes 30x
+  responses itself, and silently bypasses the per-hop SSRF re-validation under
+  test (a MockEngine test without it followed the redirect and the loop never
+  saw the `Location` header).
 - **JDK chunked `InputStreamReader` can spin forever**: a read-loop that calls
   `reader.read(chunk)` and processes chars incrementally (the first
   `StreamingLineReader` implementation) was observed to burn 100% CPU forever on
