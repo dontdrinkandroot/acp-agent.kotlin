@@ -206,7 +206,12 @@ Config comes from environment variables:
   SDK routes session updates into the prompt event flow, not the `notify` callback.
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
-  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `update_plan`, registered in `Main.kt`,
+  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `update_plan` + `get_current_mode`
+  (`tools/GetCurrentModeTool.kt`; returns the turn-captured mode status text — mode,
+  semantics and the tools available in it, the same text the modal status messages
+  carry — threaded through `ToolContext.modeStatusText` so the model can verify the
+  governing mode instead of inferring it; non-mutating, no parameters, every mode,
+  prompt-free), registered in `Main.kt`,
   copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
   collision with a local tool is ignored with a warning - locals can never be shadowed. All
   path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
@@ -458,6 +463,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
+    tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
                                      # prompt) + run-config storage (load/create/update/delete, atomic write)
     tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
@@ -553,7 +559,10 @@ agent's **wire contract**:
   (build-mode permission prompt, plan-mode absence of write tools), move/delete
   tools (out-of-project move destination prompts), MCP tool annotations
   (`E2eMcpToolPermissionTest` over `MockMcpServer`), `$/cancel_request` dismissal
-  of a stuck permission prompt.
+  of a stuck permission prompt, mode enforcement
+  (`E2eModeRestrictionTest`: registered tool disabled in the current mode is
+  refused before permission/execution; `get_current_mode` prompt-free with the
+  governing mode's status text).
 - **Sessions** — persistence across three restarts (`session/list` ->
   `session/load` with replay -> `session/resume` -> delete), `update_plan`
   persistence/replay.

@@ -150,6 +150,13 @@ public class ToolContext internal constructor(
     val updatePlan: suspend (List<PlanEntry>) -> Unit = {},
     internal val fileStore: FileStore = LocalFileStore(),
     internal val bashTimeoutSeconds: Int = 600,
+    /**
+     * The mode status text of the turn-captured governing mode ("Mode: plan.
+     * Read-only: ... Available tools: ...") - the same text the modal status
+     * messages carry. Served by the `get_current_mode` tool; a lambda so the
+     * value is read at execution time, not request-assembly time.
+     */
+    val modeStatusText: () -> String = { "" },
 ) {
     public val hasClient: Boolean get() = client != null
 }

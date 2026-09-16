@@ -132,6 +132,15 @@ internal class SessionState(
     }
 
     /**
+     * The same text the modal status messages carry: the current mode, its
+     * semantics and the tools available in it. Surfaced to the model via the
+     * `get_current_mode` tool so it can verify the governing mode directly
+     * (e.g. in a restored session whose history trail lacks status messages)
+     * instead of inferring it from tool availability.
+     */
+    fun modeStatusTextForCurrent(): String = modeStatusText(currentMode)
+
+    /**
      * Applies the mode status message for [mode] to the history.
      */
     private fun appendModeStatusMessage(mode: SessionModeId) {

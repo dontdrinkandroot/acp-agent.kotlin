@@ -49,6 +49,7 @@ public fun runAgent(args: Array<String>) {
         register(GrepTool())
         register(BashTool())
         register(UpdatePlanTool())
+        register(GetCurrentModeTool())
     }
 
     suspend fun assembleSession(
