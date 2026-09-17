@@ -15,6 +15,12 @@ internal class SystemPromptBuilder(
     private val cwd: String,
     private val todayProvider: () -> String,
     private val runConfigsProvider: () -> List<RunConfig> = { emptyList() },
+    /**
+     * Absolute read-trusted paths (`ACP_EXTRA_MOUNTS`, e.g. the extra docker
+     * mounts): reads under them never prompt. Static for the process lifetime,
+     * so the prompt can state them once.
+     */
+    private val trustedReadPaths: List<String> = emptyList(),
 ) {
 
     fun build(instructions: AgentsInstructions?): String = buildString {
@@ -58,8 +64,19 @@ internal class SystemPromptBuilder(
                     "in the request are already filtered to that mode. If a tool you wanted is not available, ask the " +
                     "user to switch mode rather than attempting a workaround."
         )
+        append(trustedReadPathsSection(trustedReadPaths))
         append(runConfigsSection(runConfigsProvider()))
         append(instructionsSection(instructions))
+    }
+
+    private fun trustedReadPathsSection(paths: List<String>): String {
+        if (paths.isEmpty()) return ""
+        return buildString {
+            appendLine()
+            append("Trusted read paths (no permission prompt for `read_file`/`list_dir`/`glob`/`grep`; ")
+            append("writes and mutations still require permission outside the working directory): ")
+            appendLine(paths.joinToString(", "))
+        }
     }
 
     private fun runConfigsSection(configs: List<RunConfig>): String {

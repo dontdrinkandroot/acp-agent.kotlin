@@ -1,0 +1,35 @@
+#!/bin/bash
+# Stub docker CLI for the shell test suite (record mode).
+#
+# Appends every invocation (argv, newline-joined) to $FAKE_DOCKER_LOG and
+# exits per the switches below. `docker run` never touches the network or the
+# filesystem beyond the log file.
+#
+# Switches (environment):
+#   FAKE_DOCKER_LOG          log file (required)
+#   FAKE_DOCKER_PULL_EXIT    exit code for `docker pull` (default 0)
+#   FAKE_DOCKER_INSPECT_EXIT exit code for `docker image inspect` (default 0)
+set -euo pipefail
+
+FAKE_DOCKER_LOG=${FAKE_DOCKER_LOG:?FAKE_DOCKER_LOG must be set}
+pull_exit=${FAKE_DOCKER_PULL_EXIT:-0}
+inspect_exit=${FAKE_DOCKER_INSPECT_EXIT:-0}
+
+printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+
+case "${1:-}" in
+    pull) exit "$pull_exit" ;;
+    image)
+        # `docker image inspect <ref>`: second word after `image`.
+        [ "${2:-}" = inspect ] && exit "$inspect_exit"
+        exit 0
+        ;;
+    run)
+        # The agent would run inside the container; consume and drop stdin
+        # (callers that want a protocol-shaped answer redirect it) so the
+        # stub always terminates.
+        cat >/dev/null
+        exit 0
+        ;;
+    *) exit 0 ;;
+esac

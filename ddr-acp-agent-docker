@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# Temporary files created by this launcher (masked .env.local, staged API key)
+# are removed on any exit path; cleanup must therefore survive being `exec`ed
+# into docker, which is why the final command is a plain invocation.
+cleanup() {
+    [ -n "${env_local_mask_file:-}" ] && rm -f "$env_local_mask_file"
+    [ -n "${api_key_stage_file:-}" ] && rm -f "$api_key_stage_file"
+    return 0
+}
+trap cleanup EXIT
+
 project_dir=$(pwd)
 image=ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest
 
@@ -32,8 +42,43 @@ if [ -z "$docker_bin" ]; then
     exit 127
 fi
 
-if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    printf '%s\n' 'OPENROUTER_API_KEY must be set in the environment.' >&2
+# The API key must never travel through the environment (a leaked `set -x`
+# trace, `env` dump or /proc/*/environ read inside the agent sandbox would
+# disclose it). It is handed to the container as a read-only file at
+# /tmp/openrouter-api-key and the agent env only carries the path:
+# - OPENROUTER_API_KEY set  -> a 0600 copy is staged in /dev/shm, mounted, and
+#   removed by the EXIT trap (the host env never becomes the container's).
+# - OPENROUTER_API_KEY_FILE set -> that host file is mounted directly.
+api_key_mounts=()
+api_key_stage_file=
+if [ -n "${OPENROUTER_API_KEY:-}" ] && [ -n "${OPENROUTER_API_KEY_FILE:-}" ]; then
+    printf '%s\n' 'Set either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE, not both.' >&2
+    exit 1
+fi
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    # /dev/shm is tmpfs-backed on every docker host; fall back to /tmp there.
+    api_key_stage_file=$(mktemp /dev/shm/openrouter-api-key.XXXXXX 2>/dev/null ||
+        mktemp /tmp/openrouter-api-key.XXXXXX)
+    trap cleanup EXIT
+    old_umask=$(umask)
+    umask 077
+    printf '%s\n' "$OPENROUTER_API_KEY" >"$api_key_stage_file"
+    umask "$old_umask"
+    api_key_mounts=(--mount "type=bind,src=$api_key_stage_file,dst=/tmp/openrouter-api-key,ro")
+elif [ -n "${OPENROUTER_API_KEY_FILE:-}" ]; then
+    # A relative path would be resolved inside the container, not on the host:
+    # absolutize against the launcher's cwd so the mount points at the file.
+    case $OPENROUTER_API_KEY_FILE in
+        /*) key_file=$OPENROUTER_API_KEY_FILE ;;
+        *) key_file=$(CDPATH='' cd -- "$(dirname -- "$OPENROUTER_API_KEY_FILE")" && pwd)/$(basename -- "$OPENROUTER_API_KEY_FILE") ;;
+    esac
+    if [ ! -f "$key_file" ]; then
+        printf 'OPENROUTER_API_KEY_FILE %s is not a readable file.\n' "$key_file" >&2
+        exit 1
+    fi
+    api_key_mounts=(--mount "type=bind,src=$key_file,dst=/tmp/openrouter-api-key,ro")
+else
+    printf '%s\n' 'Either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE must be set in the environment.' >&2
     exit 1
 fi
 
@@ -82,10 +127,11 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 env_local_mounts=()
+env_local_mask_file=
 if [ -f "$project_dir/.env.local" ]; then
-    mask_file=$(mktemp)
+    env_local_mask_file=$(mktemp)
     printf 'Masking %s/.env.local (mounted over with an empty read-only file).\n' "$project_dir" >&2
-    env_local_mounts=(--mount "type=bind,src=$mask_file,dst=$project_dir/.env.local,ro")
+    env_local_mounts=(--mount "type=bind,src=$env_local_mask_file,dst=$project_dir/.env.local,ro")
 fi
 
 cache_mounts=()
@@ -181,7 +227,101 @@ if [ ${#state_mounts[@]} -gt 0 ]; then
     printf 'Mounting session state: %s\n' "$state_host_dir" >&2
 fi
 
-forwarded_env=(--env "OPENROUTER_API_KEY=$OPENROUTER_API_KEY")
+# Optional extra host paths (ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw)
+# mounted at the identical in-container path. The mode suffix defaults to ro;
+# dirs and single files are allowed. Extras are emitted before every built-in
+# mount and sorted shallowest-first, so built-ins and deeper extras shadow
+# shallower ones (docker applies the last mount at a path on top).
+extra_mount_args=()
+extra_trusted_reads=
+if [ -n "${ACP_DOCKER_EXTRA_MOUNTS:-}" ]; then
+    extra_paths=()
+    extra_modes=()
+    extra_fail=false
+    IFS=',' read -ra extra_entries <<<"${ACP_DOCKER_EXTRA_MOUNTS}"
+    for entry in "${extra_entries[@]}"; do
+        [ -n "$entry" ] || continue
+        mode=ro
+        path=$entry
+        case $entry in
+            *:ro) path=${entry%:ro} ;;
+            *:rw) mode=rw; path=${entry%:rw} ;;
+            *:*)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: invalid entry %s (expected path, path:ro or path:rw).\n' "$entry" >&2
+                extra_fail=true
+                continue
+                ;;
+        esac
+        case $path in
+            /*) ;;
+            *)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: %s is not an absolute host path.\n' "$path" >&2
+                extra_fail=true
+                continue
+                ;;
+        esac
+        if [ "$path" = / ]; then
+            printf 'ACP_DOCKER_EXTRA_MOUNTS: / cannot be mounted.\n' >&2
+            extra_fail=true
+            continue
+        fi
+        if [ ! -e "$path" ]; then
+            printf 'ACP_DOCKER_EXTRA_MOUNTS: %s does not exist on the host.\n' "$path" >&2
+            extra_fail=true
+            continue
+        fi
+        case $path in
+            "$project_dir"|"$project_dir"/*)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - inside the project directory, which is always mounted rw.\n' "$path" >&2
+                continue
+                ;;
+            "$container_home"|"$container_home"/*)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - covered by the container home.\n' "$path" >&2
+                continue
+                ;;
+            /tmp|/tmp/*)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - covered by the container tmpfs.\n' "$path" >&2
+                continue
+                ;;
+        esac
+        case " ${extra_paths[*]} " in
+            *" $path "*)
+                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping duplicate %s.\n' "$path" >&2
+                continue
+                ;;
+        esac
+        extra_paths+=("$path")
+        extra_modes+=("$mode")
+    done
+    if [ ${#extra_paths[@]} -gt 0 ]; then
+        extra_trusted_reads=$(IFS=,; printf '%s' "${extra_paths[*]}")
+    fi
+    if [ "$extra_fail" = true ]; then
+        exit 1
+    fi
+    if [ ${#extra_paths[@]} -gt 0 ]; then
+        declare -A extra_mode_by_path=()
+        for i in "${!extra_paths[@]}"; do
+            extra_mode_by_path[${extra_paths[$i]}]=${extra_modes[$i]}
+        done
+        mounted_extras=
+        while IFS=$'\t' read -r path; do
+            [ -n "$path" ] || continue
+            mode=${extra_mode_by_path[$path]}
+            if [ "$mode" = ro ]; then
+                extra_mount_args+=(--mount "type=bind,src=$path,dst=$path,ro")
+            else
+                extra_mount_args+=(--mount "type=bind,src=$path,dst=$path")
+            fi
+            mounted_extras="$mounted_extras $path($mode)"
+        done < <(for path in "${extra_paths[@]}"; do
+                     printf '%s\t%s\n' "$(printf '%s' "$path" | tr -cd / | wc -c)" "$path"
+                 done | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -s | cut -f2)
+        printf 'Mounting extra mounts:%s\n' "$mounted_extras" >&2
+    fi
+fi
+
+forwarded_env=(--env "OPENROUTER_API_KEY_FILE=/tmp/openrouter-api-key")
 for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS ACP_WEB_FETCH_ALLOW_PRIVATE; do
     if [ -n "${!var_name:-}" ]; then
         forwarded_env+=(--env "$var_name=${!var_name}")
@@ -191,6 +331,14 @@ done
 rootfs_args=(--read-only)
 if [ "${ACP_DOCKER_RW_ROOTFS:-}" = 1 ]; then
     rootfs_args=()
+fi
+
+# Effective extra mounts are read-trusted inside the agent (ACP_EXTRA_MOUNTS,
+# see the ACP_EXTRA_MOUNTS docs): reads under them never prompt. Derived from
+# the mounted extras, so skipped entries (inside the project dir / home / tmpfs)
+# never widen the agent's trust domain.
+if [ -n "$extra_trusted_reads" ]; then
+    forwarded_env+=(--env "ACP_EXTRA_MOUNTS=$extra_trusted_reads")
 fi
 
 cap_add_args=()
@@ -217,9 +365,13 @@ if [ -n "${ACP_DOCKER_EXTRA_ARGS:-}" ]; then
     IFS=' ' read -ra extra_args <<<"${ACP_DOCKER_EXTRA_ARGS}"
 fi
 
-exec "$docker_bin" run --rm --init -i \
+# Not exec'd: the EXIT trap must run after docker returns to remove the
+# staged API key file and the .env.local mask file.
+"$docker_bin" run --rm --init -i \
     --network "$network" \
     --user "$uid:$gid" \
+    "${api_key_mounts[@]}" \
+    "${extra_mount_args[@]}" \
     --workdir "$project_dir" \
     --mount "type=bind,src=$project_dir,dst=$project_dir" \
     "${env_local_mounts[@]}" \

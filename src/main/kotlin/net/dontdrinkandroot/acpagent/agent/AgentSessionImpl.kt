@@ -20,6 +20,7 @@ import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
+import net.dontdrinkandroot.acpagent.tools.isWithinAnyRoot
 
 internal class AgentSessionImpl(
     override val sessionId: SessionId,
@@ -50,6 +51,7 @@ internal class AgentSessionImpl(
         cwd,
         todayProvider,
         runConfigsProvider = { loadRunConfigs(cwd) },
+        trustedReadPaths = config.extraMounts,
     )
 
     private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
@@ -62,7 +64,7 @@ internal class AgentSessionImpl(
 
     private val sessionConfigOptions = SessionConfigOptions(availableModes, models, state)
 
-    private val toolCallExecutor = ToolCallExecutor(cwd, toolRegistry, state)
+    private val toolCallExecutor = ToolCallExecutor(cwd, toolRegistry, state, config.extraMounts)
 
     private val promptRunner = PromptRunner(
         state = state,
@@ -287,12 +289,24 @@ internal data class StreamToolCall(
 /**
  * Decides whether a tool call needs a user permission prompt. Path-scoped
  * calls whose targets all lie inside the session working directory are allowed
- * outright; anything else that is mutating (bash) or reaches outside the
- * project (path-scoped reads, writes, searches, moves) requires permission.
+ * outright; non-mutating reads whose targets all lie inside a trusted read
+ * path (`ACP_EXTRA_MOUNTS`, e.g. the extra docker mounts) are allowed too.
+ * Anything else that is mutating (bash) or reaches outside the project
+ * (path-scoped reads, writes, searches, moves) requires permission.
  */
-internal fun permissionNeeded(cwd: String, tool: AgentTool, arguments: JsonObject): Boolean {
+internal fun permissionNeeded(
+    cwd: String,
+    tool: AgentTool,
+    arguments: JsonObject,
+    trustedReadPaths: List<String> = emptyList(),
+): Boolean {
     val targets = tool.targetPaths(arguments)
     if (targets.isNotEmpty() && targets.all { isWithin(cwd, it) }) return false
+    if (!tool.mutating && trustedReadPaths.isNotEmpty() &&
+        targets.isNotEmpty() && targets.all { isWithinAnyRoot(cwd, trustedReadPaths, it) }
+    ) {
+        return false
+    }
     return tool.mutating || targets.isNotEmpty()
 }
 

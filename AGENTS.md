@@ -48,6 +48,14 @@ banner-suppressing API.
 * When fixing bugs add regression tests if reasonably possible.
 * _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
 * Secrets come from env vars only (`OPENROUTER_API_KEY`, ...); never commit or print them.
+  * Exception (deliberate): the docker launcher never forwards `OPENROUTER_API_KEY`
+    into the container env — it stages a `0600` copy (or mounts the user's
+    `OPENROUTER_API_KEY_FILE`) read-only at `/tmp/openrouter-api-key`, and the agent env
+    carries only the path. Rationale: anything in the agent's env is inherited by every
+    bash-tool child and shows up in `set -x` traces / `env` dumps / `/proc/*/environ`
+    (this actually leaked a real key into a session once); docker `--env K=V` also puts
+    the value into the docker CLI argv visible to host-side `ps`. The agent-side
+    resolution lives in `Config.resolveApiKey`.
   *`build/` is generated output - never edit or commit it.
 * **Never commit without the user requesting it**: the agent must not run
   `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
@@ -66,7 +74,8 @@ Use the `run` tool's configurations for the standard dev loop:
 - `install_dist` — relink the e2e launcher
 - `dependency_updates` — outdated deps (stable-only)
 
-The launchers take no args; env config only (`OPENROUTER_API_KEY` required):
+The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
+`OPENROUTER_API_KEY_FILE` required):
 
 - `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
 - `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README)
@@ -78,7 +87,10 @@ The launchers take no args; env config only (`OPENROUTER_API_KEY` required):
 
 Config comes from environment variables:
 
-- `OPENROUTER_API_KEY` (required)
+- `OPENROUTER_API_KEY` (required unless `OPENROUTER_API_KEY_FILE` is set)
+- `OPENROUTER_API_KEY_FILE` (optional; file holding the key, read + trimmed at
+  startup; the docker launcher always injects it pointing at the mounted key file
+  and never forwards the key itself)
 - `OPENROUTER_MODEL` (default `openrouter/auto`)
 - `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
 - `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED` (default enabled; `0` disables
@@ -95,6 +107,11 @@ Config comes from environment variables:
   before the turn ends with `MAX_TURN_REQUESTS`)
 - `ACP_WEB_FETCH_ALLOW_PRIVATE` (default blocked; `1` lets `web_fetch` reach
   private/loopback/link-local hosts - tests against a local mock server need this)
+- `ACP_EXTRA_MOUNTS` (default empty; comma-separated **absolute** paths that are
+  read-trusted: `read_file`/`list_dir`/`glob`/`grep` under them run without a permission
+  prompt even though they lie outside the cwd; writes/moves/deletes still prompt. The
+  docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`; see Features /
+  Permissions)
 
 ## Features
 
@@ -178,7 +195,9 @@ Config comes from environment variables:
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class/method via `{args}`),
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only),
-  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build script),
+  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
+  `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
+  composition - also wired into Gradle `check` as the `testScripts` Exec task),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
   `.ai/scripts/show-test-failures.sh`) and `sdk_sources` (extract a `*-sources.jar` from
   the Gradle cache for inspection via `.ai/scripts/sdk-sources.sh`, for the SDK contract
@@ -292,7 +311,14 @@ Config comes from environment variables:
   be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
-  `session/request_permission`. MCP tools always prompt **unless** the server annotates the
+  `session/request_permission`. Exception: `ACP_EXTRA_MOUNTS` names absolute **read-trusted**
+  paths (the docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`); the
+  non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
+  targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
+  against the session cwd so a symlink escape still gates); writes/moves/deletes under them
+  always prompt. The paths are also surfaced as a static "Trusted read paths" system-prompt
+  section (`SystemPromptBuilder`) so the model knows reads there are prompt-free. MCP tools
+  always prompt **unless** the server annotates the
   tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
   enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the
   pessimistic always-prompt default). The trusted `title` annotation replaces the bare tool
@@ -430,10 +456,23 @@ Config comes from environment variables:
   ...), host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded,
-  host `.env.local` masked, git identity forwarded. Extras: `ACP_DOCKER_NETWORK`,
-  `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`; local builds via
-  `./build-docker`. Launcher output is stderr-only - ACP travels over the container
+  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded
+  (the API key excepted: it is staged as a `0600` file or taken from
+  `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
+  the path in the container env; the staged copy and the `.env.local` mask are removed by
+  an EXIT trap, which is why the launcher does not `exec` docker),
+  host `.env.local` masked, git identity forwarded. Optional extra host paths
+  (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
+  identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
+  `:rw`; dirs or single files; absolute, must exist, relative paths / `/` are
+  rejected loudly); the launcher injects the *effective* extras as
+  `ACP_EXTRA_MOUNTS` so the agent treats them as read-trusted (skipped entries -
+  inside the project dir/home/tmpfs - are never trusted). Extras are emitted before every built-in mount and sorted
+  shallowest-first, so built-ins and later, deeper mounts shadow shallower ones
+  (mounting a CWD parent ro works; the project dir itself stays rw); entries inside
+  the project dir or container home are skipped with a warning. Extras:
+  `ACP_DOCKER_NETWORK`, `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
+  local builds via `./build-docker`. Launcher output is stderr-only - ACP travels over the container
   stdin/stdout.
 
 ## Layout
@@ -523,8 +562,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # before permission/execution (bash in build mode)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
-                                     # + move/delete tools (in-project without prompt, out-of-project
-                                     # move destination prompts)
+                                     # + trusted read paths (ACP_EXTRA_MOUNTS: read prompt-free, write
+                                     # still prompts) + move/delete tools (in-project without prompt,
+                                     # out-of-project move destination prompts)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
@@ -543,6 +583,13 @@ ddr-acp-agent                           # direct launcher (no docker): always ru
 ddr-acp-agent-docker                    # docker launcher: sandboxed `docker run` for the agent
 build-docker                            # local image build script (tags
                                         # ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest)
+tests/bash/                             # shell test suite (launcher composition; run via
+                                        # `test_scripts` / Gradle `testScripts`): harness.sh
+                                        # (assert lib), common.sh (launcher invocation +
+                                        # sandbox under build/), stubs/fake-docker (DOCKER_BIN
+                                        # stub recording argv; pull/inspect exit switches),
+                                        # test_extra_mounts/test_launcher_args/test_error_paths
+                                        # + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main,
                                         # prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
@@ -623,11 +670,31 @@ failure without a behavioral change is a test-design smell: fix the test by
 asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
 
+**Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
+`testScripts` wired into `check`): black-box tests for the **launcher composition** —
+the JVM suites cannot see which argv/env the `ddr-acp-agent-docker` launcher composes.
+The stub `tests/bash/stubs/fake-docker` is plugged in via the launcher's own
+`DOCKER_BIN` seam (record mode: every invocation appended to `$FAKE_DOCKER_LOG`,
+`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths);
+`tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in a `set -e`
+subshell, first failing assert aborts the test), `tests/bash/common.sh` provides the
+launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
+assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS` is always cleared).
+Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
+(sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
+OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
+`OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
+identity, pull fallback),
+`test_error_paths.bash` (fail-loudly exits before any `docker run`). Fixtures live under
+`build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs) and
+the API key is pinned to `sk-test` so a real key can never leak into logs.
+
 Manual validation (the run configurations cannot do this):
 - Docker: validate `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
   build with `./build-docker` and smoke-test by piping an `initialize` request into
   `OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC
-  response on stdout).
+  response on stdout). What the shell suite cannot pin without a real daemon: the
+  image itself (entrypoint, tool availability) and real bind mounts.
 - Direct: validate `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the
   same way via `./ddr-acp-agent` (keep stdin open briefly after the request — closing
   it immediately races the transport teardown and swallows the response).

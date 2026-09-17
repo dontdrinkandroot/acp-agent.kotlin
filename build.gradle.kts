@@ -78,3 +78,19 @@ tasks.test {
         layout.buildDirectory.file("install/acp-agent.kotlin/bin/acp-agent.kotlin").get().asFile.absolutePath,
     )
 }
+
+// Black-box shell suite pinning the docker launcher composition (tests/bash);
+// always runs, so the "build green" definition of done includes it.
+val testScripts = tasks.register<Exec>("testScripts") {
+    group = "verification"
+    description = "Runs the shell test suite (tests/bash/run-all) pinning the docker launcher composition"
+    commandLine("tests/bash/run-all")
+    inputs.dir("tests/bash")
+    inputs.file("ddr-acp-agent-docker")
+    inputs.file("ddr-acp-agent")
+    outputs.upToDateWhen { false }
+}
+
+tasks.named("check") {
+    dependsOn(testScripts)
+}

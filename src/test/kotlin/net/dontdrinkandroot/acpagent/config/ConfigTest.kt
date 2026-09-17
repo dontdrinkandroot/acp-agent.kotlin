@@ -1,5 +1,7 @@
 package net.dontdrinkandroot.acpagent.config
 
+import java.io.File
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -9,8 +11,53 @@ class ConfigParseTest {
 
     @Test
     fun `fromEnv requires api key`() {
-        assertFailsWith<IllegalStateException> { Config.fromEnv(emptyMap()) }
+        val e = assertFailsWith<IllegalArgumentException> { Config.fromEnv(emptyMap()) }
+        assertEquals("OPENROUTER_API_KEY is not set", e.message)
         assertEquals("sk-x", Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "sk-x")).openRouterApiKey)
+    }
+
+    @Test
+    fun `api key file is read and trimmed`() {
+        val keyFile = File.createTempFile("acp-key", ".txt").apply {
+            writeText("  sk-file-key\n")
+            deleteOnExit()
+        }
+        assertEquals(
+            "sk-file-key",
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to keyFile.absolutePath)).openRouterApiKey,
+        )
+    }
+
+    @Test
+    fun `setting both api key and api key file is an error`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "sk-x", "OPENROUTER_API_KEY_FILE" to "/tmp/key"))
+        }
+        assertEquals("Set either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE, not both", e.message)
+    }
+
+    @Test
+    fun `api key file problems fail loudly with the path`() {
+        assertEquals(
+            "OPENROUTER_API_KEY_FILE /does/not/exist is not a readable file",
+            assertFailsWith<IllegalArgumentException> {
+                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to "/does/not/exist"))
+            }.message,
+        )
+        val dir = Files.createTempDirectory("acp-keydir").toFile()
+        assertEquals(
+            "OPENROUTER_API_KEY_FILE ${dir.absolutePath} is not a readable file",
+            assertFailsWith<IllegalArgumentException> {
+                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to dir.absolutePath))
+            }.message,
+        )
+        val empty = File.createTempFile("acp-key-empty", ".txt").apply { deleteOnExit() }
+        assertEquals(
+            "OPENROUTER_API_KEY_FILE ${empty.absolutePath} is empty",
+            assertFailsWith<IllegalArgumentException> {
+                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to empty.absolutePath))
+            }.message,
+        )
     }
 
     @Test
@@ -171,4 +218,38 @@ class ConfigParseTest {
         )
     }
 
+    @Test
+    fun `extra mounts default to empty and parse a comma separated list of absolute paths`() {
+        assertEquals(
+            emptyList(),
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).extraMounts,
+        )
+        assertEquals(
+            listOf("/srv/data", "/mnt/scratch"),
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_EXTRA_MOUNTS" to "/srv/data,/mnt/scratch"))
+                .extraMounts,
+        )
+    }
+
+    @Test
+    fun `extra mounts trim entries, drop blanks and dedupe`() {
+        assertEquals(
+            listOf("/srv/data", "/mnt/scratch"),
+            Config.fromEnv(
+                mapOf(
+                    "OPENROUTER_API_KEY" to "k",
+                    "ACP_EXTRA_MOUNTS" to " /srv/data ,, /srv/data, /mnt/scratch ,",
+                )
+            ).extraMounts,
+        )
+    }
+
+    @Test
+    fun `extra mounts ignore relative entries fail-open`() {
+        assertEquals(
+            listOf("/srv/data"),
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_EXTRA_MOUNTS" to "srv/data,/srv/data"))
+                .extraMounts,
+        )
+    }
 }

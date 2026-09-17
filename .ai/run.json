@@ -24,8 +24,8 @@
         "description": "Report outdated dependencies (stable releases only)"
     },
     "lint_scripts": {
-        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker .ai/scripts/*.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker .ai/scripts/*.sh",
-        "description": "Validate launcher, build and .ai helper scripts"
+        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash",
+        "description": "Validate launcher, build, .ai helper and shell-test scripts"
     },
     "show_failures": {
         "command": "bash .ai/scripts/show-test-failures.sh",
@@ -42,5 +42,9 @@
     "gradleStop": {
         "command": "./gradlew --stop; pkill -f GradleDaemon || true; sleep 2",
         "description": "Stop Gradle daemons and kill any lingering daemon processes holding cache locks"
+    },
+    "test_scripts": {
+        "command": "timeout 300 tests/bash/run-all",
+        "description": "Run the shell test suite (tests/bash) pinning the docker launcher composition"
     }
 }

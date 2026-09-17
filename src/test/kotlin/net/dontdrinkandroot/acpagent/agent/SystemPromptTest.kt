@@ -71,6 +71,25 @@ class SystemPromptTest {
     }
 
     @Test
+    fun `trusted read paths section is present when configured and states read-only semantics`() {
+        val builder = SystemPromptBuilder(
+            "/project",
+            { "2026-09-03" },
+            trustedReadPaths = listOf("/srv/data", "/mnt/scratch"),
+        )
+        val prompt = builder.build(null)
+        assertTrue(prompt.contains("Trusted read paths"), prompt)
+        assertTrue(prompt.contains("/srv/data, /mnt/scratch"), prompt)
+        assertTrue(prompt.contains("writes and mutations still require permission"), prompt)
+    }
+
+    @Test
+    fun `trusted read paths section is omitted when none are configured`() {
+        val prompt = builder.build(null)
+        assertTrue(!prompt.contains("Trusted read paths"), prompt)
+    }
+
+    @Test
     fun `project instructions are appended after the rules`() {
         val prompt = builder.build(
             AgentsInstructions("/project/AGENTS.md", "Project rules here"),

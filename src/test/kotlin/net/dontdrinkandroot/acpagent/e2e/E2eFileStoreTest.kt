@@ -130,6 +130,101 @@ class E2eFileStoreTest : E2eAgentTest() {
     }
 
     @Test
+    fun `e2e read_file inside a trusted read path runs without a prompt`() = runBlocking {
+        val trustedDir = Files.createTempDirectory("acp-agent-e2e-trusted-read").toFile()
+        try {
+            val trustedFile = trustedDir.resolve("notes.txt")
+            trustedFile.writeText("trusted content")
+            withE2eAgent(
+                "trusted-read",
+                MockOpenAiServer(
+                    "unused",
+                    toolCall = MockToolCall("read_file", readFileArgs(trustedFile.absolutePath)),
+                ),
+            ) {
+                val connection = connect(extraEnv = mapOf("ACP_EXTRA_MOUNTS" to trustedDir.absolutePath))
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations()
+                    val session = newSession(connection.client, projectDir, ops)
+                    val events = collectPrompt(session, listOf(ContentBlock.Text("Read the file")))
+                    assertEndTurn(events)
+                    assertTrue(
+                        ops.permissionRequests.isEmpty(),
+                        "a read inside a trusted read path must not ask permission",
+                    )
+                    // The read result reaches the LLM: the follow-up request
+                    // carries the tool message with the file content.
+                    assertTrue(llmMock.requestBodies.size >= 2, "the turn must continue after the read")
+                    assertTrue(
+                        llmMock.requestBodies[1].contains("trusted content"),
+                        "the trusted read must have executed and fed the LLM",
+                    )
+                    // The system prompt names the trusted paths so the model
+                    // knows reads there are prompt-free.
+                    assertTrue(
+                        llmMock.requestBodies[0].contains("Trusted read paths") &&
+                                llmMock.requestBodies[0].contains(trustedDir.absolutePath),
+                        "the system prompt must surface the trusted read paths",
+                    )
+                    println("[ok] read_file inside a trusted read path ran without a prompt")
+                } finally {
+                    connection.close()
+                }
+            }
+        } finally {
+            trustedDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `e2e write_file inside a trusted read path asks permission`() = runBlocking {
+        val trustedDir = Files.createTempDirectory("acp-agent-e2e-trusted-write").toFile()
+        try {
+            val target = trustedDir.resolve("out.txt")
+            withE2eAgent(
+                "trusted-write",
+                MockOpenAiServer(
+                    "unused",
+                    toolCall = MockToolCall(
+                        "write_file",
+                        buildJsonObject {
+                            put("path", target.absolutePath)
+                            put("content", "written")
+                        },
+                    ),
+                ),
+            ) {
+                val connection = connect(extraEnv = mapOf("ACP_EXTRA_MOUNTS" to trustedDir.absolutePath))
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations()
+                    val session = newSession(connection.client, projectDir, ops)
+                    session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
+                    val events = collectPrompt(session, listOf(ContentBlock.Text("Write the file")))
+                    assertEndTurn(events)
+                    assertEquals(
+                        1,
+                        ops.permissionRequests.size,
+                        "a write inside a trusted *read* path must still ask permission",
+                    )
+                    val permissionTitle = requireNotNull(ops.permissionRequests.single().title)
+                    assertTrue(
+                        permissionTitle.startsWith("write_file("),
+                        "the write prompt must identify the tool: $permissionTitle",
+                    )
+                    assertTrue(target.exists() && target.readText() == "written", "the allowed write must have happened")
+                    println("[ok] write_file inside a trusted read path routed through session/request_permission")
+                } finally {
+                    connection.close()
+                }
+            }
+        } finally {
+            trustedDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `e2e move_file runs without a prompt in project`() = runBlocking {
         var sourceFile: File? = null
         withE2eAgent("move", { projectDir ->

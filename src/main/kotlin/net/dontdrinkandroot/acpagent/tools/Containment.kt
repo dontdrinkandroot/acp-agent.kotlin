@@ -44,6 +44,23 @@ internal fun isWithin(sessionCwd: String, path: String): Boolean {
 }
 
 /**
+ * Reports whether the (resolved) [path] — always resolved against the session
+ * working directory, exactly as the tool I/O will resolve it — lies inside any
+ * of [roots] (absolute trusted paths, e.g. the extra docker mounts). Relative
+ * tool paths can only match by actually resolving into a root, and a symlink
+ * escaping either the session cwd or a root is caught because resolution
+ * follows the links. Unresolvable paths fail closed.
+ */
+internal fun isWithinAnyRoot(sessionCwd: String, roots: List<String>, path: String): Boolean {
+    if (roots.isEmpty()) return false
+    val resolved = resolveAgainstSessionCwd(sessionCwd, path) ?: return false
+    return roots.any { root ->
+        val resolvedRoot = resolvedPath(Paths.get(root).toAbsolutePath()) ?: return@any false
+        resolved.normalize().startsWith(resolvedRoot.normalize())
+    }
+}
+
+/**
  * Absolutizes [p] and resolves symlinks, walking up until an existing ancestor
  * is found so that not-yet-existing final components (files being created)
  * still resolve to their real location. Dangling symlinks are followed manually

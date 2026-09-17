@@ -29,6 +29,12 @@ internal class ToolCallExecutor(
     private val cwd: String,
     private val toolRegistry: ToolRegistry,
     private val state: SessionState,
+    /**
+     * Absolute read-trusted paths (`ACP_EXTRA_MOUNTS`): non-mutating,
+     * path-scoped calls whose targets all lie inside one of them skip the
+     * permission prompt. Empty by default, so the default stays prompt-gated.
+     */
+    private val trustedReadPaths: List<String> = emptyList(),
 ) {
 
     /**
@@ -82,7 +88,7 @@ internal class ToolCallExecutor(
             )
         )
 
-        val allowed = shouldAllow(tool, toolCallId, arguments, toolContext.client)
+        val allowed = shouldAllow(tool, toolCallId, arguments, toolContext.client, trustedReadPaths)
         if (!allowed) {
             val msg = "Permission denied for tool ${tool.name}"
             emitDenied(
@@ -150,8 +156,9 @@ internal class ToolCallExecutor(
         toolCallId: ToolCallId,
         arguments: JsonObject,
         client: ClientSessionOperations?,
+        trustedReadPaths: List<String>,
     ): Boolean {
-        if (!permissionNeeded(cwd, tool, arguments)) return true
+        if (!permissionNeeded(cwd, tool, arguments, trustedReadPaths)) return true
         if (client == null) return true
         state.permanentPermissions[tool.name]?.let { return it }
         val options = listOf(

@@ -28,6 +28,121 @@ class PermissionAndFileStoreTest {
     }
 
     @Test
+    fun `out of project read inside a trusted read path needs no permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        val file = trusted.resolve("notes.txt")
+        Files.writeString(file, "x")
+        assertEquals(
+            false,
+            permissionNeeded(dir.toString(), ReadFileTool(), pathArgs(file.toString()), listOf(trusted.toString())),
+        )
+    }
+
+    @Test
+    fun `out of project write inside a trusted read path still needs permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                WriteFileTool(),
+                pathArgs(trusted.resolve("x.txt").toString()),
+                listOf(trusted.toString()),
+            ),
+        )
+    }
+
+    @Test
+    fun `out of project read outside every trusted read path still needs permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        val untrusted = Files.createTempDirectory("acp-untrusted")
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                ReadFileTool(),
+                pathArgs(untrusted.resolve("x.txt").toString()),
+                listOf(trusted.toString()),
+            ),
+        )
+    }
+
+    @Test
+    fun `trusted read path carve-out covers all read-only path tools`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        val trustedPaths = listOf(trusted.toString())
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                ListDirTool(),
+                pathArgs(trusted.resolve("sub").toString()),
+                trustedPaths,
+            ),
+        )
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GlobTool(),
+                buildJsonObject { put("pattern", "*.txt"); put("root", trusted.resolve("sub").toString()) },
+                trustedPaths,
+            ),
+        )
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GrepTool(),
+                buildJsonObject { put("pattern", "x"); put("root", trusted.resolve("sub").toString()) },
+                trustedPaths,
+            ),
+        )
+    }
+
+    @Test
+    fun `relative path resolving into the project stays prompt-free even when a trusted root exists`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val file = dir.resolve("a.txt")
+        Files.writeString(file, "x")
+        assertEquals(
+            false,
+            permissionNeeded(dir.toString(), ReadFileTool(), pathArgs("a.txt"), listOf("/nonexistent-trusted")),
+        )
+    }
+
+    @Test
+    fun `symlink inside the session cwd pointing into a trusted read path is prompt-free`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        val target = trusted.resolve("notes.txt")
+        Files.writeString(target, "x")
+        val link = dir.resolve("link")
+        Files.createSymbolicLink(link, target)
+        assertEquals(
+            false,
+            permissionNeeded(dir.toString(), ReadFileTool(), pathArgs(link.toString()), listOf(trusted.toString())),
+        )
+    }
+
+    @Test
+    fun `symlink inside a trusted read path escaping it still needs permission`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val trusted = Files.createTempDirectory("acp-trusted")
+        val outside = Files.createTempFile("acp-outside", ".txt")
+        val link = trusted.resolve("escape")
+        Files.createSymbolicLink(link, outside)
+        assertEquals(
+            true,
+            permissionNeeded(dir.toString(), ReadFileTool(), pathArgs(link.toString()), listOf(trusted.toString())),
+        )
+    }
+
+    @Test
     fun `in project write needs no permission`() {
         val dir = Files.createTempDirectory("acp-perm")
         assertEquals(

@@ -1,0 +1,21 @@
+#!/bin/bash
+# Runs every tests/bash/test_*.bash file and exits nonzero when any failed.
+# Output is one ok/not-ok line per test plus a per-file summary.
+set -uo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+failed=0
+
+for test_file in "$script_dir"/test_*.bash; do
+    [ -e "$test_file" ] || continue
+    printf '== %s\n' "$(basename "$test_file")"
+    if ! timeout 300 bash "$test_file"; then
+        failed=1
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    printf 'shell test suite: FAILED\n' >&2
+    exit 1
+fi
+printf 'shell test suite: PASSED\n'

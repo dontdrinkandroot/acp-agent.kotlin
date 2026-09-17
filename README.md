@@ -45,6 +45,12 @@ export OPENROUTER_API_KEY="sk-or-..."
 /path/to/acp-agent.kotlin/ddr-acp-agent-docker
 ```
 
+The key never travels through the environment into the container: the launcher
+stages it as a `0600` file and mounts it read-only at
+`/tmp/openrouter-api-key`; the container env only carries
+`OPENROUTER_API_KEY_FILE`. Alternatively provide `OPENROUTER_API_KEY_FILE`
+pointing at your own `0600` file, which is mounted directly without staging.
+
 On first use the launcher pulls `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`
 (when offline it falls back to an already-pulled copy). To build the image locally
 instead, run `./build-docker` and start with `--skip-pull`. The image runs
@@ -93,7 +99,8 @@ All configuration is via environment variables.
 
 | Variable                                     | Default                        | Description                                                                                              |
 |----------------------------------------------|--------------------------------|----------------------------------------------------------------------------------------------------------|
-| `OPENROUTER_API_KEY`                         | *(required)*                   | OpenRouter API key.                                                                                      |
+| `OPENROUTER_API_KEY`                         | *(one of the two required)*    | OpenRouter API key. Never forwarded into the docker container; the launcher stages it as a `0600` file instead. |
+| `OPENROUTER_API_KEY_FILE`                    | *(one of the two required)*    | File holding the OpenRouter API key (docker-secrets style). The docker launcher mounts it read-only at `/tmp/openrouter-api-key`. Direct runs read it at startup; setting both variants is an error. |
 | `OPENROUTER_MODEL`                           | `openrouter/auto`              | Initial model; switchable per session.                                                                   |
 | `OPENROUTER_BASE_URL`                        | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint (e.g. a proxy).                                                               |
 | `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED` | enabled                        | `0` disables automatic provider routing (throughput-sorted with a median price cap).                     |
@@ -102,6 +109,7 @@ All configuration is via environment variables.
 | `ACP_BASH_TIMEOUT_SECONDS`                   | `600`                          | Shell command timeout (whole process tree is killed).                                                    |
 | `ACP_MAX_TURN_REQUESTS`                      | `100`                          | Tool-calling LLM iterations per prompt before a final text-only summary.                                 |
 | `ACP_WEB_FETCH_ALLOW_PRIVATE`                | blocked                        | `1` lets the `web_fetch` tool reach private/loopback hosts (blocked by default to prevent SSRF).         |
+| `ACP_EXTRA_MOUNTS`                           | *(none)*                       | Comma-separated absolute paths treated as read-trusted: `read_file`/`list_dir`/`glob`/`grep` under them run without a permission prompt (writes still prompt). The docker launcher sets this automatically from the effective `ACP_DOCKER_EXTRA_MOUNTS`. |
 
 Docker launcher extras (host side, not forwarded into the container):
 
@@ -110,6 +118,7 @@ Docker launcher extras (host side, not forwarded into the container):
 | `ACP_DOCKER_STATE_DIR`    | `$XDG_STATE_HOME/ddr-acp-agent` | Host directory for session state. Absolute paths only. Useful when your home is fscrypt-encrypted (see Troubleshooting). |
 | `ACP_DOCKER_HOME_VOLUME`  | *(tmpfs)*                       | Named Docker volume for the container home instead of a tmpfs.                                                           |
 | `ACP_DOCKER_MOUNT_CACHES` | enabled                         | `0` disables sharing host tool caches (Gradle, uv, cargo, …) into the container.                                         |
+| `ACP_DOCKER_EXTRA_MOUNTS` | *(none)*                        | Comma-separated host paths mounted at the identical in-container path, e.g. `/srv/data,/mnt/scratch:rw`. Default mode `ro`, suffix `:ro`/`:rw`; dirs and files; absolute host paths, must exist. Mounts inside the project dir or the container home are skipped (built-ins shadow extras; later, deeper mounts win). The effective extras are injected as `ACP_EXTRA_MOUNTS`, making them read-trusted for the agent. |
 | `ACP_DOCKER_NETWORK`      | `development`                   | Docker network for the container.                                                                                        |
 | `ACP_DOCKER_RW_ROOTFS`    | *(read-only)*                   | `1` leaves the container rootfs writable.                                                                                |
 | `ACP_DOCKER_CAP_ADD`      | *(none)*                        | Comma-separated Linux capabilities to add back.                                                                          |
@@ -142,9 +151,15 @@ sudo mkdir -p /srv/acp-agent-state && sudo chown "$USER" /srv/acp-agent-state
 "env": { "OPENROUTER_API_KEY": "sk-or-...", "ACP_DOCKER_STATE_DIR": "/srv/acp-agent-state" }
 ```
 
-**`OPENROUTER_API_KEY must be set`** — the key was not provided to the launched
-process. Put it in the agent entry's `env` block of your IDE configuration (not
-your shell profile), or export it before launching the direct variant.
+With the docker launcher, `OPENROUTER_API_KEY` in that `env` block only lives
+in the launcher's environment; the key still reaches the container exclusively
+via the read-only key file.
+
+**`OPENROUTER_API_KEY` / `OPENROUTER_API_KEY_FILE must be set`** — the key was
+not provided to the launched process (one of the two variants is required;
+setting both is an error). Put it in the agent entry's `env` block of your IDE
+configuration (not your shell profile), or export it before launching the
+direct variant.
 
 **Agent produces no output / connection drops immediately.** The agent speaks
 NDJSON on stdout and logs to stderr; if a wrapper script or environment writes to
