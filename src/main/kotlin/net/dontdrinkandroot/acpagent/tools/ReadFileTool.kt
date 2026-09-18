@@ -13,7 +13,8 @@ public class ReadFileTool : AgentTool {
                 "old_string/new_string. " +
                 "When the returned window does not cover the whole file a footer shows the shown range and the " +
                 "'line' to continue from. Read the whole file by leaving line unset and using a limit at least " +
-                "the file's size (all lines are numbered), or page with line/limit."
+                "the file's size (all lines are numbered), or page with line/limit. " +
+                "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.READ
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
@@ -28,6 +29,8 @@ public class ReadFileTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
+        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
+        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         if (arguments.isNullArg("line")) return ToolResult(arguments.argError("line", "an integer"), true)
         val line = arguments.longArg("line")
         val limit = arguments.longArg("limit")

@@ -114,6 +114,10 @@ abstract class E2eAgentTest {
                 // local store in scenarios that expect the proxy; scenarios opting out pass it via
                 // extraEnv, which wins below.
                 environment().remove("FS_PROXY_ENABLED")
+                // Same for a leaked OPENROUTER_API_KEY_FILE (e.g. a staged docker-launcher key
+                // in the host env): together with the harness key below it fails Config.fromEnv
+                // loudly at agent startup, hanging the client-side initialize.
+                environment().remove("OPENROUTER_API_KEY_FILE")
                 extraEnv.forEach { (key, value) -> environment()[key] = value }
             }
             .start()

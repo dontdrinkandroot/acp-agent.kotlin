@@ -7,7 +7,9 @@ import kotlinx.serialization.json.JsonObject
 
 public class ListDirTool : AgentTool {
     override val name = "list_dir"
-    override val description = "List the contents of a directory."
+    override val description =
+        "List the contents of a directory. Entries matching an exclusion rule " +
+                "(currently .env*.local) are omitted."
     override val kind = ToolKind.READ
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
@@ -25,7 +27,10 @@ public class ListDirTool : AgentTool {
             val dir = Path(path)
             val meta = fs.metadataOrNull(dir)
             if (meta == null || !meta.isDirectory) return@runCatching ToolResult("Not a directory: $path", true)
-            val sorted = fs.list(dir).map { it.name }.sorted()
+            val sorted = fs.list(dir)
+                .filterNot { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) != null }
+                .map { it.name }
+                .sorted()
             val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
             if (sorted.size > MAX_LISTING_ENTRIES) {
                 ToolResult("$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)")

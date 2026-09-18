@@ -9,7 +9,9 @@ import kotlinx.serialization.json.JsonObject
 
 public class GrepTool : AgentTool {
     override val name = "grep"
-    override val description = "Search file contents for a regex pattern under a root directory."
+    override val description =
+        "Search file contents for a regex pattern under a root directory. " +
+                "Files matching an exclusion rule (currently .env*.local) are skipped."
     override val kind = ToolKind.SEARCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
@@ -41,6 +43,10 @@ public class GrepTool : AgentTool {
             val results = mutableListOf<Triple<String, Int, String>>()
             var skippedBinaryOrOversized = 0
             walk(fs, base, 0) { f ->
+                if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) {
+                    skippedBinaryOrOversized++
+                    return@walk
+                }
                 if (fileFilter != null) {
                     val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
                     if (!fileFilter.matches(rel)) return@walk
@@ -72,7 +78,7 @@ public class GrepTool : AgentTool {
                 .take(MAX_MATCHES)
                 .map { "${it.first}:${it.second}:${truncateMatchLine(it.third)}" }
             val suffix = if (skippedBinaryOrOversized > 0) {
-                "\n...($skippedBinaryOrOversized binary or oversized files skipped)"
+                "\n...($skippedBinaryOrOversized binary, oversized or excluded files skipped)"
             } else ""
             (matches.joinToString("\n").ifEmpty { "No matches" } + suffix)
                 .let { ToolResult(it) }

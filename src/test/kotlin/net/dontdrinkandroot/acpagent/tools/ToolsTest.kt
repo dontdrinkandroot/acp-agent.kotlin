@@ -603,7 +603,7 @@ class FileToolsTest {
         assertTrue(grep.text.contains("a.txt:1:findme"), grep.text)
         assertFalse(grep.text.contains("blob.bin"), grep.text)
         assertFalse(grep.text.contains("big.log"), grep.text)
-        assertTrue(grep.text.contains("binary or oversized files skipped"), grep.text)
+        assertTrue(grep.text.contains("binary, oversized or excluded files skipped"), grep.text)
     }
 
     @Test
@@ -644,6 +644,164 @@ class FileToolsTest {
         )
         assertFalse(grep.isError, grep.text)
         assertFalse(grep.text.contains("secret.txt"), "grep must not read through symlinks: ${grep.text}")
+    }
+
+    @Test
+    fun `read_file refuses an excluded env local file`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".env.local").apply { writeText("SECRET_KEY=abc") }
+
+        val read = ReadFileTool().execute(buildJsonObject { put("path", file.absolutePath); put("limit", 100) }, context(dir))
+        assertTrue(read.isError, read.text)
+        assertTrue(read.text.contains("excluded from tool access"), read.text)
+        assertTrue(read.text.contains(".env*.local"), read.text)
+        // The refusal must not leak the content.
+        assertFalse(read.text.contains("SECRET_KEY"), read.text)
+        assertTrue(file.isFile, "the excluded file must be untouched")
+    }
+
+    @Test
+    fun `read_file refusal happens before the client fs proxy read`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".env.local").apply { writeText("SECRET_KEY=abc") }
+        val fsProxy = RecordingFsClient()
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileStore = ClientFileStore(fsProxy),
+        )
+
+        val read = ReadFileTool().execute(buildJsonObject { put("path", file.absolutePath); put("limit", 100) }, ctx)
+        assertTrue(read.isError, read.text)
+        assertFalse(read.text.contains("SECRET_KEY"), read.text)
+        assertTrue(fsProxy.readCalls.isEmpty(), "no fs-proxy round trip may happen on refusal")
+    }
+
+    @Test
+    fun `read_file still reads non-excluded env files`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".env.example").apply { writeText("plain=1") }
+
+        val read = ReadFileTool().execute(buildJsonObject { put("path", file.absolutePath); put("limit", 100) }, context(dir))
+        assertFalse(read.isError, read.text)
+        assertTrue(read.text.contains("plain=1"), read.text)
+    }
+
+    @Test
+    fun `edit_file refuses an excluded target`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".env.development.local").apply { writeText("A=1\n") }
+
+        val edit = EditFileTool().execute(
+            buildJsonObject {
+                put("path", file.absolutePath)
+                put("old_string", "A=1")
+                put("new_string", "B=2")
+            },
+            context(dir),
+        )
+        assertTrue(edit.isError, edit.text)
+        assertTrue(edit.text.contains("excluded from tool access"), edit.text)
+        assertEquals("A=1\n", file.readText(), "the excluded file must be unchanged")
+    }
+
+    @Test
+    fun `write_file refuses new and existing excluded targets`() = runBlocking {
+        val dir = tmpDir()
+        val existing = java.io.File(dir, ".env.local").apply { writeText("A=1\n") }
+        val fresh = java.io.File(dir, ".env.new.local")
+
+        val writeExisting = WriteFileTool().execute(
+            buildJsonObject { put("path", existing.absolutePath); put("content", "X=9") },
+            context(dir),
+        )
+        assertTrue(writeExisting.isError, writeExisting.text)
+        assertEquals("A=1\n", existing.readText(), "the excluded file must be unchanged")
+
+        val writeNew = WriteFileTool().execute(
+            buildJsonObject { put("path", fresh.absolutePath); put("content", "X=9") },
+            context(dir),
+        )
+        assertTrue(writeNew.isError, writeNew.text)
+        assertFalse(fresh.exists(), "a new excluded file must not be created")
+    }
+
+    @Test
+    fun `delete_file refuses an excluded target`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".env.local").apply { writeText("A=1\n") }
+
+        val delete = DeleteFileTool().execute(buildJsonObject { put("path", file.absolutePath) }, context(dir))
+        assertTrue(delete.isError, delete.text)
+        assertTrue(delete.text.contains("excluded from tool access"), delete.text)
+        assertTrue(file.isFile, "the excluded file must survive the refused delete")
+    }
+
+    @Test
+    fun `list_dir hides excluded entries before the cap`() = runBlocking {
+        val dir = tmpDir()
+        java.io.File(dir, ".env.local").writeText("A=1")
+        java.io.File(dir, ".env").writeText("plain")
+        java.io.File(dir, "readme.md").writeText("x")
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", dir) }, context(dir))
+        assertFalse(list.isError, list.text)
+        assertTrue(list.text.contains("readme.md"), list.text)
+        assertTrue(list.text.contains(".env"), list.text)
+        assertFalse(list.text.contains(".env.local"), list.text)
+    }
+
+    @Test
+    fun `glob and grep hide excluded files`() = runBlocking {
+        val dir = tmpDir()
+        java.io.File(dir, ".env.local").writeText("SECRET=1")
+        java.io.File(dir, "code.txt").writeText("SECRET=1")
+
+        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "**/*") }, context(dir))
+        assertFalse(glob.isError, glob.text)
+        assertTrue(glob.text.contains("code.txt"), glob.text)
+        assertFalse(glob.text.contains(".env.local"), glob.text)
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", dir); put("pattern", "SECRET") }, context(dir))
+        assertFalse(grep.isError, grep.text)
+        assertTrue(grep.text.contains("code.txt:1:SECRET=1"), grep.text)
+        assertFalse(grep.text.contains(".env.local"), grep.text)
+        assertTrue(grep.text.contains("binary, oversized or excluded files skipped"), grep.text)
+    }
+
+    @Test
+    fun `nested excluded file is hidden in listings at any depth`() = runBlocking {
+        val dir = tmpDir()
+        java.nio.file.Files.createDirectories(java.nio.file.Path.of(dir, "config"))
+        java.io.File(dir, "config/.env.local").writeText("A=1")
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", "$dir/config") }, context(dir))
+        assertFalse(list.isError, list.text)
+        assertFalse(list.text.contains(".env.local"), list.text)
+    }
+
+    @Test
+    fun `custom rules inject through the tool context`() = runBlocking {
+        val dir = tmpDir()
+        java.io.File(dir, "secrets.env").writeText("A=1")
+        java.io.File(dir, "plain.txt").writeText("x")
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileExclusions = FileAccessExclusions.of(listOf("secrets.env")),
+        )
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", dir) }, ctx)
+        assertFalse(list.text.contains("secrets.env"), list.text)
+        assertTrue(list.text.contains("plain.txt"), list.text)
+
+        val read = ReadFileTool().execute(buildJsonObject { put("path", "$dir/secrets.env"); put("limit", 100) }, ctx)
+        assertTrue(read.isError, read.text)
+        assertTrue(read.text.contains("exclusion rule 'secrets.env'"), read.text)
     }
 }
 

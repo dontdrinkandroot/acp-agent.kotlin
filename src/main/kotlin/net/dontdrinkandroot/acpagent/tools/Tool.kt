@@ -151,6 +151,12 @@ public class ToolContext internal constructor(
     internal val fileStore: FileStore = LocalFileStore(),
     internal val bashTimeoutSeconds: Int = 600,
     /**
+     * The file-access exclusion policy (currently the fixed `.env*.local`
+     * rule; the designed future source is `.aiignore`): direct targets
+     * matching a rule are refused, listings/searches hide matches.
+     */
+    internal val fileExclusions: FileAccessExclusions = FileAccessExclusions.DEFAULT,
+    /**
      * When true, `web_fetch` may reach private/loopback/link-local hosts
      * (env `ACP_WEB_FETCH_ALLOW_PRIVATE=1`). Default false: the SSRF guard
      * blocks them so a prompt cannot probe internal networks.

@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import net.dontdrinkandroot.acpagent.BuildInfo
+import net.dontdrinkandroot.acpagent.tools.FileAccessExclusions
 import net.dontdrinkandroot.acpagent.tools.RunConfig
 
 /**
@@ -21,6 +22,13 @@ internal class SystemPromptBuilder(
      * so the prompt can state them once.
      */
     private val trustedReadPaths: List<String> = emptyList(),
+    /**
+     * Glob rules of the file-access exclusion policy (see
+     * [net.dontdrinkandroot.acpagent.tools.FileAccessExclusions]): rendered
+     * into a static prompt section so the model knows which files the file
+     * tools refuse or hide. Static for the process lifetime.
+     */
+    private val excludedFileGlobs: List<String> = FileAccessExclusions.DEFAULT.globs(),
 ) {
 
     fun build(instructions: AgentsInstructions?): String = buildString {
@@ -65,6 +73,7 @@ internal class SystemPromptBuilder(
                     "user to switch mode rather than attempting a workaround."
         )
         append(trustedReadPathsSection(trustedReadPaths))
+        append(excludedFilesSection(excludedFileGlobs))
         append(runConfigsSection(runConfigsProvider()))
         append(instructionsSection(instructions))
     }
@@ -76,6 +85,24 @@ internal class SystemPromptBuilder(
             append("Trusted read paths (no permission prompt for `read_file`/`list_dir`/`glob`/`grep`; ")
             append("writes and mutations still require permission outside the working directory): ")
             appendLine(paths.joinToString(", "))
+        }
+    }
+
+    /**
+     * Static section stating the file-access exclusion policy: the direct
+     * targets matching a rule are refused and listings/searches hide matches,
+     * so the model does not have to discover the refusal per call.
+     */
+    private fun excludedFilesSection(globs: List<String>): String {
+        if (globs.isEmpty()) return ""
+        return buildString {
+            appendLine()
+            append(
+                "Excluded files: file tools refuse or hide files matching the exclusion rules " +
+                        "(${globs.joinToString(", ")}) - secrets stay out of the model context; " +
+                        "the user can paste contents manually if needed."
+            )
+            appendLine()
         }
     }
 

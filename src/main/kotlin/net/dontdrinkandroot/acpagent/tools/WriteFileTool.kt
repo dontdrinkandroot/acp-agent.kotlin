@@ -8,7 +8,8 @@ import kotlinx.serialization.json.buildJsonObject
 
 public class WriteFileTool : AgentTool {
     override val name = "write_file"
-    override val description = "Write text content to a file (creates or overwrites)."
+    override val description = "Write text content to a file (creates or overwrites). " +
+            "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
@@ -38,6 +39,8 @@ public class WriteFileTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
+        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
+        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         val content = arguments.stringArg("content") ?: return ToolResult(arguments.argError("content"), true)
         return runCatching {
             val diff = writeResultDiff(path, content, context)

@@ -15,7 +15,9 @@ import java.nio.file.Files
  */
 public class DeleteFileTool : AgentTool {
     override val name = "delete_file"
-    override val description = "Delete a file (refuses directories and symlinks; use delete_directory for directories)."
+    override val description =
+        "Delete a file (refuses directories and symlinks; use delete_directory for directories). " +
+                "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = BUILD_AND_BASH_MODES
@@ -31,6 +33,8 @@ public class DeleteFileTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
+        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
+        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         return runCatching {
             val fs = SystemFileSystem
             val target = Path(path)

@@ -8,7 +8,9 @@ import kotlinx.serialization.json.JsonObject
 
 public class GlobTool : AgentTool {
     override val name = "glob"
-    override val description = "Find files matching a glob pattern (e.g. src/**/*.kt) under a root directory."
+    override val description =
+        "Find files matching a glob pattern (e.g. src/**/*.kt) under a root directory. " +
+                "Files matching an exclusion rule (currently .env*.local) are omitted."
     override val kind = ToolKind.SEARCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
@@ -35,6 +37,7 @@ public class GlobTool : AgentTool {
             if (!fs.exists(base)) return@runCatching ToolResult("Root not found: $root", true)
             val results = mutableListOf<String>()
             walk(fs, base, 0) { f ->
+                if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) return@walk
                 val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
                 if (regex.matches(rel)) results += rel
             }

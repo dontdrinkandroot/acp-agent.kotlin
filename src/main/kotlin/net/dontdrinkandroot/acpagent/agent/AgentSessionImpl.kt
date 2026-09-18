@@ -52,6 +52,7 @@ internal class AgentSessionImpl(
         todayProvider,
         runConfigsProvider = { loadRunConfigs(cwd) },
         trustedReadPaths = config.extraMounts,
+        excludedFileGlobs = FileAccessExclusions.DEFAULT.globs(),
     )
 
     private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }

@@ -7,7 +7,8 @@ import kotlinx.serialization.json.JsonObject
 public class EditFileTool : AgentTool {
     override val name = "edit_file"
     override val description = "Replace an exact substring in a file (old_string must match exactly once). " +
-            "Matching is raw: a CRLF file contains \\r\\n line breaks, so old_string spanning lines must include them."
+            "Matching is raw: a CRLF file contains \\r\\n line breaks, so old_string spanning lines must include them. " +
+            "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
@@ -23,6 +24,8 @@ public class EditFileTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
+        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
+        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         val oldString =
             arguments.stringArg("old_string") ?: return ToolResult(arguments.argError("old_string"), true)
         if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)

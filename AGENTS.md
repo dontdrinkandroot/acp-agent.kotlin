@@ -227,6 +227,25 @@ Config comes from environment variables:
 - **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
   `size` = model `context_length`); skipped when either is missing. During an active prompt the
   SDK routes session updates into the prompt event flow, not the `notify` callback.
+- **File-access exclusions**: the file tools enforce a shared exclusion policy
+  (`tools/FileAccessExclusions.kt`, threaded as `ToolContext.fileExclusions`): files whose
+  cwd-relative path matches an exclusion glob rule are refused to direct-target tools
+  (`read_file`/`edit_file`/`write_file`/`delete_file` hard-error before any I/O - no client
+  fs proxy round trip, no permission prompt, uniform incl. new-file writes) and hidden from
+  listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
+  in the walk callback; `grep` folds them into the existing skip suffix). The default rule
+  set is the fixed `.env*.local` secret-file exclusion (bare name, matches at any depth;
+  gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
+  also checks the symlink-resolved target name, so an alias link to an excluded file cannot
+  smuggle the read (unresolvable paths only skip that extra check - a block, not a gate).
+  Refusals name the matched rule (`'<path>' is excluded from tool access (matches exclusion
+  rule '<glob>')`) and the system prompt carries a static "Excluded files" section rendered
+  from the policy's globs. Rule semantics: globs via the shared `globToRegex`, bare names
+  match the basename at any depth. The designed future source is a gitignore-style
+  `.aiignore` in the project root feeding `FileAccessExclusions.of()` - matching, error
+  text, hiding and the prompt section already consume a rule list, so plumbing it changes
+  no tool code. Not excluded on purpose: `bash`/`run` commands (not inspected) and
+  `move_file`/`move_directory`/`delete_directory` (no content flow into the model context).
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
   `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP(S) GET via a
@@ -304,8 +323,9 @@ Config comes from environment variables:
   streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
   observed to spin forever on zero-char reads under JDK 25); `list_dir`/`glob` list at most
   500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
-  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff) and
-  files over 1 MB, and reports skips as `...(N binary or oversized files skipped)`.
+  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
+  files over 1 MB and excluded files (see File-access exclusions), and reports skips as
+  `...(N binary, oversized or excluded files skipped)`.
   `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
   operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
   be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
@@ -515,7 +535,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
                                      # sessions, AgentSessionFactory interface, randomSessionId)
-    tools/Tool.kt                    # AgentTool, ToolContext, ToolResult
+    tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
+    tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
+                                     # text; DEFAULT = .env*.local; future source: .aiignore
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
     tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
     tools/BashTool.kt                # bash tool (ProcessBuilder)
@@ -565,6 +587,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + trusted read paths (ACP_EXTRA_MOUNTS: read prompt-free, write
                                      # still prompts) + move/delete tools (in-project without prompt,
                                      # out-of-project move destination prompts)
+        E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
+                                     # without reading/prompting, list_dir hides the entry
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
