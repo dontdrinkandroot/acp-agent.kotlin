@@ -58,6 +58,23 @@ hardened: no capabilities, read-only rootfs, tmpfs home, non-root user matching
 your host UID. Your project directory is bind-mounted, and session state is
 persisted on the host so conversations survive container restarts.
 
+Your host Android SDK is shared into the container automatically: when
+`ANDROID_HOME` (or `ANDROID_SDK_ROOT`) is set it must be an existing absolute
+directory (anything else aborts the launcher), otherwise an existing
+`$HOME/Android/Sdk` is picked up. It is mounted read-write at
+`/home/dev/Android/Sdk` with both variables pinned to that path, so Gradle
+builds, `sdkmanager`, `adb` and similar tools work without further setup. Notes:
+
+- Android builds resolve the SDK location in this order: `local.properties`
+  (`sdk.dir`) first, then the `ANDROID_HOME` / `ANDROID_SDK_ROOT` environment
+  variables (per AGP's `SdkLocator`). A `local.properties` in the project
+  pointing at a host-only path therefore overrides the container mount and
+  breaks container runs — delete it (or point it at the container path). The
+  launcher always pins both variables to the same path, satisfying AGP's
+  newer check that they must match when both are set.
+- No emulator/AVDs, KVM or USB devices: the container cannot run emulators;
+  `connectedAndroidTest` and `adb devices` see no devices.
+
 ### Direct
 
 ```bash
@@ -121,6 +138,8 @@ Docker launcher extras (host side, not forwarded into the container):
 | `ACP_DOCKER_EXTRA_MOUNTS` | *(none)*                        | Comma-separated host paths mounted at the identical in-container path, e.g. `/srv/data,/mnt/scratch:rw`. Default mode `ro`, suffix `:ro`/`:rw`; dirs and files; absolute host paths, must exist. Mounts inside the project dir or the container home are skipped (built-ins shadow extras; later, deeper mounts win). The effective extras are injected as `ACP_EXTRA_MOUNTS`, making them read-trusted for the agent. |
 | `ACP_DOCKER_NETWORK`      | `development`                   | Docker network for the container.                                                                                        |
 | `ACP_DOCKER_RW_ROOTFS`    | *(read-only)*                   | `1` leaves the container rootfs writable.                                                                                |
+| `ANDROID_HOME`            | *(auto)*                        | Host Android SDK directory shared into the container (`ANDROID_SDK_ROOT` is used when `ANDROID_HOME` is unset; first one set wins). An existing `$HOME/Android/Sdk` is picked up without either variable. Set but unusable values (relative path, `/`, missing directory) abort the launcher. |
+| `ANDROID_SDK_ROOT`        | *(auto)*                        | See `ANDROID_HOME`.                                                                                                      |
 | `ACP_DOCKER_CAP_ADD`      | *(none)*                        | Comma-separated Linux capabilities to add back.                                                                          |
 | `ACP_DOCKER_EXTRA_ARGS`   | *(none)*                        | Extra `docker run` arguments (space-separated).                                                                          |
 | `DOCKER_BIN`              | auto                            | Absolute path to the Docker CLI.                                                                                         |

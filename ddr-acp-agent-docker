@@ -184,6 +184,38 @@ add_tool_cache() {
     fi
 }
 
+# The Android SDK is shared from the host (see the cache mounts below). A set
+# but unusable ANDROID_HOME/ANDROID_SDK_ROOT (relative path, missing directory,
+# /) would bind-mount a nonexistent source or resolve a relative path inside
+# the container - fail loudly before any docker run. The first one set wins;
+# ANDROID_HOME is the name Android tooling prefers.
+android_sdk_env=
+android_sdk_dir=
+if [ -n "${ANDROID_HOME:-}" ]; then
+    android_sdk_env=ANDROID_HOME
+    android_sdk_dir=$ANDROID_HOME
+elif [ -n "${ANDROID_SDK_ROOT:-}" ]; then
+    android_sdk_env=ANDROID_SDK_ROOT
+    android_sdk_dir=$ANDROID_SDK_ROOT
+fi
+if [ -n "$android_sdk_dir" ]; then
+    case $android_sdk_dir in
+        /*) ;;
+        *)
+            printf '%s\n' "$android_sdk_env: $android_sdk_dir is not an absolute host path." >&2
+            exit 1
+            ;;
+    esac
+    if [ "$android_sdk_dir" = / ]; then
+        printf '%s\n' "$android_sdk_env: / cannot be the Android SDK directory." >&2
+        exit 1
+    fi
+    if [ ! -d "$android_sdk_dir" ]; then
+        printf '%s\n' "$android_sdk_env: $android_sdk_dir is not a directory on the host." >&2
+        exit 1
+    fi
+fi
+
 if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache uv "$container_cache_dir/uv" UV_CACHE_DIR "$host_cache_home/uv"
     add_tool_cache pip "$container_cache_dir/pip" PIP_CACHE_DIR "$host_cache_home/pip"
@@ -200,6 +232,32 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache pnpm-store "$container_data_dir/pnpm/store" "" "$host_data_home/pnpm/store"
     add_tool_cache pnpm-cache "$container_cache_dir/pnpm" "" "$host_cache_home/pnpm"
     add_tool_cache konan "$container_home/.konan" KONAN_DATA_DIR "$HOME/.konan"
+    # The host Android SDK is mounted at the SDK's in-container default and
+    # ANDROID_HOME/ANDROID_SDK_ROOT are pinned to it (see the validation block
+    # above). Candidate: a validated ANDROID_HOME/ANDROID_SDK_ROOT, else an
+    # existing $HOME/Android/Sdk - never created. When the SDK lies inside the
+    # project dir the mount is skipped (the project is already mounted rw at
+    # the identical path) and the pins keep the original path instead of
+    # pointing at the skipped dst.
+    android_sdk_dst=$container_home/Android/Sdk
+    if [ -n "$android_sdk_dir" ]; then
+        android_sdk_candidate=$android_sdk_dir
+    else
+        android_sdk_candidate=$HOME/Android/Sdk
+    fi
+    add_tool_cache android-sdk "$android_sdk_dst" ANDROID_HOME "$android_sdk_candidate"
+    case "$mounted_dsts" in
+        *" $android_sdk_dst "*)
+            cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dst")
+            cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dst")
+            ;;
+        *)
+            if [ -n "$android_sdk_dir" ]; then
+                cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dir")
+                cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dir")
+            fi
+            ;;
+    esac
     if [ -n "$mounted_caches" ]; then
         printf 'Mounting host caches:%s\n' "$mounted_caches" >&2
     fi

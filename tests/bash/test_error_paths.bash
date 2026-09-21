@@ -73,4 +73,32 @@ test_missing_extra_path_fails_loudly_without_composing_a_run() {
     assert_empty "$(last_run_line || true)"
 }
 
+test_relative_android_home_fails_loudly_without_composing_a_run() {
+    run_docker_launcher "$PROJECT" ANDROID_HOME=relative/sdk --skip-pull
+    assert_exit_status 1
+    assert_contains "$OUT" "ANDROID_HOME: relative/sdk is not an absolute host path"
+    assert_empty "$(last_run_line || true)"
+}
+
+test_missing_android_sdk_dir_fails_loudly_without_composing_a_run() {
+    run_docker_launcher "$PROJECT" "ANDROID_HOME=$TEST_TMP/does-not-exist" --skip-pull
+    assert_exit_status 1
+    assert_contains "$OUT" "ANDROID_HOME: $TEST_TMP/does-not-exist is not a directory on the host"
+    assert_empty "$(last_run_line || true)"
+}
+
+test_root_android_home_fails_loudly_without_composing_a_run() {
+    run_docker_launcher "$PROJECT" ANDROID_HOME=/ --skip-pull
+    assert_exit_status 1
+    assert_contains "$OUT" "ANDROID_HOME: / cannot be the Android SDK directory"
+    assert_empty "$(last_run_line || true)"
+}
+
+test_android_sdk_root_errors_name_the_set_variable() {
+    run_docker_launcher "$PROJECT" "ANDROID_SDK_ROOT=$TEST_TMP/does-not-exist" --skip-pull
+    assert_exit_status 1
+    assert_contains "$OUT" "ANDROID_SDK_ROOT: $TEST_TMP/does-not-exist is not a directory on the host"
+    assert_empty "$(last_run_line || true)"
+}
+
 run_tests

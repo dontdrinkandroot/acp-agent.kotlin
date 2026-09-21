@@ -473,7 +473,13 @@ Config comes from environment variables:
   (absolute; created if missing) points at a custom dir or the host default dir already
   exists (never created) - mounted at the tool's in-container default with the env var
   pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
-  ...), host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
+  ...), host Android SDK shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
+  else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
+  default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;
+  a set-but-unusable var - relative, `/`, missing dir - fails loudly before any
+  `docker run`; when the SDK lies inside the project dir the mount is skipped and
+  the pins keep the host path, since the project is mounted at the identical path),
+  host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
   `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded
@@ -703,13 +709,17 @@ The stub `tests/bash/stubs/fake-docker` is plugged in via the launcher's own
 `tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in a `set -e`
 subshell, first failing assert aborts the test), `tests/bash/common.sh` provides the
 launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
-assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS` is always cleared).
+assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS`/`ANDROID_HOME`/
+`ANDROID_SDK_ROOT` are always cleared).
 Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
-identity, pull fallback),
-`test_error_paths.bash` (fail-loudly exits before any `docker run`). Fixtures live under
+identity, pull fallback, Android SDK sharing: mount + pinned `ANDROID_HOME`/
+`ANDROID_SDK_ROOT`, `ANDROID_SDK_ROOT` fallback, default-dir pickup, absent -> nothing,
+`ACP_DOCKER_MOUNT_CACHES=0` disables, in-project SDK keeps the host path in the pins),
+`test_error_paths.bash` (fail-loudly exits before any `docker run`, incl. the
+set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` refusals). Fixtures live under
 `build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs) and
 the API key is pinned to `sk-test` so a real key can never leak into logs.
 

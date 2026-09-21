@@ -24,8 +24,9 @@ setup_git_identity() {
 }
 
 # The launcher invocation strips both API key variants (plus
-# ACP_DOCKER_EXTRA_MOUNTS) so ambient values can never leak into a test; tests
-# opt into a fake key via leading KEY=VALUE arguments.
+# ACP_DOCKER_EXTRA_MOUNTS and the Android SDK vars) so ambient values can
+# never leak into a test; tests opt into a fake key via leading KEY=VALUE
+# arguments.
 
 # Creates a fresh sandbox dir for one test file: $TEST_TMP/<name>/...
 # The sandbox lives under build/ (never /tmp or $HOME): the launcher skips
@@ -67,7 +68,7 @@ run_docker_launcher() {
     # never leak into test output or the stub log; tests opt into a fake one.
     # shellcheck disable=SC2034  # OUT is asserted on by the tests
     OUT=$(cd "$project_dir" && env -u OPENROUTER_API_KEY -u OPENROUTER_API_KEY_FILE \
-        -u ACP_DOCKER_EXTRA_MOUNTS "${env_args[@]}" \
+        -u ACP_DOCKER_EXTRA_MOUNTS -u ANDROID_HOME -u ANDROID_SDK_ROOT "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.

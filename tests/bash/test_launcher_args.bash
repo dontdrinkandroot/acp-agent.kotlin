@@ -151,6 +151,95 @@ test_git_identity_is_omitted_when_not_configured() {
     GIT_IDENTITY_SET=1 setup_git_identity
 }
 
+ANDROID_SDK=$TEST_TMP/android-sdk
+ANDROID_SDK_ROOT_DIR=$TEST_TMP/android-sdk-root
+FAKE_HOME=$TEST_TMP/fakehome
+mkdir -p "$ANDROID_SDK" "$ANDROID_SDK_ROOT_DIR" "$FAKE_HOME/Android/Sdk"
+
+test_android_home_is_mounted_and_pinned_to_the_container_default() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "ANDROID_HOME=$ANDROID_SDK" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$(mount_values "$line")" \
+        "type=bind,src=$ANDROID_SDK,dst=/home/dev/Android/Sdk"
+    assert_eq "/home/dev/Android/Sdk" "$(env_value_for "$line" ANDROID_HOME)"
+    assert_eq "/home/dev/Android/Sdk" "$(env_value_for "$line" ANDROID_SDK_ROOT)"
+}
+
+test_android_sdk_root_falls_back_to_the_same_mount() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "ANDROID_SDK_ROOT=$ANDROID_SDK" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$(mount_values "$line")" \
+        "type=bind,src=$ANDROID_SDK,dst=/home/dev/Android/Sdk"
+    assert_eq "/home/dev/Android/Sdk" "$(env_value_for "$line" ANDROID_HOME)"
+}
+
+test_android_home_wins_over_android_sdk_root() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "ANDROID_HOME=$ANDROID_SDK" "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT_DIR" --skip-pull
+    assert_exit_status 0
+    assert_contains "$(mount_values "$(last_run_line)")" \
+        "type=bind,src=$ANDROID_SDK,dst=/home/dev/Android/Sdk"
+}
+
+test_default_android_sdk_dir_is_picked_up_without_env() {
+    # No ANDROID_HOME/ANDROID_SDK_ROOT (common.sh strips them): an existing
+    # $HOME/Android/Sdk is shared, never created. HOME is pinned to a fixture
+    # so the test does not depend on the runner's real home.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "HOME=$FAKE_HOME" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$(mount_values "$line")" \
+        "type=bind,src=$FAKE_HOME/Android/Sdk,dst=/home/dev/Android/Sdk"
+    assert_eq "/home/dev/Android/Sdk" "$(env_value_for "$line" ANDROID_HOME)"
+}
+
+test_no_android_mount_without_an_sdk() {
+    # HOME without an Android/Sdk dir: nothing is mounted and no ANDROID_*
+    # env is injected.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "HOME=$TEST_TMP/empty-home" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_not_contains "$(mount_values "$line")" "Android/Sdk"
+    assert_empty "$(env_value_for "$line" ANDROID_HOME)"
+    assert_empty "$(env_value_for "$line" ANDROID_SDK_ROOT)"
+}
+
+test_android_mount_honors_acp_docker_mount_caches_zero() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        ACP_DOCKER_MOUNT_CACHES=0 "ANDROID_HOME=$ANDROID_SDK" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_not_contains "$(mount_values "$line")" "Android/Sdk"
+    assert_empty "$(env_value_for "$line" ANDROID_HOME)"
+}
+
+test_android_sdk_inside_the_project_dir_pins_the_host_path() {
+    # A project-internal SDK needs no mount (the project is mounted rw at the
+    # identical path) and the pins must keep the original path - pointing at
+    # the skipped container default would reference a nonexistent directory.
+    local sdk_in_project=$PROJECT/android-sdk
+    mkdir -p "$sdk_in_project"
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "ANDROID_HOME=$sdk_in_project" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_not_contains "$(mount_values "$line")" "Android/Sdk"
+    assert_eq "$sdk_in_project" "$(env_value_for "$line" ANDROID_HOME)"
+    assert_eq "$sdk_in_project" "$(env_value_for "$line" ANDROID_SDK_ROOT)"
+}
+
 test_pull_failure_falls_back_to_a_local_image() {
     run_docker_launcher "$PROJECT" FAKE_DOCKER_PULL_EXIT=1 FAKE_DOCKER_INSPECT_EXIT=0
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
