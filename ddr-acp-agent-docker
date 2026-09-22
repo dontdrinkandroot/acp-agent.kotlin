@@ -418,6 +418,21 @@ fi
 
 cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
 
+# ~/.local is covered by tmpfs mounts: runc creates missing bind-mount
+# mountpoints root-owned inside the container, so the deep session-state and
+# pnpm-store binds would otherwise leave a root-owned ~/.local behind that the
+# agent's uid cannot create files in (the image has no ~/.local, and the home
+# tmpfs shadows image content anyway). The state/store binds land on top of
+# these tmpfs mounts: moby composes all mounts into the OCI spec sorted
+# shallowest-first, and runc mounts in that order regardless of the CLI argv
+# order. Mirrors the ~/.cache treatment above; same 1g bound as every other
+# container tmpfs (lazily allocated, spill to swap allowed).
+local_args=(
+    --tmpfs "$container_home/.local:uid=$uid,gid=$gid,mode=700,size=1g"
+    --tmpfs "$container_home/.local/share:uid=$uid,gid=$gid,mode=700,size=1g"
+    --tmpfs "$container_home/.local/state:uid=$uid,gid=$gid,mode=700,size=1g"
+)
+
 extra_args=()
 if [ -n "${ACP_DOCKER_EXTRA_ARGS:-}" ]; then
     IFS=' ' read -ra extra_args <<<"${ACP_DOCKER_EXTRA_ARGS}"
@@ -435,6 +450,7 @@ fi
     "${env_local_mounts[@]}" \
     "${home_args[@]}" \
     "${cache_args[@]}" \
+    "${local_args[@]}" \
     "${cache_mounts[@]}" \
     "${state_mounts[@]}" \
     "${rootfs_args[@]}" \

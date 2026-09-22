@@ -468,7 +468,15 @@ Config comes from environment variables:
   builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
-  home (`ACP_DOCKER_HOME_VOLUME` -> named volume), non-root user matching host UID/GID,
+  home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
+  `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
+  home tmpfs/named volume would shadow it anyway, so runc would create the deep
+  bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
+  root-owned inside the container and the agent uid could not write anything else
+  under `~/.local`. The state/store binds land on top of these tmpfs mounts (moby
+  composes all mounts shallowest-first into the OCI spec and runc mounts in that
+  order, so CLI argv order is irrelevant - the launcher still emits them in argv
+  order), pinned by the shell suite; non-root user matching host UID/GID,
   host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables) when the tool's env var
   (absolute; created if missing) points at a custom dir or the host default dir already
   exists (never created) - mounted at the tool's in-container default with the env var

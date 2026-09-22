@@ -39,6 +39,60 @@ test_rw_rootfs_opt_out_relaxes_read_only() {
     assert_not_contains "$(last_run_line)" "--read-only"
 }
 
+test_home_local_directories_get_uid_mapped_tmpfs_mounts() {
+    # runc creates missing bind-mount mountpoints root-owned inside the
+    # container; the ~/.local tmpfs mounts keep the whole XDG state/data home
+    # writable for the agent's uid (the session-state bind mounts on top of
+    # the state tmpfs; see the mount-ordering test below).
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.local:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.local/share:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.local/state:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+}
+
+test_state_bind_lands_on_top_of_the_local_state_tmpfs() {
+    # The session-state bind (dst=/home/dev/.local/state/ddr-acp-agent) must
+    # come after the .local tmpfs mounts in the docker run argv: runc mounts
+    # in spec order (moby sorts shallowest-first), so a shallower tmpfs mounted
+    # later would shadow the state bind and sessions would live in an
+    # ephemeral tmpfs. Asserting argv order over-pins the daemon's sort - the
+    # launcher keeps the argv independently correct either way.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$line" \
+        "type=bind,src=$TEST_TMP/ddr-acp-agent,dst=/home/dev/.local/state/ddr-acp-agent"
+    local local_tmpfs_state_bind
+    local_tmpfs_state_bind=$(
+        printf '%s\n' "$line" |
+            sed -n 's/.*--tmpfs \/home\/dev\/\.local:uid=.*size=1g.*\(type=bind,src=[^ ]*dst=\/home\/dev\/\.local\/state\/ddr-acp-agent\).*/\1/p'
+    )
+    assert_nonempty "$local_tmpfs_state_bind"
+}
+
+test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
+    # ACP_DOCKER_MOUNT_CACHES=0 disables the cache binds, but never the
+    # uid-mapped tmpfs mounts: ~/.local and ~/.cache stay writable.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        ACP_DOCKER_MOUNT_CACHES=0 --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_not_contains "$(mount_values "$line")" "pnpm/store"
+    assert_not_contains "$line" "type=bind,src=$TEST_TMP/.gradle"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.local:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.cache:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+}
+
 test_api_key_never_travels_through_the_env() {
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
     assert_exit_status 0
