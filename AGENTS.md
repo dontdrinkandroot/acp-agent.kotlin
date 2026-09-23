@@ -628,8 +628,7 @@ tests/bash/                             # shell test suite (launcher composition
                                         # stub recording argv; pull/inspect exit switches),
                                         # test_extra_mounts/test_launcher_args/test_error_paths
                                         # + run-all
-.github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main,
-                                        # prunes all but the 5 newest versions
+.github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
 ```
 
@@ -643,6 +642,12 @@ tests/bash/                             # shell test suite (launcher composition
   looking things up when unsure — do not guess. Search first with `exa_web_search_exa`, then fetch the full page with
   `exa_web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
   upstream behavior against primary sources before relying on them; cite the sources you checked in your summary.
+* **GitHub issues**
+  * Always set the **issue type** (`Bug` / `Feature` / `Task`).
+  * Every **bug** additionally gets the **`Priority`** field (`Low`, `Medium`, `High`, `Urgent`)
+  * Avoid redundant labels (like "bug" for a bug).
+  * **Proactively create issues for newly discovered bugs** — file them, don't just mention them.
+  * GitHub issues are the sole issue tracker.
 
 ## Testing
 
@@ -805,7 +810,7 @@ communicate that with the user so we can review them.
       re-evaluate the newer Koog version whenever it is upgraded (see the version bump
       checklist under Testing).
 
-## Pitfalls
+## Pitfalls and learnings
 
 - **Anything on stdout corrupts the ACP NDJSON stream.** The only legitimate stdout write
   is the transport output lambda in `Main.kt`. A stray `println`, a chatty dependency, or
