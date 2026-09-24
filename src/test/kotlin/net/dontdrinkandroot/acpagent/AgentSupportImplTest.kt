@@ -32,7 +32,7 @@ class AgentSupportImplTest {
             cwd = "/tmp",
             toolRegistry = ToolRegistry(),
             config = Config("k", "m", "http://127.0.0.1:1"),
-            llm = LlmClient("k", "http://127.0.0.1:1", "m"),
+            llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
         )
         val support = AgentSupportImpl(StaticSessionFactory(session), SessionStore(storeDir))
@@ -57,7 +57,7 @@ class AgentSupportImplTest {
             cwd = "/tmp",
             toolRegistry = ToolRegistry(),
             config = Config("k", "m", "http://127.0.0.1:1"),
-            llm = LlmClient("k", "http://127.0.0.1:1", "m"),
+            llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
             closeResources = { closed = true },
             sessionStore = SessionStore(storeDir),

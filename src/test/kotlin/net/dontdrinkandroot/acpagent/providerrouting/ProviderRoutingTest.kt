@@ -45,7 +45,7 @@ class ProviderRoutingTest {
     }
 
     private fun routing(enabled: Boolean, server: EndpointsServer): ProviderRouting {
-        val llm = LlmClient("key", "http://127.0.0.1:${server.port}", "m")
+        val llm = LlmClient("key", "http://127.0.0.1:${server.port}")
         return ProviderRouting(enabled, llm)
     }
 

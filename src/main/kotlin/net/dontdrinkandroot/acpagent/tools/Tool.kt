@@ -187,9 +187,7 @@ public class ToolContext internal constructor(
      * value is read at execution time, not request-assembly time.
      */
     val modeStatusText: () -> String = { "" },
-) {
-    public val hasClient: Boolean get() = client != null
-}
+)
 
 public interface AgentTool {
     public val name: String

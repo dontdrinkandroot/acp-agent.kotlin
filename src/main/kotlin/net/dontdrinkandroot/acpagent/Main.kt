@@ -100,7 +100,6 @@ public fun runAgent(args: Array<String>) {
         val llm = LlmClient(
             apiKey = config.openRouterApiKey,
             baseUrl = config.openRouterBaseUrl,
-            model = config.openRouterModel,
         )
         val models = try {
             llm.fetchModels()

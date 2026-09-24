@@ -19,7 +19,7 @@ class AgentSessionModesTest {
         cwd = "/tmp",
         toolRegistry = ToolRegistry(),
         config = Config("test-key", "test-model", "http://127.0.0.1:1"),
-        llm = LlmClient("test-key", "http://127.0.0.1:1", "test-model"),
+        llm = LlmClient("test-key", "http://127.0.0.1:1"),
         todayProvider = { "2026-09-03" },
     )
 

@@ -78,7 +78,6 @@ public data class ProviderMaxPrice(
 public class LlmClient(
     apiKey: String,
     baseUrl: String,
-    private val model: String,
 ) : ChatCompleter {
     private val json = llmWireJson
     private val client = HttpClient(CIO) {

@@ -23,7 +23,7 @@ class SessionLifecycleTest {
             cwd = cwd,
             toolRegistry = ToolRegistry(),
             config = Config("k", "m", "http://127.0.0.1:1"),
-            llm = LlmClient("k", "http://127.0.0.1:1", "m"),
+            llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
             sessionStore = store,
             restored = restored,

@@ -162,8 +162,6 @@ internal class SessionState(
         promptActive = active
     }
 
-    fun isPromptActive(): Boolean = promptActive
-
     /**
      * True while a mode request is deferred (a turn is running and the switch
      * has not been flushed yet).

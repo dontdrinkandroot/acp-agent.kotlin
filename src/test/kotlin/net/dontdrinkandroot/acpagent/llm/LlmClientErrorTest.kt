@@ -23,7 +23,7 @@ internal class LlmClientErrorTest {
             start()
         }
 
-    private fun client(port: Int) = LlmClient("sk-test", "http://127.0.0.1:$port/v1", "test-model")
+    private fun client(port: Int) = LlmClient("sk-test", "http://127.0.0.1:$port/v1")
 
     @Test
     fun `non-2xx chat completion response raises a diagnostic exception`() = runBlocking {

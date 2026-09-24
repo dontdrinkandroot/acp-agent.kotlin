@@ -30,7 +30,7 @@ class AgentSessionModelOptionsTest {
         cwd = "/tmp",
         toolRegistry = ToolRegistry(),
         config = Config("k", "test-model", "http://127.0.0.1:1"),
-        llm = LlmClient("k", "http://127.0.0.1:1", "test-model"),
+        llm = LlmClient("k", "http://127.0.0.1:1"),
         todayProvider = { "2026-09-04" },
         restored = restored,
         models = models,

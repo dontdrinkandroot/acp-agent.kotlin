@@ -405,7 +405,3 @@ private fun imagePart(block: ContentBlock.Image, modelSupportsImage: Boolean): O
     val mime = block.mimeType.ifEmpty { "image/png" }
     return OpenAIContentPart.Image(OpenAIContentPart.ImageUrl("data:$mime;base64,${block.data}"))
 }
-
-private const val WIND_DOWN_PROMPT =
-    "The per-prompt tool iteration limit has been reached. Summarize what has been accomplished " +
-            "so far and what remains to be done; do not call any tools."
