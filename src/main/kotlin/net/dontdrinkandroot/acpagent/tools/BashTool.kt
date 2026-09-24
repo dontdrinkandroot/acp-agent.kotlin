@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
@@ -233,7 +232,7 @@ public class BashTool : AgentTool {
     override val description = "Run a shell command in the project working directory. For build/test/git/diagnostics."
     override val kind = ToolKind.EXECUTE
     override val mutating = true
-    override val modes = listOf(SessionModeId("bash"))
+    override val modes = listOf(MODE_BASH)
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override val parameters: JsonObject = jsonSchema(

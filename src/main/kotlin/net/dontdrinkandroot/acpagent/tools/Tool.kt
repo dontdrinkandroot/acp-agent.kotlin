@@ -151,14 +151,22 @@ public data class ToolResultDiff(
  */
 internal const val MAX_DIFF_CONTENT_LENGTH = 100_000
 
+internal val MODE_PLAN = SessionModeId("plan")
+internal val MODE_BUILD = SessionModeId("build")
+internal val MODE_BASH = SessionModeId("bash")
+
+/**
+ * The session modes, in the order the client sees them (plan, build, bash).
+ * The membership check for persisted/legacy mode ids uses this list so the
+ * valid set is defined exactly once.
+ */
+internal val ALL_MODES = listOf(MODE_PLAN, MODE_BUILD, MODE_BASH)
+
 /**
  * Modes that may mutate the filesystem: write/edit/move/delete tools are
  * filtered to these by [ToolRegistry] and withheld in plan mode.
  */
-internal val BUILD_AND_BASH_MODES = listOf(
-    SessionModeId("build"),
-    SessionModeId("bash"),
-)
+internal val BUILD_AND_BASH_MODES = listOf(MODE_BUILD, MODE_BASH)
 
 public class ToolContext internal constructor(
     val cwd: String,

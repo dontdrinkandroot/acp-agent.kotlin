@@ -9,12 +9,13 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.tools.ALL_MODES
+import net.dontdrinkandroot.acpagent.tools.MODE_PLAN
+import net.dontdrinkandroot.acpagent.tools.MODE_BUILD
+import net.dontdrinkandroot.acpagent.tools.MODE_BASH
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.concurrent.Volatile
 
-internal val MODE_BUILD = SessionModeId("build")
-internal val MODE_PLAN = SessionModeId("plan")
-internal val MODE_BASH = SessionModeId("bash")
 internal val DEFAULT_MODE = MODE_PLAN
 private const val MAX_TITLE_LENGTH = 72
 
@@ -109,7 +110,7 @@ internal class SessionState(
 
     private fun restoredModeOrDefault(restored: SessionRecord?): SessionModeId {
         val restoredMode = restored?.mode?.let { SessionModeId(it) }
-            ?.takeIf { candidate -> candidate == MODE_BUILD || candidate == MODE_PLAN || candidate == MODE_BASH }
+            ?.takeIf { candidate -> candidate in ALL_MODES }
         return restoredMode ?: DEFAULT_MODE
     }
 

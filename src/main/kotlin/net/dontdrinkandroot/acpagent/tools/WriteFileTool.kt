@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
@@ -13,7 +12,7 @@ public class WriteFileTool : AgentTool {
             "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
-    override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
+    override val modes = BUILD_AND_BASH_MODES
     override val parameters: JsonObject = jsonSchema(
         required("path", PropType.STRING, "File path, absolute or relative to the working directory."),
         required("content", PropType.STRING, "Full file content; replaces existing content."),

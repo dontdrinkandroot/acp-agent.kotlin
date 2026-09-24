@@ -4,10 +4,11 @@ import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.JsonObject
 
-private val RUN_CONFIG_WRITE_MODES = listOf(
-    SessionModeId("build"),
-    SessionModeId("bash"),
-)
+/**
+ * The run-config write tools share the mutating-tool mode gate: build/bash
+ * only, so plan stays read-only.
+ */
+private val RUN_CONFIG_WRITE_MODES = BUILD_AND_BASH_MODES
 
 /**
  * The create tool's schema: `command` is required. The update tool's schema

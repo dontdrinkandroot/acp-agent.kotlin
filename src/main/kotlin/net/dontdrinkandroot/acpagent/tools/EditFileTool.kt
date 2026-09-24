@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.JsonObject
 
@@ -11,7 +10,7 @@ public class EditFileTool : AgentTool {
             "Files matching an exclusion rule (currently .env*.local) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
-    override val modes = listOf(SessionModeId("build"), SessionModeId("bash"))
+    override val modes = BUILD_AND_BASH_MODES
     override val parameters: JsonObject = jsonSchema(
         required("path", PropType.STRING, "File path, absolute or relative to the working directory."),
         required("old_string", PropType.STRING, "Exact substring to replace; must match exactly once in the file."),
