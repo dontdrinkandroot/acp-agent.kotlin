@@ -31,21 +31,21 @@ public class DeleteDirectoryTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
-        return runCatching {
+        return executeSafely("Delete failed") {
             val fs = SystemFileSystem
             val target = Path(path)
             val meta = fs.metadataOrNull(target)
-                ?: return@runCatching ToolResult("Path not found: $path", true)
-            if (!meta.isDirectory) return@runCatching ToolResult("Not a directory: $path (use delete_file)", true)
+                ?: return@executeSafely ToolResult("Path not found: $path", true)
+            if (!meta.isDirectory) return@executeSafely ToolResult("Not a directory: $path (use delete_file)", true)
             if (Files.isSymbolicLink(java.nio.file.Path.of(path))) {
-                return@runCatching ToolResult("Refusing to delete a symlink: $path", true)
+                return@executeSafely ToolResult("Refusing to delete a symlink: $path", true)
             }
             containsSymlink(fs, target, 0)?.let { link ->
-                return@runCatching ToolResult("Refusing to delete directory containing symlinks: $link", true)
+                return@executeSafely ToolResult("Refusing to delete directory containing symlinks: $link", true)
             }
             deleteRecursively(fs, target, 0)
             ToolResult("Deleted directory $path")
-        }.getOrElse { ToolResult("Delete failed: ${it.message}", true) }
+        }
     }
 }
 

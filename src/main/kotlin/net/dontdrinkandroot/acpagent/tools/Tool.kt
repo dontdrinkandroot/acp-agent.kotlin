@@ -5,6 +5,7 @@ import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.PlanEntry
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 
 private const val MAX_TITLE_ARGUMENTS_LENGTH = 100
@@ -74,6 +75,23 @@ private fun JsonElement.primitiveContentOrNull(): String? = when (this) {
  */
 private fun String.flattenForTitle(): String =
     replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+
+/**
+ * Runs a tool body as a safe [ToolResult] conversion: a cancelled turn
+ * (`session/cancel`) must abort the call, so [CancellationException] is
+ * rethrown (a swallowed cancellation would surface as a bogus failed tool
+ * result and continue the turn); every other failure becomes an error
+ * [ToolResult] carrying the exception message. All tools execute through this
+ * (directly or via `runShellCommand`), so the cancellation contract holds
+ * structurally instead of per-tool catch clause.
+ */
+internal suspend inline fun executeSafely(failureLabel: String, body: suspend () -> ToolResult): ToolResult = try {
+    body()
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    ToolResult("$failureLabel: ${e.message}", true)
+}
 
 /**
  * Reads a string tool argument. Returns null when the key is absent, holds an

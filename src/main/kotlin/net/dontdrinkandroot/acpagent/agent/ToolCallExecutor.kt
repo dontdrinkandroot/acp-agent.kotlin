@@ -16,6 +16,7 @@ import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.ToolResult
+import net.dontdrinkandroot.acpagent.tools.executeSafely
 
 /**
  * Executes one streamed tool call: mode gating (a tool disabled in the current
@@ -101,12 +102,8 @@ internal class ToolCallExecutor(
             return
         }
 
-        val result = try {
+        val result = executeSafely("Tool ${tool.name} failed") {
             tool.execute(parseArguments(call.arguments), toolContext)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            ToolResult("Tool ${tool.name} failed: ${e.message}", true)
         }
 
         emit(

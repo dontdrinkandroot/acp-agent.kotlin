@@ -34,12 +34,12 @@ public class GrepTool : AgentTool {
         val pattern = arguments.stringArg("pattern") ?: return ToolResult(arguments.argError("pattern"), true)
         val glob = arguments.stringArg("glob")
         if (arguments.isNullArg("glob")) return ToolResult(arguments.argError("glob"), true)
-        return runCatching {
+        return executeSafely("Grep failed") {
             val regex = Regex(pattern)
             val fileFilter = glob?.let { globToRegex(it) }
             val fs = SystemFileSystem
             val base = Path(root)
-            if (!fs.exists(base)) return@runCatching ToolResult("Root not found: $root", true)
+            if (!fs.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
             val results = mutableListOf<Triple<String, Int, String>>()
             var skippedBinaryOrOversized = 0
             walk(fs, base, 0) { f ->
@@ -47,10 +47,7 @@ public class GrepTool : AgentTool {
                     skippedBinaryOrOversized++
                     return@walk
                 }
-                if (fileFilter != null) {
-                    val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
-                    if (!fileFilter.matches(rel)) return@walk
-                }
+                if (fileFilter != null && !fileFilter.matches(relativeToRoot(root, f.toString()))) return@walk
                 val meta = runCatching { fs.metadataOrNull(f) }.getOrNull()
                 val size = meta?.size ?: 0
                 if (size > MAX_GREP_FILE_BYTES) {
@@ -65,7 +62,7 @@ public class GrepTool : AgentTool {
                         skippedBinaryOrOversized++
                         return@walk
                     }
-                    val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
+                    val rel = relativeToRoot(root, f.toString())
                     content.split('\n').forEachIndexed { idx, line ->
                         if (regex.containsMatchIn(line)) {
                             results += Triple(rel, idx + 1, line)
@@ -80,9 +77,8 @@ public class GrepTool : AgentTool {
             val suffix = if (skippedBinaryOrOversized > 0) {
                 "\n...($skippedBinaryOrOversized binary, oversized or excluded files skipped)"
             } else ""
-            (matches.joinToString("\n").ifEmpty { "No matches" } + suffix)
-                .let { ToolResult(it) }
-        }.getOrElse { ToolResult("Grep failed: ${it.message}", true) }
+            ToolResult(matches.joinToString("\n").ifEmpty { "No matches" } + suffix)
+        }
     }
 }
 

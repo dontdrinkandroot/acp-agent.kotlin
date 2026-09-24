@@ -35,19 +35,19 @@ public class DeleteFileTool : AgentTool {
         val path = absoluteToolPath(context.cwd, rawPath)
         val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
         if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
-        return runCatching {
+        return executeSafely("Delete failed") {
             val fs = SystemFileSystem
             val target = Path(path)
             val meta = fs.metadataOrNull(target)
-                ?: return@runCatching ToolResult("Path not found: $path", true)
-            if (meta.isDirectory) return@runCatching ToolResult("Is a directory: $path (use delete_directory)", true)
+                ?: return@executeSafely ToolResult("Path not found: $path", true)
+            if (meta.isDirectory) return@executeSafely ToolResult("Is a directory: $path (use delete_directory)", true)
             if (Files.isSymbolicLink(java.nio.file.Path.of(path))) {
-                return@runCatching ToolResult("Refusing to delete a symlink: $path", true)
+                return@executeSafely ToolResult("Refusing to delete a symlink: $path", true)
             }
             val diff = deleteResultDiff(path, context)
             fs.delete(target, mustExist = true)
             ToolResult("Deleted $path", diff = diff)
-        }.getOrElse { ToolResult("Delete failed: ${it.message}", true) }
+        }
     }
 }
 

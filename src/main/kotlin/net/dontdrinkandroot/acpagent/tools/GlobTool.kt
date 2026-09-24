@@ -5,6 +5,7 @@ import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
+import java.nio.file.Path as NioPath
 
 public class GlobTool : AgentTool {
     override val name = "glob"
@@ -30,33 +31,50 @@ public class GlobTool : AgentTool {
         val rawRoot = arguments.stringArg("root") ?: context.cwd
         val root = absoluteToolPath(context.cwd, rawRoot)
         val pattern = arguments.stringArg("pattern") ?: return ToolResult(arguments.argError("pattern"), true)
-        return runCatching {
+        return executeSafely("Glob failed") {
             val regex = globToRegex(pattern)
             val fs = SystemFileSystem
             val base = Path(root)
-            if (!fs.exists(base)) return@runCatching ToolResult("Root not found: $root", true)
+            if (!fs.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
             val results = mutableListOf<String>()
             walk(fs, base, 0) { f ->
                 if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) return@walk
-                val rel = f.toString().removePrefix(root.trimEnd('/') + "/")
+                val rel = relativeToRoot(root, f.toString())
                 if (regex.matches(rel)) results += rel
             }
-            val sorted = results.sorted()
-            val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
-            ToolResult(
-                if (listing.isEmpty()) {
-                    "No matches"
-                } else if (sorted.size > MAX_LISTING_ENTRIES) {
-                    "$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)"
-                } else {
-                    listing
-                }
-            )
-        }.getOrElse { ToolResult("Glob failed: ${it.message}", true) }
+            formatCappedListing(results).let(::ToolResult)
+        }
     }
 }
 
 private const val MAX_LISTING_ENTRIES = 500
+
+/**
+ * Renders [results] as the capped listing convention shared by the
+ * listing/search tools: sorted, at most [MAX_LISTING_ENTRIES] entries, a
+ * `...(N more entries omitted)` suffix when entries were dropped, "No matches"
+ * when empty.
+ */
+internal fun formatCappedListing(results: Collection<String>): String {
+    val sorted = results.sorted()
+    val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
+    return when {
+        listing.isEmpty() -> "No matches"
+        sorted.size > MAX_LISTING_ENTRIES -> "$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)"
+        else -> listing
+    }
+}
+
+/**
+ * Renders [path] relative to [root]; the form the glob patterns and the
+ * file-filter match against. Absolute results (a symlinked root resolved
+ * outside) keep their absolute form so the match still sees the escape.
+ */
+internal fun relativeToRoot(root: String, path: String): String {
+    val rootPath = NioPath.of(root).toAbsolutePath().normalize()
+    val abs = NioPath.of(path).toAbsolutePath().normalize()
+    return if (abs.startsWith(rootPath)) rootPath.relativize(abs).toString() else abs.toString()
+}
 
 /**
  * Walks [dir] recursively, visiting files. Symlinks are deliberately skipped

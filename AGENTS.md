@@ -83,446 +83,23 @@ The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
 **Shutdown**: `runAgent` loops until `transport.state.value == Transport.State.CLOSED`
 (small delay) then `protocol.close()`.
 
-### Configuration (OpenRouter + MCP)
+## Tool Usage
 
-Config comes from environment variables:
-
-- `OPENROUTER_API_KEY` (required unless `OPENROUTER_API_KEY_FILE` is set)
-- `OPENROUTER_API_KEY_FILE` (optional; file holding the key, read + trimmed at
-  startup; the docker launcher always injects it pointing at the mounted key file
-  and never forwards the key itself)
-- `OPENROUTER_MODEL` (default `openrouter/auto`)
-- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
-- `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED` (default enabled; `0` disables
-  the automatic provider routing, see Features)
-- `FS_PROXY_ENABLED` (default enabled; `0` uses the local store even when the
-  client advertises fs capabilities, see Features)
-- `MCP_TRUST_ANNOTATIONS` (default enabled; `0` ignores MCP tool behavior
-  annotations, keeping the pessimistic always-prompt permission default, see
-  Permissions)
-- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
-  after this many seconds, killing the whole process tree, see Features)
-- `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
-  budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
-  before the turn ends with `MAX_TURN_REQUESTS`)
-- `ACP_WEB_FETCH_ALLOW_PRIVATE` (default blocked; `1` lets `web_fetch` reach
-  private/loopback/link-local hosts - tests against a local mock server need this)
-- `ACP_EXTRA_MOUNTS` (default empty; comma-separated **absolute** paths that are
-  read-trusted: `read_file`/`list_dir`/`glob`/`grep` under them run without a permission
-  prompt even though they lie outside the cwd; writes/moves/deletes still prompt. The
-  docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`; see Features /
-  Permissions)
-
-## Features
-
-- **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
-  `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
-  record); `session/cancel` is coroutine cancellation. Sessions persist to
-  `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
-  atomically (temp + move) on every completed turn and mode/config change. The record
-  (`agent/SessionRecord.kt`) holds history (Koog `OpenAIMessage` wire types via the shared
-  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning and plan.
-  Persist and delete share a `persistMutex` so a delete never resurrects the file; failures log
-  to stderr and never fail the turn. Client-supplied ids are format-checked (`isValidSessionId`)
-  so traversal/separators never reach the filesystem. Session creation (and restore) closes any
-  already-opened MCP connections and the `LlmClient` when the model feed fetch fails.
-- **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
-  `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
-  `tool_call` + completed `tool_call_update`, plan) from `postInitialize()` - after the load
-  response (SDK hook limitation); `session/resume` restores without replay. `session/list`
-  filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
-  double-loads are invalid-params; corrupt records are internal errors.
-- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
-  `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
-  tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
-  when the iteration budget is exhausted while the model kept calling tools, streams one final
-  text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
-  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. The session is a thin
-  SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
-  `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
-  (one tool-call lifecycle: mode gate -> permission -> execution -> updates) and `PromptRunner`
-  (the loop + wind-down pass, over the `ChatCompleter` seam so the runner is unit-testable).
-  New session code should extend a component, not the facade.
-- **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
-  the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
-  and produce the "disabled in current mode" error. Mode enforcement happens in the agent loop *before* permission and
-  execution: a tool call for a registered tool that is disabled in the
-  current mode fails with the "disabled in current mode" update and never reaches the permission
-  flow (so a model carrying a tool call over from an earlier mode switch cannot execute it; see
-  `E2eModeRestrictionTest` and `E2eDeferredModeSwitchTest`). The system prompt is **mode-invariant**: it holds
-  a static "Modes" table (what plan/build/bash mean) and no current-mode
-  statement; the current mode and the tools available in it are stated in the
-  conversation history instead — modal status messages (`OpenAIMessage.System`,
-  LLM-internal, never rendered by the client`: a fresh session seeds one at
-  session start (`SessionState.init`) and every applied mode change appends one,
-  each stating the mode's semantics ("Mode: ... Read-only / Read-write / ...")
-  plus the tools available in it (`ToolRegistry.availableForMode`)). **Mode
-  switches are deferred**: a `mode` request while a prompt turn is running only
-  records a pending mode on `SessionState` (`requestMode`, latest wins) and is
-  applied as a single flush when the turn hands control back
-  (`flushPendingMode` in the prompt flow's try, before `setPromptActive(false)`),
-  with one `current_mode_update` at that point; the `finally` drops whatever is
-  still pending and clears `promptActive` (so a cancelled turn never leaks its
-  requested mode into the next turn), and `notifyModeState` is suppressed only
-  while a mode is pending (`hasPendingMode`) so mid-turn model/reasoning
-  switches still notify immediately. Idle switches still
-  apply immediately. The prompt is still rebuilt per
-  turn so mid-session `create_run_config` / `AGENTS.md` edits apply (it carries
-  `cwd`, today's date, the available run configurations (name + command +
-  description, re-read from local disk per iteration) and `Agent build: <sha>[-dirty]`).
-  A `mode` config option (`session/set_config_option` + legacy `set_mode`) echoes
-  the *governing* mode until the flush; unknown -> invalid-params.
-- **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
-  configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
-  read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,
-  location-agnostic string; the available configs (name + command + description) are surfaced in
-  the system prompt instead. Commands are shell strings run
-  via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
-  leaked a literal `{args}` into the shell for multi-placeholder
-  configs),
-  configs without the placeholder reject arguments. `mutating = false` so `run` never asks for
-  permission in any mode (incl. plan); the trust model is that the config file is
-  project-controlled (same trust tier as AGENTS.md). The `title` override (`run(config: ...)`,
-  see the tool-call title note under Permissions) still renders in tool-call progress.
-  Configs are managed by explicit dedicated tools (`tools/RunConfigTools.kt`, also read from
-  local disk): `list_run_configs` (read-only, every mode) and `create_run_config` /
-  `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
-  read-only). `update` is field-level - a blank `command` is always rejected (never cleared),
-  an omitted field stays unchanged, an empty-string `description` clears it; create rejects
-  existing names and blank commands; delete/update reject unknown names. Writes are atomic
-  (temp + move) and refuse to touch a corrupt/unparseable file; unknown entry fields
-  round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
-  loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
-  `test` (full `test` suite), `test_class` (single class/method via `{args}`),
-  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only),
-  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
-  `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
-  composition - also wired into Gradle `check` as the `testScripts` Exec task),
-  `show_failures` (failure messages from the latest JUnit XML reports, backed by
-  `.ai/scripts/show-test-failures.sh`) and `sdk_sources` (extract a `*-sources.jar` from
-  the Gradle cache for inspection via `.ai/scripts/sdk-sources.sh`, for the SDK contract
-  checks). The gradle configs are
-  wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
-  a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
-  config (`git {args}`, arbitrary arguments, read-only inspection only) and a `gradleStop`
-  config (stop daemons and kill lingering processes holding cache locks). A
-  `test_fsproxy`
-  run config was removed because it is redundant: the e2e harness itself strips a
-  leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
-  scenario explicitly sets it), so the full `test` suite already covers the
-  fs-proxy scenarios regardless of the host environment (`E2eAgentTest`).
-- **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
-  `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
-  `GIT_SHA` build-arg (no `.git` in the build context).
-- **Model + reasoning options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed
-  (`llm/LlmModels.kt`: tool-capable text-output models, sorted; failure fails session creation).
-  Per-session `model` (default `OPENROUTER_MODEL`) and `reasoning` effort
-  (`category: thought_level`; empty `supported_efforts` -> gateway levels max..minimal;
-  mandatory models drop `none`; `none` omits the request field). Model switches reset reasoning;
-  changes emit updates and persist. The chat request carries `reasoning: {effort}` (own wire
-  type in `LlmClient`, not Koog).
-- **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
-  `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
-  `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough).
-- **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
-  `size` = model `context_length`); skipped when either is missing. During an active prompt the
-  SDK routes session updates into the prompt event flow, not the `notify` callback.
-- **File-access exclusions**: the file tools enforce a shared exclusion policy
-  (`tools/FileAccessExclusions.kt`, threaded as `ToolContext.fileExclusions`): files whose
-  cwd-relative path matches an exclusion glob rule are refused to direct-target tools
-  (`read_file`/`edit_file`/`write_file`/`delete_file` hard-error before any I/O - no client
-  fs proxy round trip, no permission prompt, uniform incl. new-file writes) and hidden from
-  listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
-  in the walk callback; `grep` folds them into the existing skip suffix). The default rule
-  set is the fixed `.env*.local` secret-file exclusion (bare name, matches at any depth;
-  gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
-  also checks the symlink-resolved target name, so an alias link to an excluded file cannot
-  smuggle the read (unresolvable paths only skip that extra check - a block, not a gate).
-  Refusals name the matched rule (`'<path>' is excluded from tool access (matches exclusion
-  rule '<glob>')`) and the system prompt carries a static "Excluded files" section rendered
-  from the policy's globs. Rule semantics: globs via the shared `globToRegex`, bare names
-  match the basename at any depth. The designed future source is a gitignore-style
-  `.aiignore` in the project root feeding `FileAccessExclusions.of()` - matching, error
-  text, hiding and the prompt section already consume a rule list, so plumbing it changes
-  no tool code. Not excluded on purpose: `bash`/`run` commands (not inspected) and
-  `move_file`/`move_directory`/`delete_directory` (no content flow into the model context).
-- **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
-  (kotlinx-io) + `bash` (killed after
-  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP(S) GET via a
-  per-call ktor CIO client, `requestTimeout = 0` + 60s socket idle; manual redirect
-  loop (max 5) with per-hop SSRF re-validation - loopback/link-local/site-local/
-  any-local IPs and `localhost`/`*.local`/`.internal` by name refused unless
-  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, residual validate-then-fetch TOCTOU documented;
-  only http/https; gzip/deflate via `ktor-client-encoding` - the encoders must be
-  registered in the `install(ContentEncoding)` config block, the bare plugin rejects
-  every encoded response; 20 MB body cap enforced by Content-Length pre-check and a
-  progressive read; declared binary content types refused before download, lying
-  types caught by a NUL sniff, both failing loudly with a "download via bash (curl)"
-  hint - the tool never writes to disk; charset from Content-Type, UTF-8 fallback;
-  non-HTML passes through, HTML is converted to lines by `WebContentConverter`
-  (jsoup 1.23.2: block tags flush lines, `pre` verbatim, `li` bulleted, script/style
-  stripped) so read_file-style `startLine`/`maxLines` paging works; numbered `│`
-  lines, 2000-char line cap, continue footer; `ToolKind.FETCH`, non-mutating, no
-  filesystem targets -> prompt-free in every mode; kind is the SDK enum value added
-  for fetch tools) + `update_plan` + `get_current_mode`
-  (`tools/GetCurrentModeTool.kt`; returns the turn-captured mode status text — mode,
-  semantics and the tools available in it, the same text the modal status messages
-  carry — threaded through `ToolContext.modeStatusText` so the model can verify the
-  governing mode instead of inferring it; non-mutating, no parameters, every mode,
-  prompt-free), registered in `Main.kt`,
-  copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
-  collision with a local tool is ignored with a warning - locals can never be shadowed. All
-  path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
-  is the one the permission check approved); `list_dir`/`glob`/`grep` skip symlinks (kotlinx-io
-  follows them by default, which could smuggle reads outside the project). `read/write/edit`
-  use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
-  the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
-  local store; `read_file` renders all reads as fixed-width 1-indexed `number│content`
-  lines (the content - including its leading indentation - is verbatim after the `│`, so
-  the model can read indentation directly off the line rather than inferring it from a
-  whitespace-only prefix), byte-identical except for the stripped trailing newline
-  terminator, plus a
-  `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
-  not cover the whole file, so a truncated read is
-  unambiguous and the model can page forward (line numbers are display-only - `edit_file`
-  matches raw content, so the model must strip the `number│` prefix; the client fs proxy returns no
-  total, so the footer total comes from the local store, not the proxy; a proxy window of
-  exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
-  line). Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
-  `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
-  `'x' must not be null` error (previously `null` was silently coerced to the string
-  "null" - e.g. written into files or run as a shell command), an absent key stays
-  `Missing 'x'`. Tool-call diffs describe the **whole file** (`edit_file` was fragment-only
-  before, which clients like Zed misrender) and are **skipped when the client fs proxy is
-  active** (the client renders the change itself; also removes the stale pre-read
-  round-trip). listing/search always use the local disk (ACP
-  has no client-side search), and so
-  do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
-  `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
-  `move_directory` rename (java.nio `Files.move`, no overwrite - an existing destination is
-  refused - missing destination parents are created; kotlinx-io's `atomicMove` is a JVM stub,
-  so java.nio is used like the run-config writes), `delete_file` deletes single files (refuses
-  directories and symlinks; carries the removed content as a `Diff`), `delete_directory`
-  deletes recursively but is refused when the tree contains any symlink (kotlinx-io follows
-  links, so a link could smuggle the recursive delete outside the approved project); the
-  symlink scan and the recursive delete are depth-capped (64) like the search walker.
-  The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
-  object files are binary noise for content searches) and symlinks.
-- **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
-  explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
-  prepending `...(truncated: N chars omitted from the beginning)...` (Locale.ROOT; bounded
-  memory while reading, UTF-8 chunk-safe) - the output is captured **progressively** into a
-  synchronized tail buffer (`ProcessRunner.StreamTail`), so when a backgrounded child holds
-  the pipe fds open and the drain grace expires, the tree is force-killed, re-drained once,
-  and the output captured so far is snapshotted, never discarded (before this, such a command
-  surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
-  output. `read_file` requires `limit` (1..2000 lines; anything else is
-  rejected before I/O), refuses files over **20 MB** (hardcoded, with a "use bash" hint),
-  truncates lines over **2000 chars** with `... [truncated]`, and errors with
-  `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
-  streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
-  observed to spin forever on zero-char reads under JDK 25); `list_dir`/`glob` list at most
-  500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
-  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
-  files over 1 MB and excluded files (see File-access exclusions), and reports skips as
-  `...(N binary, oversized or excluded files skipped)`.
-  `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
-  operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
-  be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
-- **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
-  anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
-  `session/request_permission`. Exception: `ACP_EXTRA_MOUNTS` names absolute **read-trusted**
-  paths (the docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`); the
-  non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
-  targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
-  against the session cwd so a symlink escape still gates); writes/moves/deletes under them
-  always prompt. The paths are also surfaced as a static "Trusted read paths" system-prompt
-  section (`SystemPromptBuilder`) so the model knows reads there are prompt-free. MCP tools
-  always prompt **unless** the server annotates the
-  tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
-  enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the
-  pessimistic always-prompt default). The trusted `title` annotation replaces the bare tool
-  name in permission prompts and tool-call progress (MCP names are often machine-prefixed);
-  the display kind derives from `readOnlyHint`/`destructiveHint` (read-only `other`,
-  non-destructive `edit`, potentially destructive `delete`) and is cosmetic only.
-  A tool's targets come from `AgentTool.targetPaths(arguments)` (`tools/Tool.kt`, defaults to
-  the single `targetPath`; `move_file`/`move_directory` override it with source + destination)
-  and every target must lie inside the cwd for a prompt-free call - a move with an
-  out-of-project destination asks even when the source is inside.
-  In-project writes are further gated by mode (plan is read-only). The containment check
-  (`tools/Containment.kt`) is symlink-safe and resolves relative paths against the session cwd.
-  `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
-  `reject_once` apply once. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call in
-  permission prompts and progress - it ignores the `rawInput` field that carries the actual
-  arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with
-  **Observed (JetBrains, 2026-09)**: the permission dialog in practice showed the bare
-  argument value (`echo permission-test`) instead of our `bash(command: ...)` title - the
-  "only title is rendered" claim did not hold for the permission surface. Keep titles
-  argument-bearing anyway (other clients render them) and make commands self-describing;
-  re-verify against a concrete client rather than assuming. Working hypothesis
-  (unverified, no matching JetBrains bug report found 2026-09): the dialog
-  special-cases a `command` value in `rawInput` and renders it as a
-  syntax-highlighted runnable block, falling back to the title otherwise - this
-  fits `create_run_config`/`bash` showing their `command` argument while `run`
-  (`config`/`args` keys) and `delete_run_config` (`name` only) showed their
-  titles, and matches the JetBrains rendering behavior reported in
-  google-gemini/gemini-cli#23018 (title rendered as command block) and the
-  "bug in how the IntelliJ ACP client renders tool call parameters" confirmation
-  on the Cursor forum. All of this is hypothesis until verified against a
-  concrete client. Tools with
-  meaningful arguments therefore override `AgentTool.title(arguments)` (hook in
-  `tools/Tool.kt`, default `null` = bare tool name). The `run` tool and the
-  run-config write tools lead with the config name
-  (`run(echo)`, `run(echo: <args>)`, `create_run_config(echo: <command>)`,
-  `delete_run_config(echo)`) so client-side title elision cannot hide which
-  configuration is executed/created - `formatRunToolTitle` /
-  `formatRunConfigToolTitle` in `tools/Tool.kt` read named keys, so titles are
-  order-independent regardless of the JSON key order the model chose. The
-  remaining tools use `formatToolTitle(name, args)` - a `name(key: value, ...)`
-  summary, gemini-cli style - and every formatter caps each value part at 100
-  chars (ellipsized; was 50 for the whole argument part, which could push the
-  identifying name out of the title);
-    `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
-    implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
-    safety-critical: a bare title would leave the user confirming a
-    deletion blind); titles flatten embedded newlines so permission prompts stay
-    single-line; the remaining path tools only prompt for out-of-project access and are
-    untouched. **Tool-call results**: completed/failed
-    `tool_call_update`s carry the result text as `content` blocks (and the error text on
-    permission denial), so clients that ignore `rawOutput` still render the outcome;
-    edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
-    file changes are visible without the client fs proxy - every diff describes the **whole file**: `edit_file` emits
-    the full old/new content (was fragment-only, which
-    Zed-style clients misrender), `write_file` best-effort pre-reads the old
-    content (`oldText = null` for new files; skipped on read failure or when either side
-    exceeds 100k chars), `delete_file` carries the removed content as
-    `newText = ""`. All diff blocks are **skipped when the client fs proxy is active**
-    (the client renders the change itself; avoids a stale duplicate and a pre-read
-    round-trip). Path-scoped tool calls carry `locations`
-    (`tool_call`, `request_permission` and load replay) for the client's follow-along
-    surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
-    `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
-    call sites (`tool_call` notification, `request_permission`, completed/denied updates,
-    load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
-- **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
-  all three transports work on JVM (see Recipes); `initialize` advertises
-  `mcpCapabilities.http/sse`. The streamable-HTTP client (`McpConnector.connectHttp`)
-  installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
-  a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
-  MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
-  trusted (`MCP_TRUST_ANNOTATIONS`, default enabled; see Permissions) - pinned black-box by
-  `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
-  mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
-  tools carry the mandatory `inputSchema`).
-- **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
-  see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
-  relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
-  reasoning-capable providers alongside `delta.reasoning`)is filtered so reasoning deltas
-  emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
-  stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
-  so a failed or truncated turn fails loudly instead of executing partial tool calls or
-  emitting an empty END_TURN. A `length` (or other non-`stop`/`tool_calls`/
-  `content_filter`) finish reason, or an iteration with no text and no tool calls, triggers
-  exactly one continuation pass:the partial text (if any) is kept, ALL tool calls (including complete ones) are dropped
-  and never executed - the model re-issues them
-  after the continuation -, a synthetic user "continue" prompt is appended, and the retry
-  runs even when the tool-iteration budget is exhausted. A second truncation/empty
-  completion ends the turn with an honest "response interrupted" note (+ `end_turn`,
-  no exception); `content_filter` ends immediately with a "blocked by content filtering"
-  note (never retried). Both cases log to stderr (`warn` on first, `error` when still
-  broken) so the problem stays visible. Replay renders the synthetic "continue" user
-  message as a normal bubble (accepted).
-  Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
-  UUIDv7 `messageId` (time-ordered, `com.github.f4b6a3:uuid-creator`; fresh per iteration) so
-  clients group the iteration's reasoning and reply into a single message; pinned e2e at
-  the decoded-object and raw-wire level.
-  **Pitfall**: the `messageId` RFD's "unique per message" is still violated by sharing one
-  id across the distinct `agent_message` and `agent_thought` streams of the same iteration -
-  deliberate v1 choice so reasoning folds into the message block it belongs to. v2 makes
-  `messageId` mandatory and keys whole `agent_message`/`agent_thought` messages by it, so
-  this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
-  runtime is upgraded.
-  Requests carry app attribution headers (`HTTP-Referer`
-  + `X-OpenRouter-Title`).
-- **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
-  disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
-  median endpoint completion price}` (USD per million tokens,
-  `providerrouting/ProviderRouting.kt`, lazy per-model cache); fail-open: fetch/parse failure
-  or empty feed omits the `provider` field; disabled routing never fetches endpoints.
-- **Prompt capabilities**: advertises `image` + `embeddedContext` (no `audio`). Image blocks
-  become base64 data URIs (mime default `image/png`) only when the model's
-  `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
-  are inlined as `Resource <uri>:\n<text>`, blob/audio degrade to placeholders,
-  `resource_link` renders as a markdown link (`contentBlocksToLlmContentTopLevel` in
-  `agent/AgentSessionImpl.kt`).
-- **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
-  `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
-  missing file ignored, read errors logged and never fail the turn (`agent/AgentsMd.kt`).
-- **`$/cancel_request`**: handled natively by the SDK in both directions; a cancelled
-  `session/request_permission` dismisses the client's prompt, and `shouldAllow` rethrows
-  `CancellationException` instead of swallowing it into a bogus "Permission denied". A
-  cancelled turn also terminates a running bash command (interruptible wait +
-  process-tree kill), so `session/cancel` does not leave orphans behind.
-  Cancellation must **propagate out of tool execution** (`runShellCommand` in
-  `tools/BashTool.kt` rethrows it before the generic catch, like `WebFetchTool`; the
-  executor rethrows at `ToolCallExecutor.kt`): a swallowing tool turns `session/cancel`
-  into a bogus failed `ToolResult`. Same contract for the fs-proxy file tools
-  (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with the client fs proxy their
-  `FileStore` calls are suspending RPCs; #28, fixed 2026-09-24, incl. the inner
-  `writeResultDiff` pre-read catch) and for the process tools' duplicate run/format
-  helper. Testing this swallow needs an outcome-capture
-  detector, not `Deferred.isCancelled` — a `cancelAndJoin`ed deferred is
-  `isCancelled` even when the body swallowed and returned a value
-  (`BashToolTest`/`RunToolTest` "cancelling the tool during a running command"
-  tests; verified to fail with the bug re-introduced). Today the SDK's
-  `SafeCollector.emit` (`currentContext.ensureActive()`) masks a swallowed
-  cancellation before the bogus `ToolCallUpdate(FAILED)` is emitted, so the
-  end-to-end symptom is latent, not observed.
-- **Docker sandbox**: CI-built (`build-image.yml`) image on
-  `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
-  builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
-  The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
-  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
-  home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
-  `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
-  home tmpfs/named volume would shadow it anyway, so runc would create the deep
-  bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
-  root-owned inside the container and the agent uid could not write anything else
-  under `~/.local`. The state/store binds land on top of these tmpfs mounts (moby
-  composes all mounts shallowest-first into the OCI spec and runc mounts in that
-  order, so CLI argv order is irrelevant - the launcher still emits them in argv
-  order), pinned by the shell suite; non-root user matching host UID/GID,
-  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables) when the tool's env var
-  (absolute; created if missing) points at a custom dir or the host default dir already
-  exists (never created) - mounted at the tool's in-container default with the env var
-  pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
-  ...), host Android SDK shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
-  else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
-  default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;
-  a set-but-unusable var - relative, `/`, missing dir - fails loudly before any
-  `docker run`; when the SDK lies inside the project dir the mount is skipped and
-  the pins keep the host path, since the project is mounted at the identical path),
-  host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
-  host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
-  `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded
-  (the API key excepted: it is staged as a `0600` file or taken from
-  `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
-  the path in the container env; the staged copy and the `.env.local` mask are removed by
-  an EXIT trap, which is why the launcher does not `exec` docker),
-  host `.env.local` masked, git identity forwarded. Optional extra host paths
-  (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
-  identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
-  `:rw`; dirs or single files; absolute, must exist, relative paths / `/` are
-  rejected loudly); the launcher injects the *effective* extras as
-  `ACP_EXTRA_MOUNTS` so the agent treats them as read-trusted (skipped entries -
-  inside the project dir/home/tmpfs - are never trusted). Extras are emitted before every built-in mount and sorted
-  shallowest-first, so built-ins and later, deeper mounts shadow shallower ones
-  (mounting a CWD parent ro works; the project dir itself stays rw); entries inside
-  the project dir or container home are skipped with a warning. Extras:
-  `ACP_DOCKER_NETWORK`, `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
-  local builds via `./build-docker`. Launcher output is stderr-only - ACP travels over the container
-  stdin/stdout.
+* **Run configurations**: the `run` tool's named configurations serve the standard
+  build/test/lint loop (see Building / running). They are managed via
+  `list_run_configs` / `create_run_config` / `update_run_config` /
+  `delete_run_config`, and surface in the system prompt.
+* **Web research**: use the `exa_web_search_exa` and `exa_web_fetch_exa` tools for research, validating information and
+  looking things up when unsure — do not guess. Search first with `exa_web_search_exa`, then fetch the full page with
+  `exa_web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
+  upstream behavior against primary sources before relying on them; cite the sources you checked in your summary.
+* **GitHub issues**
+  * Always set the **issue type** (`Bug` / `Feature` / `Task`).
+  * Every **bug** additionally gets the **`Priority`** field (`Low`, `Medium`, `High`, `Urgent`)
+  * Avoid redundant labels (like "bug" for a bug).
+  * **Proactively create issues for newly discovered bugs** — file them, don't just mention them.
+  * GitHub issues are the sole issue tracker.
+  * When adding an issue, make sure it is not duplicated.
 
 ## Layout
 
@@ -648,22 +225,451 @@ tests/bash/                             # shell test suite (launcher composition
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
 ```
 
-## Tool Usage
+### Configuration (OpenRouter + MCP)
 
-* **Run configurations**: the `run` tool's named configurations serve the standard
-  build/test/lint loop (see Building / running). They are managed via
-  `list_run_configs` / `create_run_config` / `update_run_config` /
-  `delete_run_config`, and surface in the system prompt.
-* **Web research**: use the `exa_web_search_exa` and `exa_web_fetch_exa` tools for research, validating information and
-  looking things up when unsure — do not guess. Search first with `exa_web_search_exa`, then fetch the full page with
-  `exa_web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
-  upstream behavior against primary sources before relying on them; cite the sources you checked in your summary.
-* **GitHub issues**
-  * Always set the **issue type** (`Bug` / `Feature` / `Task`).
-  * Every **bug** additionally gets the **`Priority`** field (`Low`, `Medium`, `High`, `Urgent`)
-  * Avoid redundant labels (like "bug" for a bug).
-  * **Proactively create issues for newly discovered bugs** — file them, don't just mention them.
-  * GitHub issues are the sole issue tracker.
+Config comes from environment variables:
+
+- `OPENROUTER_API_KEY` (required unless `OPENROUTER_API_KEY_FILE` is set)
+- `OPENROUTER_API_KEY_FILE` (optional; file holding the key, read + trimmed at
+  startup; the docker launcher always injects it pointing at the mounted key file
+  and never forwards the key itself)
+- `OPENROUTER_MODEL` (default `openrouter/auto`)
+- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
+- `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED` (default enabled; `0` disables
+  the automatic provider routing, see Features)
+- `FS_PROXY_ENABLED` (default enabled; `0` uses the local store even when the
+  client advertises fs capabilities, see Features)
+- `MCP_TRUST_ANNOTATIONS` (default enabled; `0` ignores MCP tool behavior
+  annotations, keeping the pessimistic always-prompt permission default, see
+  Permissions)
+- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
+  after this many seconds, killing the whole process tree, see Features)
+- `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
+  budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
+  before the turn ends with `MAX_TURN_REQUESTS`)
+- `ACP_WEB_FETCH_ALLOW_PRIVATE` (default blocked; `1` lets `web_fetch` reach
+  private/loopback/link-local hosts - tests against a local mock server need this)
+- `ACP_EXTRA_MOUNTS` (default empty; comma-separated **absolute** paths that are
+  read-trusted: `read_file`/`list_dir`/`glob`/`grep` under them run without a permission
+  prompt even though they lie outside the cwd; writes/moves/deletes still prompt. The
+  docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`; see Features /
+  Permissions)
+
+## Features
+
+- **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
+  `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
+  record); `session/cancel` is coroutine cancellation. Sessions persist to
+  `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
+  atomically (temp + move) on every completed turn and mode/config change. The record (`agent/SessionRecord.kt`) holds
+  history (Koog `OpenAIMessage` wire types via the shared
+  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning and plan.
+  Persist and delete share a `persistMutex` so a delete never resurrects the file; failures log
+  to stderr and never fail the turn. Client-supplied ids are format-checked (`isValidSessionId`)
+  so traversal/separators never reach the filesystem. Session creation (and restore) closes any
+  already-opened MCP connections and the `LlmClient` when the model feed fetch fails.
+- **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
+  `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
+  `tool_call` + completed `tool_call_update`, plan) from `postInitialize()` - after the load
+  response (SDK hook limitation); `session/resume` restores without replay. `session/list`
+  filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
+  double-loads are invalid-params; corrupt records are internal errors.
+- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
+  `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
+  tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
+  when the iteration budget is exhausted while the model kept calling tools, streams one final
+  text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
+  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. The session is a thin
+  SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
+  `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
+  (one tool-call lifecycle: mode gate -> permission -> execution -> updates) and `PromptRunner`
+  (the loop + wind-down pass, over the `ChatCompleter` seam so the runner is unit-testable).
+  New session code should extend a component, not the facade.
+- **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
+  the permission-gated bash tool. `ToolRegistry.availableForMode/disabledInMode` filter tools
+  and produce the "disabled in current mode" error. Mode enforcement happens in the agent loop *before* permission and
+  execution: a tool call for a registered tool that is disabled in the
+  current mode fails with the "disabled in current mode" update and never reaches the permission
+  flow (so a model carrying a tool call over from an earlier mode switch cannot execute it; see
+  `E2eModeRestrictionTest` and `E2eDeferredModeSwitchTest`). The system prompt is **mode-invariant**: it holds
+  a static "Modes" table (what plan/build/bash mean) and no current-mode
+  statement; the current mode and the tools available in it are stated in the
+  conversation history instead — modal status messages (`OpenAIMessage.System`,
+  LLM-internal, never rendered by the client`: a fresh session seeds one at
+  session start (`SessionState.init`) and every applied mode change appends one,
+  each stating the mode's semantics ("Mode: ... Read-only / Read-write / ...")
+  plus the tools available in it (`ToolRegistry.availableForMode`)). **Mode
+  switches are deferred**: a `mode` request while a prompt turn is running only
+  records a pending mode on `SessionState` (`requestMode`, latest wins) and is
+  applied as a single flush when the turn hands control back
+  (`flushPendingMode` in the prompt flow's try, before `setPromptActive (false)`),
+  with one `current_mode_update` at that point; the `finally` drops whatever is
+  still pending and clears `promptActive` (so a cancelled turn never leaks its
+  requested mode into the next turn), and `notifyModeState` is suppressed only
+  while a mode is pending (`hasPendingMode`) so mid-turn model/reasoning
+  switches still notify immediately. Idle switches still
+  apply immediately. The prompt is still rebuilt per
+  turn so mid-session `create_run_config` / `AGENTS.md` edits apply (it carries
+  `cwd`, today's date, the available run configurations (name + command +
+  description, re-read from local disk per iteration) and `Agent build: <sha>[-dirty]`).
+  A `mode` config option (`session/set_config_option` + legacy `set_mode`) echoes
+  the *governing* mode until the flush; unknown -> invalid-params.
+- **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
+  configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
+  read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,
+  location-agnostic string; the available configs (name + command + description) are surfaced in
+  the system prompt instead. Commands are shell strings run
+  via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
+  leaked a literal `{args}` into the shell for multi-placeholder
+  configs),
+  configs without the placeholder reject arguments. `mutating = false` so `run` never asks for
+  permission in any mode (incl. plan); the trust model is that the config file is
+  project-controlled (same trust tier as AGENTS.md). The `title` override (`run(config: ...)`,
+  see the tool-call title note under Permissions) still renders in tool-call progress.
+  Configs are managed by explicit dedicated tools (`tools/RunConfigTools.kt`, also read from
+  local disk): `list_run_configs` (read-only, every mode) and `create_run_config` /
+  `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
+  read-only). `update` is field-level - a blank `command` is always rejected (never cleared),
+  an omitted field stays unchanged, an empty-string `description` clears it; create rejects
+  existing names and blank commands; delete/update reject unknown names. Writes are atomic (temp + move) and refuse to
+  touch a corrupt/unparseable file; unknown entry fields
+  round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
+  loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
+  `test` (full `test` suite), `test_class` (single class/method via `{args}`),
+  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only),
+  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
+  `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
+  composition - also wired into Gradle `check` as the `testScripts` Exec task),
+  `show_failures` (failure messages from the latest JUnit XML reports, backed by
+  `.ai/scripts/show-test-failures.sh`) and `sdk_sources` (extract a `*-sources.jar` from
+  the Gradle cache for inspection via `.ai/scripts/sdk-sources.sh`, for the SDK contract
+  checks). The gradle configs are
+  wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
+  a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
+  config (`git {args}`, arbitrary arguments, read-only inspection only) and a `gradleStop`
+  config (stop daemons and kill lingering processes holding cache locks). A
+  `test_fsproxy`
+  run config was removed because it is redundant: the e2e harness itself strips a
+  leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
+  scenario explicitly sets it), so the full `test` suite already covers the
+  fs-proxy scenarios regardless of the host environment (`E2eAgentTest`).
+- **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
+  `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
+  `GIT_SHA` build-arg (no `.git` in the build context).
+- **Model + reasoning options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed (`llm/LlmModels.kt`:
+  tool-capable text-output models, sorted; failure fails session creation).
+  Per-session `model` (default `OPENROUTER_MODEL`) and `reasoning` effort (`category: thought_level`; empty
+  `supported_efforts` -> gateway levels max..minimal;
+  mandatory models drop `none`; `none` omits the request field). Model switches reset reasoning;
+  changes emit updates and persist. The chat request carries `reasoning: {effort}` (own wire
+  type in `LlmClient`, not Koog).
+- **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
+  `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
+  `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough).
+- **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
+  `size` = model `context_length`); skipped when either is missing. During an active prompt the
+  SDK routes session updates into the prompt event flow, not the `notify` callback.
+- **File-access exclusions**: the file tools enforce a shared exclusion policy (`tools/FileAccessExclusions.kt`,
+  threaded as `ToolContext.fileExclusions`): files whose
+  cwd-relative path matches an exclusion glob rule are refused to direct-target tools (`read_file`/`edit_file`/
+  `write_file`/`delete_file` hard-error before any I/O - no client
+  fs proxy round trip, no permission prompt, uniform incl. new-file writes) and hidden from
+  listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
+  in the walk callback; `grep` folds them into the existing skip suffix). The default rule
+  set is the fixed `.env*.local` secret-file exclusion (bare name, matches at any depth;
+  gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
+  also checks the symlink-resolved target name, so an alias link to an excluded file cannot
+  smuggle the read (unresolvable paths only skip that extra check - a block, not a gate).
+  Refusals name the matched rule (`'<path>' is excluded from tool access (matches exclusion
+  rule '<glob>')`) and the system prompt carries a static "Excluded files" section rendered
+  from the policy's globs. Rule semantics: globs via the shared `globToRegex`, bare names
+  match the basename at any depth. The designed future source is a gitignore-style
+  `.aiignore` in the project root feeding `FileAccessExclusions.of()` - matching, error
+  text, hiding and the prompt section already consume a rule list, so plumbing it changes
+  no tool code. Not excluded on purpose: `bash`/`run` commands (not inspected) and
+  `move_file`/`move_directory`/`delete_directory` (no content flow into the model context).
+- **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
+  (kotlinx-io) + `bash` (killed after
+  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP (S) GET via a
+  per-call ktor CIO client, `requestTimeout = 0` + 60s socket idle; manual redirect
+  loop (max 5) with per-hop SSRF re-validation - loopback/link-local/site-local/
+  any-local IPs and `localhost`/`*.local`/`.internal` by name refused unless
+  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, residual validate-then-fetch TOCTOU documented;
+  only http/https; gzip/deflate via `ktor-client-encoding` - the encoders must be
+  registered in the `install(ContentEncoding)` config block, the bare plugin rejects
+  every encoded response; 20 MB body cap enforced by Content-Length pre-check and a
+  progressive read; declared binary content types refused before download, lying
+  types caught by a NUL sniff, both failing loudly with a "download via bash (curl)"
+  hint - the tool never writes to disk; charset from Content-Type, UTF-8 fallback;
+  non-HTML passes through, HTML is converted to lines by `WebContentConverter`
+  (jsoup 1.23.2: block tags flush lines, `pre` verbatim, `li` bulleted, script/style
+  stripped) so read_file-style `startLine`/`maxLines` paging works; numbered `│`
+  lines, 2000-char line cap, continue footer; `ToolKind.FETCH`, non-mutating, no
+  filesystem targets -> prompt-free in every mode; kind is the SDK enum value added
+  for fetch tools) + `update_plan` + `get_current_mode`
+  (`tools/GetCurrentModeTool.kt`; returns the turn-captured mode status text — mode,
+  semantics and the tools available in it, the same text the modal status messages
+  carry — threaded through `ToolContext.modeStatusText` so the model can verify the
+  governing mode instead of inferring it; non-mutating, no parameters, every mode,
+  prompt-free), registered in `Main.kt`,
+  copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
+  collision with a local tool is ignored with a warning - locals can never be shadowed. All
+  path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
+  is the one the permission check approved); `list_dir`/`glob`/`grep` skip symlinks (kotlinx-io
+  follows them by default, which could smuggle reads outside the project). `read/write/edit`
+  use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
+  the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
+  local store; `read_file` renders all reads as fixed-width 1-indexed `number│content`
+  lines (the content - including its leading indentation - is verbatim after the `│`, so
+  the model can read indentation directly off the line rather than inferring it from a
+  whitespace-only prefix), byte-identical except for the stripped trailing newline
+  terminator, plus a
+  `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
+  not cover the whole file, so a truncated read is
+  unambiguous and the model can page forward (line numbers are display-only - `edit_file`
+  matches raw content, so the model must strip the `number│` prefix; the client fs proxy returns no
+  total, so the footer total comes from the local store, not the proxy; a proxy window of
+  exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
+  line). Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
+  `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
+  `'x' must not be null` error (previously `null` was silently coerced to the string
+  "null" - e.g. written into files or run as a shell command), an absent key stays
+  `Missing 'x'`. Tool-call diffs describe the **whole file** (`edit_file` was fragment-only
+  before, which clients like Zed misrender) and are **skipped when the client fs proxy is
+  active** (the client renders the change itself; also removes the stale pre-read
+  round-trip). listing/search always use the local disk (ACP
+  has no client-side search), and so
+  do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
+  `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
+  `move_directory` rename (java.nio `Files.move`, no overwrite - an existing destination is
+  refused - missing destination parents are created; kotlinx-io's `atomicMove` is a JVM stub,
+  so java.nio is used like the run-config writes), `delete_file` deletes single files (refuses
+  directories and symlinks; carries the removed content as a `Diff`), `delete_directory`
+  deletes recursively but is refused when the tree contains any symlink (kotlinx-io follows
+  links, so a link could smuggle the recursive delete outside the approved project); the
+  symlink scan and the recursive delete are depth-capped (64) like the search walker.
+  The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
+  object files are binary noise for content searches) and symlinks.
+- **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
+  explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
+  prepending `...(truncated: N chars omitted from the beginning)...` (Locale.ROOT; bounded
+  memory while reading, UTF-8 chunk-safe) - the output is captured **progressively** into a
+  synchronized tail buffer (`ProcessRunner.StreamTail`), so when a backgrounded child holds
+  the pipe fds open and the drain grace expires, the tree is force-killed, re-drained once,
+  and the output captured so far is snapshotted, never discarded (before this, such a command
+  surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
+  output. `read_file` requires `limit` (1..2000 lines; anything else is
+  rejected before I/O), refuses files over **20 MB** (hardcoded, with a "use bash" hint),
+  truncates lines over **2000 chars** with `... [truncated]`, and errors with
+  `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
+  streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
+  observed to spin forever on zero-char reads under JDK 25); `list_dir`/`glob` list at most
+  500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
+  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
+  files over 1 MB and excluded files (see File-access exclusions), and reports skips as
+  `...(N binary, oversized or excluded files skipped)`.
+  `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
+  operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
+  be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
+- **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
+  anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
+  `session/request_permission`. Exception: `ACP_EXTRA_MOUNTS` names absolute **read-trusted**
+  paths (the docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`); the
+  non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
+  targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
+  against the session cwd so a symlink escape still gates); writes/moves/deletes under them
+  always prompt. The paths are also surfaced as a static "Trusted read paths" system-prompt
+  section (`SystemPromptBuilder`) so the model knows reads there are prompt-free. MCP tools
+  always prompt **unless** the server annotates the
+  tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
+  enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the
+  pessimistic always-prompt default). The trusted `title` annotation replaces the bare tool
+  name in permission prompts and tool-call progress (MCP names are often machine-prefixed);
+  the display kind derives from `readOnlyHint`/`destructiveHint` (read-only `other`,
+  non-destructive `edit`, potentially destructive `delete`) and is cosmetic only.
+  A tool's targets come from `AgentTool.targetPaths(arguments)` (`tools/Tool.kt`, defaults to
+  the single `targetPath`; `move_file`/`move_directory` override it with source + destination)
+  and every target must lie inside the cwd for a prompt-free call - a move with an
+  out-of-project destination asks even when the source is inside.
+  In-project writes are further gated by mode (plan is read-only). The containment check (`tools/Containment.kt`) is
+  symlink-safe and resolves relative paths against the session cwd.
+  `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
+  `reject_once` apply once. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call in
+  permission prompts and progress - it ignores the `rawInput` field that carries the actual
+  arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with **Observed (JetBrains,
+  2026-09)**: the permission dialog in practice showed the bare
+  argument value (`echo permission-test`) instead of our `bash(command: ...)` title - the
+  "only title is rendered" claim did not hold for the permission surface. Keep titles
+  argument-bearing anyway (other clients render them) and make commands self-describing;
+  re-verify against a concrete client rather than assuming. Working hypothesis (unverified, no matching JetBrains bug
+  report found 2026-09): the dialog
+  special-cases a `command` value in `rawInput` and renders it as a
+  syntax-highlighted runnable block, falling back to the title otherwise - this
+  fits `create_run_config`/`bash` showing their `command` argument while `run`
+  (`config`/`args` keys) and `delete_run_config` (`name` only) showed their
+  titles, and matches the JetBrains rendering behavior reported in
+  google-gemini/gemini-cli#23018 (title rendered as command block) and the
+  "bug in how the IntelliJ ACP client renders tool call parameters" confirmation
+  on the Cursor forum. All of this is hypothesis until verified against a
+  concrete client. Tools with
+  meaningful arguments therefore override `AgentTool.title(arguments)` (hook in
+  `tools/Tool.kt`, default `null` = bare tool name). The `run` tool and the
+  run-config write tools lead with the config name (`run(echo)`, `run(echo: <args>)`,
+  `create_run_config(echo: <command>)`,
+  `delete_run_config(echo)`) so client-side title elision cannot hide which
+  configuration is executed/created - `formatRunToolTitle` /
+  `formatRunConfigToolTitle` in `tools/Tool.kt` read named keys, so titles are
+  order-independent regardless of the JSON key order the model chose. The
+  remaining tools use `formatToolTitle(name, args)` - a `name(key: value, ...)`
+  summary, gemini-cli style - and every formatter caps each value part at 100
+  chars (ellipsized; was 50 for the whole argument part, which could push the
+  identifying name out of the title);
+  `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
+  implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
+  safety-critical: a bare title would leave the user confirming a
+  deletion blind); titles flatten embedded newlines so permission prompts stay
+  single-line; the remaining path tools only prompt for out-of-project access and are
+  untouched. **Tool-call results**: completed/failed
+  `tool_call_update`s carry the result text as `content` blocks (and the error text on
+  permission denial), so clients that ignore `rawOutput` still render the outcome;
+  edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
+  file changes are visible without the client fs proxy - every diff describes the **whole file**: `edit_file` emits
+  the full old/new content (was fragment-only, which
+  Zed-style clients misrender), `write_file` best-effort pre-reads the old
+  content (`oldText = null` for new files; skipped on read failure or when either side
+  exceeds 100k chars), `delete_file` carries the removed content as
+  `newText = ""`. All diff blocks are **skipped when the client fs proxy is active**
+  (the client renders the change itself; avoids a stale duplicate and a pre-read
+  round-trip). Path-scoped tool calls carry `locations`
+  (`tool_call`, `request_permission` and load replay) for the client's follow-along
+  surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
+  `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
+  call sites (`tool_call` notification, `request_permission`, completed/denied updates,
+  load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
+- **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
+  all three transports work on JVM (see Recipes); `initialize` advertises
+  `mcpCapabilities.http/sse`. The streamable-HTTP client (`McpConnector.connectHttp`)
+  installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
+  a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
+  MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
+  trusted (`MCP_TRUST_ANNOTATIONS`, default enabled; see Permissions) - pinned black-box by
+  `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
+  mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
+  tools carry the mandatory `inputSchema`).
+- **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
+  see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
+  relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
+  reasoning-capable providers alongside `delta.reasoning`)is filtered so reasoning deltas
+  emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
+  stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
+  so a failed or truncated turn fails loudly instead of executing partial tool calls or
+  emitting an empty END_TURN. A `length` (or other non-`stop`/`tool_calls`/
+  `content_filter`) finish reason, or an iteration with no text and no tool calls, triggers
+  exactly one continuation pass:the partial text (if any) is kept, ALL tool calls (including complete ones) are dropped
+  and never executed - the model re-issues them
+  after the continuation -, a synthetic user "continue" prompt is appended, and the retry
+  runs even when the tool-iteration budget is exhausted. A second truncation/empty
+  completion ends the turn with an honest "response interrupted" note (+ `end_turn`,
+  no exception); `content_filter` ends immediately with a "blocked by content filtering"
+  note (never retried). Both cases log to stderr (`warn` on first, `error` when still
+  broken) so the problem stays visible. Replay renders the synthetic "continue" user
+  message as a normal bubble (accepted).
+  Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
+  UUIDv7 `messageId` (time-ordered, `com.github.f4b6a3:uuid-creator`; fresh per iteration) so
+  clients group the iteration's reasoning and reply into a single message; pinned e2e at
+  the decoded-object and raw-wire level. **Pitfall**: the `messageId` RFD's "unique per message" is still violated by
+  sharing one
+  id across the distinct `agent_message` and `agent_thought` streams of the same iteration -
+  deliberate v1 choice so reasoning folds into the message block it belongs to. v2 makes
+  `messageId` mandatory and keys whole `agent_message`/`agent_thought` messages by it, so
+  this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
+  runtime is upgraded.
+  Requests carry app attribution headers (`HTTP-Referer`
+  + `X-OpenRouter-Title`).
+- **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
+  disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
+  median endpoint completion price}` (USD per million tokens,
+  `providerrouting/ProviderRouting.kt`, lazy per-model cache); fail-open: fetch/parse failure
+  or empty feed omits the `provider` field; disabled routing never fetches endpoints.
+- **Prompt capabilities**: advertises `image` + `embeddedContext` (no `audio`). Image blocks
+  become base64 data URIs (mime default `image/png`) only when the model's
+  `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
+  are inlined as `Resource <uri>:\n<text>`, blob/audio degrade to placeholders,
+  `resource_link` renders as a markdown link (`contentBlocksToLlmContentTopLevel` in
+  `agent/AgentSessionImpl.kt`).
+- **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
+  `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
+  missing file ignored, read errors logged and never fail the turn (`agent/AgentsMd.kt`).
+- **`$/cancel_request`**: handled natively by the SDK in both directions; a cancelled
+  `session/request_permission` dismisses the client's prompt, and `shouldAllow` rethrows
+  `CancellationException` instead of swallowing it into a bogus "Permission denied". A
+  cancelled turn also terminates a running bash command (interruptible wait +
+  process-tree kill), so `session/cancel` does not leave orphans behind.
+  Cancellation must **propagate out of tool execution**; it is centralized in
+  `executeSafely` (`tools/Tool.kt`): every tool body runs through this wrapper (`runShellCommand` routes the `bash`/
+  `run` tools through it, `ToolCallExecutor`
+  wraps `tool.execute` with it), which rethrows `CancellationException` before the
+  generic catch. A swallowing tool turns `session/cancel` into a bogus failed
+  `ToolResult`; the wrapper makes that structurally impossible for the tool bodies (the remaining manual rethrows are
+  the inner best-effort pre-reads:
+  `writeResultDiff` in `WriteFileTool.kt`; #29 tracks `delete_file`'s `deleteResultDiff`,
+  which still swallows). Same contract for the fs-proxy file tools (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with
+  the client fs proxy their
+  `FileStore` calls are suspending RPCs; #28, fixed 2026-09-24, incl. the inner
+  `writeResultDiff` pre-read catch). Testing this swallow needs an outcome-capture
+  detector, not `Deferred.isCancelled` — a `cancelAndJoin`ed deferred is
+  `isCancelled` even when the body swallowed and returned a value (`BashToolTest`/`RunToolTest` "cancelling the tool
+  during a running command"
+  and `FileToolCancelTest` "executeSafely rethrows cancellation"
+  tests; verified to fail with the bug re-introduced). Today the SDK's
+  `SafeCollector.emit` (`currentContext.ensureActive()`) masks a swallowed
+  cancellation before the bogus `ToolCallUpdate(FAILED)` is emitted, so the
+  end-to-end symptom is latent, not observed.
+- **Docker sandbox**: CI-built (`build-image.yml`) image on
+  `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
+  builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
+  The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
+  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
+  home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
+  `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
+  home tmpfs/named volume would shadow it anyway, so runc would create the deep
+  bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
+  root-owned inside the container and the agent uid could not write anything else
+  under `~/.local`. The state/store binds land on top of these tmpfs mounts (moby
+  composes all mounts shallowest-first into the OCI spec and runc mounts in that
+  order, so CLI argv order is irrelevant - the launcher still emits them in argv
+  order), pinned by the shell suite; non-root user matching host UID/GID,
+  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables) when the tool's env var (absolute; created if
+  missing) points at a custom dir or the host default dir already
+  exists (never created) - mounted at the tool's in-container default with the env var
+  pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
+  ...), host Android SDK shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
+  else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
+  default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;
+  a set-but-unusable var - relative, `/`, missing dir - fails loudly before any
+  `docker run`; when the SDK lies inside the project dir the mount is skipped and
+  the pins keep the host path, since the project is mounted at the identical path),
+  host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
+  host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
+  `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
+  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded (the API key excepted: it
+  is staged as a `0600` file or taken from
+  `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
+  the path in the container env; the staged copy and the `.env.local` mask are removed by
+  an EXIT trap, which is why the launcher does not `exec` docker),
+  host `.env.local` masked, git identity forwarded. Optional extra host paths
+  (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
+  identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
+  `:rw`; dirs or single files; absolute, must exist, relative paths / `/` are
+  rejected loudly); the launcher injects the *effective* extras as
+  `ACP_EXTRA_MOUNTS` so the agent treats them as read-trusted (skipped entries -
+  inside the project dir/home/tmpfs - are never trusted). Extras are emitted before every built-in mount and sorted
+  shallowest-first, so built-ins and later, deeper mounts shadow shallower ones (mounting a CWD parent ro works; the
+  project dir itself stays rw); entries inside
+  the project dir or container home are skipped with a warning. Extras:
+  `ACP_DOCKER_NETWORK`, `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
+  local builds via `./build-docker`. Launcher output is stderr-only - ACP travels over the container
+  stdin/stdout.
 
 ## Testing
 

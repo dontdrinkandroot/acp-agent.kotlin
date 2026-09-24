@@ -204,32 +204,29 @@ internal object ProcessRunner {
 
 /**
  * Runs [command] via [ProcessRunner] and renders the result text shared by the
- * `bash` and `run` tools. A cancelled turn (`session/cancel`) rethrows the
- * [CancellationException] — it must abort the tool call, never surface as a
- * bogus failed tool result; every other failure still becomes an error
- * [ToolResult] with the exception message.
+ * `bash` and `run` tools. Failure conversion is centralized in
+ * [executeSafely]: a cancelled turn (`session/cancel`) rethrows and aborts the
+ * tool call (never a bogus failed tool result), every other failure becomes an
+ * error [ToolResult] prefixed with [failureLabel].
  */
-internal suspend fun runShellCommand(command: String, context: ToolContext, failureLabel: String): ToolResult = try {
-    val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
-    val output = buildString {
-        if (result.timedOut) {
-            append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")
+internal suspend fun runShellCommand(command: String, context: ToolContext, failureLabel: String): ToolResult =
+    executeSafely(failureLabel) {
+        val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
+        val output = buildString {
+            if (result.timedOut) {
+                append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")
+            }
+            if (result.stdout.isNotBlank()) append(result.stdout)
+            if (result.stderr.isNotBlank()) {
+                if (isNotEmpty()) append("\n")
+                append("STDERR:\n").append(result.stderr)
+            }
         }
-        if (result.stdout.isNotBlank()) append(result.stdout)
-        if (result.stderr.isNotBlank()) {
-            if (isNotEmpty()) append("\n")
-            append("STDERR:\n").append(result.stderr)
-        }
+        ToolResult(
+            text = if (output.isBlank()) "(no output, exit ${result.exitCode})" else output,
+            isError = result.exitCode != 0 || result.timedOut,
+        )
     }
-    ToolResult(
-        text = if (output.isBlank()) "(no output, exit ${result.exitCode})" else output,
-        isError = result.exitCode != 0 || result.timedOut,
-    )
-} catch (e: CancellationException) {
-    throw e
-} catch (e: Exception) {
-    ToolResult("$failureLabel: ${e.message}", true)
-}
 
 public class BashTool : AgentTool {
     override val name = "bash"

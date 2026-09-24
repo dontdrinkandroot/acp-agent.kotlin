@@ -38,20 +38,20 @@ public class MoveDirectoryTool : AgentTool {
             ?: return ToolResult(arguments.argError("destination"), true)
         val source = absoluteToolPath(context.cwd, rawSource)
         val destination = absoluteToolPath(context.cwd, rawDestination)
-        return runCatching {
+        return executeSafely("Move failed") {
             val fs = SystemFileSystem
             val sourcePath = Path(source)
             val meta = fs.metadataOrNull(sourcePath)
-                ?: return@runCatching ToolResult("Source not found: $source", true)
-            if (!meta.isDirectory) return@runCatching ToolResult(
+                ?: return@executeSafely ToolResult("Source not found: $source", true)
+            if (!meta.isDirectory) return@executeSafely ToolResult(
                 "Source is not a directory: $source (use move_file)",
                 true
             )
             val destinationPath = Path(destination)
-            if (fs.exists(destinationPath)) return@runCatching ToolResult("Destination exists: $destination", true)
+            if (fs.exists(destinationPath)) return@executeSafely ToolResult("Destination exists: $destination", true)
             fs.createDirectories(destinationPath.parent ?: Path("."))
             movePath(sourcePath, destinationPath)
             ToolResult("Moved directory $source to $destination")
-        }.getOrElse { ToolResult("Move failed: ${it.message}", true) }
+        }
     }
 }

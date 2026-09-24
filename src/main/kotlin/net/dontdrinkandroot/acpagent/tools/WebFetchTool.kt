@@ -1,7 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -43,17 +42,9 @@ public class WebFetchTool : AgentTool {
         if (maxLines != null && (maxLines < 1 || maxLines > MAX_LINES)) {
             return ToolResult("'maxLines' must be between 1 and $MAX_LINES", true)
         }
-        return try {
+        return executeSafely("Fetch failed") {
             val result = WebFetcher.fetch(url, allowPrivate = context.webFetchAllowPrivate)
             formatLines(result, (startLine ?: 1L).toInt(), (maxLines ?: DEFAULT_LINES).toInt())
-        } catch (e: CancellationException) {
-            // A cancelled turn (session/cancel) must abort the fetch, not
-            // surface as a bogus tool error and continue the turn.
-            throw e
-        } catch (e: WebFetchException) {
-            ToolResult(e.message ?: "fetch failed", true)
-        } catch (e: Exception) {
-            ToolResult("Fetch failed: ${e.message}", true)
         }
     }
 

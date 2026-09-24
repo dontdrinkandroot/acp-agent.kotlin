@@ -1,7 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 
 public class ReadFileTool : AgentTool {
@@ -40,7 +39,7 @@ public class ReadFileTool : AgentTool {
         if (limit < 1 || limit > MAX_READ_LIMIT) {
             return ToolResult("'limit' must be between 1 and $MAX_READ_LIMIT", true)
         }
-        return try {
+        return executeSafely("Read failed") {
             val start = line?.toInt() ?: 1
             val read = context.fileStore.readFile(path, line?.toInt(), limit.toInt())
             if (read.complete) {
@@ -52,13 +51,6 @@ public class ReadFileTool : AgentTool {
                 // range and where to continue.
                 ToolResult(formatRead(read.content, start, read.total, footer = true))
             }
-        } catch (e: CancellationException) {
-            // A cancelled turn (session/cancel) must abort the call — the fs
-            // proxy's read is a suspending RPC — never surface as a bogus
-            // tool error and continue the turn.
-            throw e
-        } catch (e: Exception) {
-            ToolResult("Read failed: ${e.message}", true)
         }
     }
 

@@ -22,11 +22,11 @@ public class ListDirTool : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
-        return runCatching {
+        return executeSafely("List failed") {
             val fs = SystemFileSystem
             val dir = Path(path)
             val meta = fs.metadataOrNull(dir)
-            if (meta == null || !meta.isDirectory) return@runCatching ToolResult("Not a directory: $path", true)
+            if (meta == null || !meta.isDirectory) return@executeSafely ToolResult("Not a directory: $path", true)
             val sorted = fs.list(dir)
                 .filterNot { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) != null }
                 .map { it.name }
@@ -37,7 +37,7 @@ public class ListDirTool : AgentTool {
             } else {
                 ToolResult(listing)
             }
-        }.getOrElse { ToolResult("List failed: ${it.message}", true) }
+        }
     }
 }
 

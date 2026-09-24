@@ -9,7 +9,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * A [FileStore] double whose suspending calls park until the coroutine is
@@ -52,7 +54,8 @@ private class SuspendingStore(val entered: CompletableDeferred<Unit>) : FileStor
  * calls are suspending RPCs with the client proxy, so a swallowed
  * CancellationException would surface as a bogus failed ToolResult instead
  * of ending the turn cancelled (issue #28). This covers the tool-level
- * catches and the inner one on the write path ([writeResultDiff]'s pre-read).
+ * catches — centralized in [executeSafely] — and the inner one on the write
+ * path ([writeResultDiff]'s pre-read).
  *
  * The captured outcome distinguishes swallow from propagate: a swallowing
  * body returns a ToolResult (no suspension point after the catch), a
@@ -89,6 +92,28 @@ class FileToolCancelTest {
         }
         job.cancelAndJoin()
         assertNull(outcome, "cancellation must propagate; the tool must not return a failed result, got: $outcome")
+    }
+
+    @Test
+    fun `executeSafely rethrows cancellation instead of returning a failed result`() {
+        val store = SuspendingStore(CompletableDeferred()).apply { suspendReadRaw = true }
+        // Regression: the centralized wrapper is the single failure-conversion
+        // point for every tool body; it must keep rethrowing CancellationException
+        // (the per-tool catches it replaced did) instead of converting it into a
+        // bogus failed ToolResult.
+        runCancelled(store) {
+            executeSafely("Wrapper failed") {
+                store.readRaw("/nonexistent")
+                ToolResult("(not reached)")
+            }
+        }
+    }
+
+    @Test
+    fun `executeSafely converts a failing body into an error result`() = runBlocking {
+        val result = executeSafely("Wrapper failed") { error("boom") }
+        assertTrue(result.isError)
+        assertEquals("Wrapper failed: boom", result.text)
     }
 
     @Test

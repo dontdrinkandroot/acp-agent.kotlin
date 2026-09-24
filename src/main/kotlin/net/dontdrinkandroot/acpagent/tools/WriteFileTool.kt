@@ -43,17 +43,10 @@ public class WriteFileTool : AgentTool {
         val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
         if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         val content = arguments.stringArg("content") ?: return ToolResult(arguments.argError("content"), true)
-        return try {
+        return executeSafely("Write failed") {
             val diff = writeResultDiff(path, content, context)
             context.fileStore.writeFile(path, content)
             ToolResult("Written $path", diff = diff)
-        } catch (e: CancellationException) {
-            // A cancelled turn (session/cancel) must abort the call — the fs
-            // proxy's write is a suspending RPC — never surface as a bogus
-            // tool error and continue the turn.
-            throw e
-        } catch (e: Exception) {
-            ToolResult("Write failed: ${e.message}", true)
         }
     }
 }
