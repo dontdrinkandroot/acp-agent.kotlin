@@ -75,8 +75,7 @@ internal class ToolCallExecutor(
         }
 
         val arguments = parseArguments(call.arguments)
-        emit(
-            emitter,
+        emitter.emit(
             Event.SessionUpdateEvent(
                 SessionUpdate.ToolCall(
                     toolCallId = toolCallId,
@@ -103,11 +102,10 @@ internal class ToolCallExecutor(
         }
 
         val result = executeSafely("Tool ${tool.name} failed") {
-            tool.execute(parseArguments(call.arguments), toolContext)
+            tool.execute(arguments, toolContext)
         }
 
-        emit(
-            emitter,
+        emitter.emit(
             Event.SessionUpdateEvent(
                 SessionUpdate.ToolCallUpdate(
                     toolCallId = toolCallId,
@@ -121,10 +119,6 @@ internal class ToolCallExecutor(
         state.appendToHistory(OpenAIMessage.Tool(Content.Text(result.text), toolCallId = call.id))
     }
 
-    private suspend fun emit(emitter: FlowCollector<Event>, event: Event) {
-        emitter.emit(event)
-    }
-
     private suspend fun emitDenied(
         emitter: FlowCollector<Event>,
         toolCallId: ToolCallId,
@@ -132,8 +126,7 @@ internal class ToolCallExecutor(
         message: String,
         rawOutput: JsonPrimitive? = null,
     ) {
-        emit(
-            emitter,
+        emitter.emit(
             Event.SessionUpdateEvent(
                 SessionUpdate.ToolCallUpdate(
                     toolCallId = toolCallId,
@@ -221,7 +214,10 @@ internal class ToolCallExecutor(
 /**
  * Parses a tool-call argument JSON string into an object. Malformed or
  * non-object arguments degrade to `{"arguments": "<raw>"}` so a bad call still
- * produces a tool error instead of crashing the turn.
+ * produces a tool error instead of crashing the turn. `ToolCallExecutor`
+ * parses exactly once per call and passes the object to title, permission and
+ * execution alike, so the arguments a permission decision approved are
+ * structurally the arguments the tool receives.
  */
 internal fun parseArguments(arguments: String): JsonObject {
     return runCatching { ACPJson.parseToJsonElement(arguments) as? JsonObject }

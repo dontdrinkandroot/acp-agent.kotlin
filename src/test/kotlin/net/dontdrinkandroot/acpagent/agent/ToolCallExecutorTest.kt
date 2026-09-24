@@ -169,6 +169,56 @@ class ToolCallExecutorTest {
     }
 
     @Test
+    fun `the tool receives exactly the arguments the permission flow saw`() = runBlocking {
+        val received = mutableListOf<JsonObject>()
+        val tool = object : RecordingTool("capture", false) {
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
+                received += arguments
+                return ToolResult("done")
+            }
+        }
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor("/project", registry, state())
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", """{"path":"/project/a.txt","n":2}"""))
+
+        // The executor parses once: the object handed to the tool is the same
+        // one the title, locations and permission decision consumed (the
+        // permission identity "the touched file is the approved file" must not
+        // depend on a second parse agreeing by chance).
+        assertEquals(
+            listOf<JsonObject>(buildJsonObject {
+                put("path", kotlinx.serialization.json.JsonPrimitive("/project/a.txt"))
+                put("n", kotlinx.serialization.json.JsonPrimitive(2))
+            }),
+            received,
+        )
+    }
+
+    @Test
+    fun `malformed arguments degrade to the wrapped form the tool receives`() = runBlocking {
+        val received = mutableListOf<JsonObject>()
+        val tool = object : RecordingTool("capture", false) {
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
+                received += arguments
+                return ToolResult("done")
+            }
+        }
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor("/project", registry, state())
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", "not json"))
+
+        assertEquals(
+            "not json",
+            received.single()["arguments"]?.jsonPrimitive?.content,
+            "malformed arguments must degrade to {\"arguments\": \"<raw>\"}",
+        )
+    }
+
+    @Test
     fun `the same executor serves calls with different modes independently`() = runBlocking {
         val gated = object : RecordingTool("gated", false) {
             override val modes: List<SessionModeId> = listOf(SessionModeId("bash"))
