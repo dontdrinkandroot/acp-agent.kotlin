@@ -63,11 +63,8 @@ public class WebFetchTool : AgentTool {
             return ToolResult("startLine $start is past the end of the content (${all.size} lines)", true)
         }
         val window = all.drop(start - 1).take(limit)
-        val truncated = window.map { line ->
-            if (line.length > MAX_LINE_CHARS) line.take(MAX_LINE_CHARS) + TRUNCATED_LINE_SUFFIX else line
-        }
-        val body = truncated.mapIndexed { index, line ->
-            "${(start + index).toString().padStart(4)}│$line"
+        val body = window.mapIndexed { index, line ->
+            "${(start + index).toString().padStart(4)}│${truncateLine(line)}"
         }.joinToString("\n")
         val complete = start + window.size - 1 >= all.size
         val text = if (complete) {
@@ -82,7 +79,5 @@ public class WebFetchTool : AgentTool {
     private companion object {
         const val MAX_LINES = 2000
         const val DEFAULT_LINES = 500
-        const val MAX_LINE_CHARS = 2000
-        const val TRUNCATED_LINE_SUFFIX = "... [truncated]"
     }
 }

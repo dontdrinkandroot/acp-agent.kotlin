@@ -79,9 +79,7 @@ internal class LocalFileStore : FileStore {
                 if (lineNumber < startLine || (limit != null && lineNumber >= startLine + limit)) continue
                 if (windowLineCount > 0) selected.append('\n')
                 if (text.length > MAX_LINE_CHARS) {
-                    // Per-line cap: a huge single-line file (minified bundle,
-                    // generated JSON) must not flood the context; the marker
-                    // tells the model the line was shortened.
+                    // Per-line cap: see [truncateLine].
                     selected.append(text, 0, MAX_LINE_CHARS)
                     selected.append(TRUNCATED_LINE_SUFFIX)
                 } else {
@@ -121,18 +119,10 @@ internal class LocalFileStore : FileStore {
 
     internal companion object {
         const val MAX_FILE_SIZE_BYTES: Long = 20L * 1024 * 1024
-        const val MAX_LINE_CHARS = 2000
-        const val TRUNCATED_LINE_SUFFIX = "... [truncated]"
 
         fun fileTooLargeMessage(bytes: Long): String =
             "file too large (${formatBytes(bytes)}; limit ${formatBytes(MAX_FILE_SIZE_BYTES)}); " +
                     "use bash (e.g. grep/head/tail) to inspect it"
-
-        private fun formatBytes(bytes: Long): String = when {
-            bytes >= 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
-            bytes >= 1024 -> "${bytes / 1024} KB"
-            else -> "$bytes bytes"
-        }
     }
 }
 
@@ -264,3 +254,14 @@ internal open class FileStoreException(message: String) : Exception(message)
 
 /** Raised by [FileStore.readRaw] when the file exceeds the size cap. */
 internal class FileTooLargeException(message: String) : FileStoreException(message)
+
+/**
+ * The shared per-line cap for rendered tool output (read_file, web_fetch):
+ * a huge single line (minified bundle, generated JSON) must not flood the
+ * context; the marker tells the model the line was shortened.
+ */
+internal const val MAX_LINE_CHARS = 2000
+internal const val TRUNCATED_LINE_SUFFIX = "... [truncated]"
+
+internal fun truncateLine(line: String): String =
+    if (line.length > MAX_LINE_CHARS) line.take(MAX_LINE_CHARS) + TRUNCATED_LINE_SUFFIX else line

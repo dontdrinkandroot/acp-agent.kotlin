@@ -1,9 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.*
 
 /**
  * The JSON Schema type of a tool parameter.
@@ -64,21 +61,21 @@ internal fun optional(
 internal fun jsonSchema(vararg props: Prop): JsonObject {
     val ordered = props.sortedBy { !it.required }
     return buildJsonObject {
-        put("type", JsonPrimitive("object"))
+        put("type", "object")
         put("properties", buildJsonObject {
             ordered.forEach { prop -> put(prop.name, propSchema(prop)) }
         })
         putJsonArray("required") {
-            ordered.filter { it.required }.forEach { add(JsonPrimitive(it.name)) }
+            ordered.filter { it.required }.forEach { add(it.name) }
         }
     }
 }
 
 private fun propSchema(prop: Prop): JsonObject = buildJsonObject {
-    put("type", JsonPrimitive(prop.type.wireValue))
-    prop.description?.let { put("description", JsonPrimitive(it)) }
+    put("type", prop.type.wireValue)
+    prop.description?.let { put("description", it) }
     prop.enumValues?.let { values ->
-        putJsonArray("enum") { values.forEach { add(JsonPrimitive(it)) } }
+        putJsonArray("enum") { values.forEach { add(it) } }
     }
     prop.items?.let { put("items", it) }
 }
@@ -98,8 +95,4 @@ internal fun jsonSchemaProperty(
     propSchema(Prop(name = "", type = type, description = description, enumValues = enumValues, items = items))
 
 private val PropType.wireValue: String
-    get() = when (this) {
-        PropType.STRING -> "string"
-        PropType.INTEGER -> "integer"
-        PropType.ARRAY -> "array"
-    }
+    get() = name.lowercase()

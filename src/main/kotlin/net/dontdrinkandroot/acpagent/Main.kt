@@ -37,20 +37,22 @@ public fun runAgent(args: Array<String>) {
     val sessionStore = SessionStore()
 
     val localRegistry = ToolRegistry().apply {
-        register(ReadFileTool())
-        register(WriteFileTool())
-        register(EditFileTool())
-        register(MoveFileTool())
-        register(MoveDirectoryTool())
-        register(DeleteFileTool())
-        register(DeleteDirectoryTool())
-        register(ListDirTool())
-        register(GlobTool())
-        register(GrepTool())
-        register(BashTool())
-        register(WebFetchTool())
-        register(UpdatePlanTool())
-        register(GetCurrentModeTool())
+        listOf(
+            ReadFileTool(),
+            WriteFileTool(),
+            EditFileTool(),
+            MoveFileTool(),
+            MoveDirectoryTool(),
+            DeleteFileTool(),
+            DeleteDirectoryTool(),
+            ListDirTool(),
+            GlobTool(),
+            GrepTool(),
+            BashTool(),
+            WebFetchTool(),
+            UpdatePlanTool(),
+            GetCurrentModeTool(),
+        ).forEach(::register)
     }
 
     suspend fun assembleSession(

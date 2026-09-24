@@ -18,8 +18,8 @@ public class ToolRegistry {
     public fun all(): List<AgentTool> = tools.values.toList()
 
     public fun availableForMode(mode: SessionModeId): List<AgentTool> =
-        tools.values.filter { it.modes.isEmpty() || it.modes.any { m -> m.value == mode.value } }
+        tools.values.filter { it.modes.isEmpty() || mode in it.modes }
 
     public fun disabledInMode(name: String, mode: SessionModeId): AgentTool? =
-        tools[name]?.takeIf { it.modes.isNotEmpty() && it.modes.none { m -> m.value == mode.value } }
+        tools[name]?.takeIf { it.modes.isNotEmpty() && mode !in it.modes }
 }

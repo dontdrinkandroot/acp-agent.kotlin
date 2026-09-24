@@ -1,17 +1,16 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import ai.koog.prompt.executor.clients.openai.base.models.*
-import com.agentclientprotocol.agent.client
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.github.f4b6a3.uuid.UuidCreator
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonElement
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
+import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
@@ -26,14 +25,14 @@ private val logger = KotlinLogging.logger {}
  * executed sequentially by [ToolCallExecutor].
  *
  * Truncated or empty completions (a `length` finish reason, or an iteration
- * with no text and no tool calls) are recovered from once per turn:the partial
+ * with no text and no tool calls) are recovered from once per turn: the partial
  * text (if any) is kept, all tool calls are dropped (never executed —the
  * model re-issues them after the continuation), a synthetic user "continue"
  * prompt is appended, and the loop runs one more iteration. A second
  * truncation ends the turn with an honest text note instead of an error dialog.
 
 
- * A `content_filter` finish reason is not retried:the turn ends immediately
+ * A `content_filter` finish reason is not retried: the turn ends immediately
  * with the partial text and a notice. Both cases are logged to stderr
  * (with the full unfiltered completion) so the problem stays visible.
  * Transport-level failures (a stream ending without
@@ -103,7 +102,7 @@ internal class PromptRunner(
 
                 iteration.truncated -> {
                     logAbnormalEnd(iteration, "survived the retry")
-                    val note = "The response was interrupted before completion;the task may need a new prompt."
+                    val note = INTERRUPTED_NOTE
                     state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
                     state.persist()
                     emitUsageUpdate(usage)
@@ -170,7 +169,7 @@ internal class PromptRunner(
 
         if (windDown.truncated) {
             logAbnormalEnd(windDown, "in the wind-down pass")
-            val note = "The response was interrupted before completion;the task may need a new prompt."
+            val note = INTERRUPTED_NOTE
             state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
             emitTextChunk(emitter, note, newMessageId())
             state.persist()
@@ -190,7 +189,7 @@ internal class PromptRunner(
      * thought chunks, text as message chunks (accumulating the reply)and
      * tool-call deltas merged into a per-index accumulator. Every non-null
      * content and reasoning delta is additionally accumulated unfiltered
-     * (empty included) so abnormal completions can be logged verbatim;the
+     * (empty included) so abnormal completions can be logged verbatim; the
      * first choice's last non-null finish reasons are captured so the caller can
      * distinguish a truncated or blocked completion from a natural stop. (OpenRouter
      * repeats the reason in the final chunk, so the last value is authoritative.)
@@ -221,35 +220,22 @@ internal class PromptRunner(
             chunk.choices.firstOrNull()?.let { choice ->
                 choice.finishReason?.let { finishReason = it }
                 choice.nativeFinishReason?.let { nativeFinishReason = it }
-                choice.delta.reasoning?.let { reasoning ->
-                    reasoningSeen = true
-                    rawReasoning.append(reasoning)
-                    if (reasoning.isNotEmpty()) {
-                        emitter.emit(
-                            Event.SessionUpdateEvent(
-                                SessionUpdate.AgentThoughtChunk(
-                                    ContentBlock.Text(reasoning),
-                                    messageId
-                                )
-                            )
-                        )
-                    }
-                }
+
+                // Reasoning and reply deltas differ only in their accumulation
+                // buffer, seen-flag and relay target; relay them identically.
+                relayDeltas(
+                    emitter, messageId,
+                    delta = choice.delta.reasoning,
+                    raw = rawReasoning,
+                    mark = { reasoningSeen = true },
+                ) { text -> SessionUpdate.AgentThoughtChunk(ContentBlock.Text(text), messageId) }
                 choice.delta.reasoningDetails?.let { reasoningDetailsAccum += it }
-                choice.delta.content?.let { chunkText ->
-                    contentSeen = true
-                    rawContent.append(chunkText)
-                    if (chunkText.isNotEmpty()) {
-                        emitter.emit(
-                            Event.SessionUpdateEvent(
-                                SessionUpdate.AgentMessageChunk(
-                                    ContentBlock.Text(chunkText),
-                                    messageId
-                                )
-                            )
-                        )
-                    }
-                }
+                relayDeltas(
+                    emitter, messageId,
+                    delta = choice.delta.content,
+                    raw = rawContent,
+                    mark = { contentSeen = true },
+                ) { text -> SessionUpdate.AgentMessageChunk(ContentBlock.Text(text), messageId) }
                 choice.delta.toolCalls?.forEach { tc ->
                     val acc = toolCallAccum.getOrPut(tc.index) { MutableStreamToolCall() }
                     tc.id?.takeIf { it.isNotBlank() }?.let { acc.id = it }
@@ -277,10 +263,10 @@ internal class PromptRunner(
 
      */
     private suspend fun emitUsageUpdate(usage: OpenAIUsage?) {
-        val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
+        val client = clientOrNull() ?: return
         val used = usage?.promptTokens ?: return
         if (used <= 0) return
-        val size = models.firstOrNull { it.id == state.currentModel }?.contextLength ?: return
+        val size = models.forModel(state.currentModel)?.contextLength ?: return
         if (size <= 0) return
         client.notify(SessionUpdate.UsageUpdate(used = used.toLong(), size = size.toLong()))
     }
@@ -294,6 +280,28 @@ internal class PromptRunner(
         )
     }
 
+    /**
+     * Relays one delta stream (reasoning or reply): accumulates the raw text
+     * (empty deltas included, for the verbatim abnormal-completion log) and
+     * emits every non-empty delta as a session update built by [update].
+     */
+    private suspend fun relayDeltas(
+        emitter: FlowCollector<Event>,
+        messageId: MessageId,
+        delta: String?,
+        raw: StringBuilder,
+        mark: () -> Unit,
+        update: (String) -> SessionUpdate,
+    ) {
+        delta?.let { text ->
+            mark()
+            raw.append(text)
+            if (text.isNotEmpty()) {
+                emitter.emit(Event.SessionUpdateEvent(update(text)))
+            }
+        }
+    }
+
     private class MutableStreamToolCall {
         var id: String = ""
         var name: String = ""
@@ -303,10 +311,10 @@ internal class PromptRunner(
 }
 
 /**
- * One streamed chat completion:the accumulated unfiltered deltas, the
+ * One streamed chat completion: the accumulated unfiltered deltas, the
  * finish reasons and usage. [rawContent]/[rawReasoning] are null when the
  * provider sent no such delta at all, "" when it sent only empty ones, and
- * the concatenated text otherwise;so an empty-but-present field stays
+ * the concatenated text otherwise; so an empty-but-present field stays
  * distinguishable from an absent one. [text] is the usable content;
  * [renderLog] dumps everything verbatim for abnormal-completion diagnostics.
 
@@ -381,6 +389,10 @@ private const val WIND_DOWN_PROMPT =
     "The per-prompt tool iteration limit has been reached. Summarize what has been accomplished " +
             "so far and what remains to be done; do not call any tools."
 
+/** Shown to the user when a completion was cut off and no retry is left. */
+private const val INTERRUPTED_NOTE =
+    "The response was interrupted before completion; the task may need a new prompt."
+
 private const val CONTINUE_TRUNCATED_PROMPT =
     "Your previous response was cut off before it was complete. Continue where you left off."
 
@@ -388,7 +400,7 @@ private const val CONTINUE_EMPTY_PROMPT =
     "Your previous response was empty. If the task is done, briefly say so; otherwise continue."
 
 /**
- * Mints a fresh [`MessageId`] for one LLM iteration:the reasoning deltas and the
+ * Mints a fresh [`MessageId`] for one LLM iteration: the reasoning deltas and the
  * assistant text of the same iteration share one id so the client groups them into a
  * single message, while consecutive iterations get distinct ids. UUIDv7 (time-ordered,
  * RFC 9562) so ids sort chronologically.

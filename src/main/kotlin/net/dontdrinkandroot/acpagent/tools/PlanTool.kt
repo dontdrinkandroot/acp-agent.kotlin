@@ -23,13 +23,10 @@ public class UpdatePlanTool : AgentTool {
             PropType.ARRAY,
             "Complete list of plan entries; send all entries on every call.",
             items = buildJsonObject {
-                put("type", JsonPrimitive("object"))
-                put("description", JsonPrimitive("A step in the execution plan."))
+                put("type", "object")
+                put("description", "A step in the execution plan.")
                 put("properties", buildJsonObject {
-                    put(
-                        "content",
-                        jsonSchemaProperty(PropType.STRING, "Description of the step.")
-                    )
+                    put("content", jsonSchemaProperty(PropType.STRING, "Description of the step."))
                     put(
                         "priority",
                         jsonSchemaProperty(
@@ -47,9 +44,7 @@ public class UpdatePlanTool : AgentTool {
                         )
                     )
                 })
-                putJsonArray("required") {
-                    REQUIRED_FIELDS.forEach { add(JsonPrimitive(it)) }
-                }
+                putJsonArray("required") { REQUIRED_FIELDS.forEach { add(it) } }
             },
         ),
     )

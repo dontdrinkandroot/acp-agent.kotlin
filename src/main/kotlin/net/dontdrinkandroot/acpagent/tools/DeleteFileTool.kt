@@ -4,7 +4,6 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
-import java.nio.file.Files
 
 /**
  * Deletes a file. The result carries the removed content as a diff so clients
@@ -41,7 +40,7 @@ public class DeleteFileTool : AgentTool {
             val meta = fs.metadataOrNull(target)
                 ?: return@executeSafely ToolResult("Path not found: $path", true)
             if (meta.isDirectory) return@executeSafely ToolResult("Is a directory: $path (use delete_directory)", true)
-            if (Files.isSymbolicLink(java.nio.file.Path.of(path))) {
+            if (isSymbolicLink(path)) {
                 return@executeSafely ToolResult("Refusing to delete a symlink: $path", true)
             }
             val diff = deleteResultDiff(path, context)

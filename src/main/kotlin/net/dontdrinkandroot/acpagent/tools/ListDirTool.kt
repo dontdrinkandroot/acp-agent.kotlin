@@ -23,22 +23,14 @@ public class ListDirTool : AgentTool {
         val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
         val path = absoluteToolPath(context.cwd, rawPath)
         return executeSafely("List failed") {
-            val fs = SystemFileSystem
             val dir = Path(path)
-            val meta = fs.metadataOrNull(dir)
+            val meta = SystemFileSystem.metadataOrNull(dir)
             if (meta == null || !meta.isDirectory) return@executeSafely ToolResult("Not a directory: $path", true)
-            val sorted = fs.list(dir)
-                .filterNot { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) != null }
+            val sorted = SystemFileSystem.list(dir)
+                .filter { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) == null }
                 .map { it.name }
                 .sorted()
-            val listing = sorted.take(MAX_LISTING_ENTRIES).joinToString("\n")
-            if (sorted.size > MAX_LISTING_ENTRIES) {
-                ToolResult("$listing\n...(${sorted.size - MAX_LISTING_ENTRIES} more entries omitted)")
-            } else {
-                ToolResult(listing)
-            }
+            ToolResult(formatCappedListing(sorted))
         }
     }
 }
-
-private const val MAX_LISTING_ENTRIES = 500

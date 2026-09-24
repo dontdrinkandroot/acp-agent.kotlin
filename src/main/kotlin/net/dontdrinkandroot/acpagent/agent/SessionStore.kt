@@ -4,9 +4,9 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.tools.moveAtomically
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
 
 internal const val SESSION_ID_PREFIX = "sess_"
@@ -43,12 +43,11 @@ internal class SessionStore(private val sessionsDir: Path) {
         require(isValidSessionId(id)) { "invalid session id \"$id\"" }
         Files.createDirectories(sessionsDir)
         applyPosixPermissions(sessionsDir, "rwx------")
-        val target = path(id)
         val temp = Files.createTempFile(sessionsDir, "session-", ".tmp")
         try {
             applyPosixPermissions(temp, "rw-------")
             Files.writeString(temp, llmWireJson.encodeToString(record))
-            moveAtomically(temp, target)
+            moveAtomically(temp, path(id))
         } finally {
             Files.deleteIfExists(temp)
         }
@@ -92,14 +91,6 @@ internal class SessionStore(private val sessionsDir: Path) {
     }
 
     private fun path(id: String): Path = sessionsDir.resolve("$id.json")
-
-    private fun moveAtomically(source: Path, target: Path) {
-        try {
-            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
-        }
-    }
 
     private fun applyPosixPermissions(path: Path, permissions: String) {
         runCatching {

@@ -27,18 +27,23 @@ public data class Config(
         private const val DEFAULT_BASH_TIMEOUT_SECONDS = 600
         private const val DEFAULT_MAX_TURN_REQUESTS = 100
 
+        /** True unless the env var is set to exactly `0`. */
+        private fun Map<String, String>.flag(name: String): Boolean = this[name] != "0"
+
+        /** The env var parsed as an int, or [default]; clamped to >= 1. */
+        private fun Map<String, String>.positiveInt(name: String, default: Int): Int =
+            (this[name]?.toIntOrNull() ?: default).coerceAtLeast(1)
+
         public fun fromEnv(env: Map<String, String> = platformEnv()): Config {
             return Config(
                 openRouterApiKey = resolveApiKey(env),
                 openRouterModel = env["OPENROUTER_MODEL"] ?: DEFAULT_MODEL,
                 openRouterBaseUrl = env["OPENROUTER_BASE_URL"] ?: DEFAULT_BASE_URL,
-                autoThroughputSortingEnabled = env["OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED"] != "0",
-                fsProxyEnabled = env["FS_PROXY_ENABLED"] != "0",
-                mcpTrustAnnotations = env["MCP_TRUST_ANNOTATIONS"] != "0",
-                bashTimeoutSeconds = (env["ACP_BASH_TIMEOUT_SECONDS"]?.toIntOrNull()
-                    ?: DEFAULT_BASH_TIMEOUT_SECONDS).coerceAtLeast(1),
-                maxTurnRequests = (env["ACP_MAX_TURN_REQUESTS"]?.toIntOrNull()
-                    ?: DEFAULT_MAX_TURN_REQUESTS).coerceAtLeast(1),
+                autoThroughputSortingEnabled = env.flag("OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED"),
+                fsProxyEnabled = env.flag("FS_PROXY_ENABLED"),
+                mcpTrustAnnotations = env.flag("MCP_TRUST_ANNOTATIONS"),
+                bashTimeoutSeconds = env.positiveInt("ACP_BASH_TIMEOUT_SECONDS", DEFAULT_BASH_TIMEOUT_SECONDS),
+                maxTurnRequests = env.positiveInt("ACP_MAX_TURN_REQUESTS", DEFAULT_MAX_TURN_REQUESTS),
                 webFetchAllowPrivate = env["ACP_WEB_FETCH_ALLOW_PRIVATE"] == "1",
                 extraMounts = parseExtraMounts(env["ACP_EXTRA_MOUNTS"]),
             )

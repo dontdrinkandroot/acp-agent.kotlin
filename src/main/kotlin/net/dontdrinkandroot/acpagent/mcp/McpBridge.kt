@@ -4,9 +4,11 @@ import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import net.dontdrinkandroot.acpagent.tools.AgentTool
@@ -26,9 +28,8 @@ public class McpServerConnection(
     public suspend fun callTool(toolName: String, arguments: JsonObject): McpCallResult {
         val argMap = arguments.toJsonValueMap()
         val result = client.callTool(name = toolName, arguments = argMap)
-        val content = result.content.mapNotNull { block ->
-            (block as? io.modelcontextprotocol.kotlin.sdk.types.TextContent)?.text
-        }.joinToString("\n")
+        val content = result.content.filterIsInstance<io.modelcontextprotocol.kotlin.sdk.types.TextContent>()
+            .joinToString("\n") { it.text }
         return McpCallResult(content, result.isError == true)
     }
 
@@ -113,11 +114,12 @@ private fun kotlinx.serialization.json.JsonElement.toAny(): Any? = when (this) {
     is kotlinx.serialization.json.JsonNull -> null
     is JsonPrimitive -> when {
         isString -> content
-        content == "true" -> true
-        content == "false" -> false
-        content.toIntOrNull() != null -> content.toInt()
-        content.toDoubleOrNull() != null -> content.toDouble()
-        else -> content
+        else -> contentOrNull?.let { content ->
+            content.toBooleanStrictOrNull()
+                ?: content.toIntOrNull()
+                ?: content.toDoubleOrNull()
+                ?: content
+        }
     }
 
     is kotlinx.serialization.json.JsonObject -> toJsonValueMap()

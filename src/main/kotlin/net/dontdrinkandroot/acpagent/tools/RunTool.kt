@@ -8,8 +8,6 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.*
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 private val logger = KotlinLogging.logger {}
 
@@ -169,25 +167,8 @@ private fun runConfigEntryJson(command: String, description: String?): JsonObjec
     if (!description.isNullOrBlank()) put("description", JsonPrimitive(description.trim()))
 }
 
-private fun writeRunConfigRoot(cwd: String, root: JsonObject) {
-    val target = java.nio.file.Path.of(runConfigTarget(cwd))
-    Files.createDirectories(target.parent)
-    val temp = Files.createTempFile(target.parent, "run.json", ".tmp")
-    try {
-        Files.writeString(temp, runConfigJson.encodeToString(JsonObject.serializer(), root))
-        moveAtomically(temp, target)
-    } finally {
-        Files.deleteIfExists(temp)
-    }
-}
-
-private fun moveAtomically(source: java.nio.file.Path, target: java.nio.file.Path) {
-    try {
-        Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-        Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
-    }
-}
+private fun writeRunConfigRoot(cwd: String, root: JsonObject) =
+    writeAtomically(java.nio.file.Path.of(runConfigTarget(cwd)), runConfigJson.encodeToString(JsonObject.serializer(), root))
 
 /**
  * Runs a run configuration defined in `.ai/run.json` in the session working

@@ -4,6 +4,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+import java.util.Locale
 
 /**
  * Converts fetched HTTP content into the agent's line-oriented text model.
@@ -29,7 +30,7 @@ internal object WebContentConverter {
     )
 
     internal fun isHtml(contentType: String): Boolean {
-        val mime = contentType.substringBefore(';').trim().lowercase()
+        val mime = contentType.substringBefore(';').trim().lowercase(Locale.ROOT)
         return mime in HTML_MIME_TYPES || mime.endsWith("+xml")
     }
 

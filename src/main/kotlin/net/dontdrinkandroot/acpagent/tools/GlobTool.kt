@@ -1,7 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
@@ -33,11 +32,10 @@ public class GlobTool : AgentTool {
         val pattern = arguments.stringArg("pattern") ?: return ToolResult(arguments.argError("pattern"), true)
         return executeSafely("Glob failed") {
             val regex = globToRegex(pattern)
-            val fs = SystemFileSystem
             val base = Path(root)
-            if (!fs.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
+            if (!SystemFileSystem.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
             val results = mutableListOf<String>()
-            walk(fs, base, 0) { f ->
+            walk(base, 0) { f ->
                 if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) return@walk
                 val rel = relativeToRoot(root, f.toString())
                 if (regex.matches(rel)) results += rel
@@ -47,7 +45,7 @@ public class GlobTool : AgentTool {
     }
 }
 
-private const val MAX_LISTING_ENTRIES = 500
+internal const val MAX_LISTING_ENTRIES = 500
 
 /**
  * Renders [results] as the capped listing convention shared by the
@@ -84,19 +82,18 @@ internal fun relativeToRoot(root: String, path: String): String {
  * depth (packed object files would flood a content search with binary noise).
  */
 internal fun walk(
-    fs: FileSystem,
     dir: Path,
     depth: Int,
     visit: (Path) -> Unit
 ) {
     if (depth > MAX_WALK_DEPTH) return
-    val entries = runCatching { fs.list(dir) }.getOrNull() ?: return
+    val entries = runCatching { SystemFileSystem.list(dir) }.getOrNull() ?: return
     for (entry in entries) {
-        if (isSymbolicLink(entry)) continue
+        if (isSymbolicLink(entry.toString())) continue
         if (entry.name == GIT_DIR) continue
-        val meta = fs.metadataOrNull(entry)
+        val meta = SystemFileSystem.metadataOrNull(entry)
         if (meta?.isDirectory == true) {
-            walk(fs, entry, depth + 1, visit)
+            walk(entry, depth + 1, visit)
         } else {
             visit(entry)
         }
@@ -105,9 +102,6 @@ internal fun walk(
 
 internal const val MAX_WALK_DEPTH = 64
 internal const val GIT_DIR = ".git"
-
-private fun isSymbolicLink(path: Path): Boolean =
-    runCatching { java.nio.file.Files.isSymbolicLink(java.nio.file.Path.of(path.toString())) }.getOrDefault(false)
 
 internal fun globToRegex(glob: String): Regex {
     val sb = StringBuilder("^")

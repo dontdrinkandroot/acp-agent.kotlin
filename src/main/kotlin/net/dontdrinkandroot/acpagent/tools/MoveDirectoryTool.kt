@@ -1,8 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.io.files.Path
-import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -32,26 +30,6 @@ public class MoveDirectoryTool : AgentTool {
 
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
-    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawSource = arguments.stringArg("source") ?: return ToolResult(arguments.argError("source"), true)
-        val rawDestination = arguments.stringArg("destination")
-            ?: return ToolResult(arguments.argError("destination"), true)
-        val source = absoluteToolPath(context.cwd, rawSource)
-        val destination = absoluteToolPath(context.cwd, rawDestination)
-        return executeSafely("Move failed") {
-            val fs = SystemFileSystem
-            val sourcePath = Path(source)
-            val meta = fs.metadataOrNull(sourcePath)
-                ?: return@executeSafely ToolResult("Source not found: $source", true)
-            if (!meta.isDirectory) return@executeSafely ToolResult(
-                "Source is not a directory: $source (use move_file)",
-                true
-            )
-            val destinationPath = Path(destination)
-            if (fs.exists(destinationPath)) return@executeSafely ToolResult("Destination exists: $destination", true)
-            fs.createDirectories(destinationPath.parent ?: Path("."))
-            movePath(sourcePath, destinationPath)
-            ToolResult("Moved directory $source to $destination")
-        }
-    }
+    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
+        executeMove(arguments, context, requireDirectory = true, successPrefix = "Moved directory")
 }

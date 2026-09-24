@@ -127,14 +127,8 @@ internal class AgentSupportImpl(
     }
 }
 
-private val HEX_CHARS = "0123456789abcdef".toCharArray()
-
-private fun ByteArray.toHex(): String = buildString(size * 2) {
-    for (b in this@toHex) {
-        val v = b.toInt() and 0xFF
-        append(HEX_CHARS[v ushr 4])
-        append(HEX_CHARS[v and 0x0F])
-    }
-}
-
-public fun randomSessionId(): String = "sess_${Random.nextBytes(8).toHex()}"
+/**
+ * A fresh session id: `sess_` + 16 lowercase hex digits, exactly the id set
+ * [SessionStore.isValidSessionId] accepts.
+ */
+public fun randomSessionId(): String = "sess_" + Random.nextBytes(8).toHexString(HexFormat.Default)

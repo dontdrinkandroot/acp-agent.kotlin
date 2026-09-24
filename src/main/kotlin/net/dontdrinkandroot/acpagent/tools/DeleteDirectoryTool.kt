@@ -5,7 +5,6 @@ import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
-import java.nio.file.Files
 
 /**
  * Deletes a directory and everything below it. The tree is scanned for
@@ -37,7 +36,7 @@ public class DeleteDirectoryTool : AgentTool {
             val meta = fs.metadataOrNull(target)
                 ?: return@executeSafely ToolResult("Path not found: $path", true)
             if (!meta.isDirectory) return@executeSafely ToolResult("Not a directory: $path (use delete_file)", true)
-            if (Files.isSymbolicLink(java.nio.file.Path.of(path))) {
+            if (isSymbolicLink(path)) {
                 return@executeSafely ToolResult("Refusing to delete a symlink: $path", true)
             }
             containsSymlink(fs, target, 0)?.let { link ->
@@ -58,7 +57,7 @@ public class DeleteDirectoryTool : AgentTool {
 private fun containsSymlink(fs: FileSystem, dir: Path, depth: Int): String? {
     if (depth > MAX_WALK_DEPTH) return null
     for (entry in fs.list(dir)) {
-        if (Files.isSymbolicLink(java.nio.file.Path.of(entry.toString()))) return entry.toString()
+        if (isSymbolicLink(entry.toString())) return entry.toString()
         val meta = fs.metadataOrNull(entry)
         if (meta?.isDirectory == true) {
             containsSymlink(fs, entry, depth + 1)?.let { return it }

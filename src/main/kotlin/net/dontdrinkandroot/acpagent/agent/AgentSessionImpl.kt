@@ -18,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
+import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
 import net.dontdrinkandroot.acpagent.tools.isWithinAnyRoot
@@ -55,7 +56,7 @@ internal class AgentSessionImpl(
         excludedFileGlobs = FileAccessExclusions.DEFAULT.globs(),
     )
 
-    private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
+    private fun modelInfo(): OpenRouterModel? = models.forModel(state.currentModel)
 
     override val availableModes: List<SessionMode> = listOf(
         SessionMode(MODE_PLAN, "Plan", "Read-only: research the code and present an implementation plan"),
@@ -133,7 +134,7 @@ internal class AgentSessionImpl(
         // ahead of the loop's tool gating. Everything else (model, reasoning)
         // applies immediately and is announced immediately.
         if (state.hasPendingMode()) return
-        val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
+        val client = clientOrNull() ?: return
         client.notify(SessionUpdate.CurrentModeUpdate(state.currentMode))
         client.notify(SessionUpdate.ConfigOptionUpdate(configOptions))
     }
@@ -145,7 +146,7 @@ internal class AgentSessionImpl(
      */
     override suspend fun postInitialize() {
         if (!replayOnInitialize) return
-        val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
+        val client = clientOrNull() ?: return
         val (history, plan, toolOutcomes) = state.replaySnapshot()
         buildReplayUpdates(history, plan, toolOutcomes, toolRegistry).forEach { client.notify(it) }
     }
@@ -164,13 +165,11 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     override suspend fun prompt(content: List<ContentBlock>, _meta: JsonElement?): Flow<Event> = flow {
-        val context = currentCoroutineContext()
-        val client = runCatching { context.client }.getOrNull()
-        val clientCapabilities = runCatching { context.clientInfo.capabilities }.getOrNull()
+        val client = clientOrNull()
+        val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
             ?: com.agentclientprotocol.model.ClientCapabilities()
         val mode = state.currentMode
         val instructions = loadAgentsInstructions(cwd)
-
         val userContent = contentBlocksToLlmContent(
             blocks = content,
             modelSupportsImage = modelInfo()?.architecture?.inputModalities?.contains("image") == true,
@@ -266,8 +265,6 @@ internal fun permissionNeeded(
     return tool.mutating || targets.isNotEmpty()
 }
 
-private fun Content?.textOrNull(): String? = this?.text()
-
 /**
  * Builds the `session/load` replay updates from the persisted state snapshot:
  * user/agent text as message chunks, assistant tool calls as PENDING
@@ -285,53 +282,52 @@ internal fun buildReplayUpdates(
     plan: List<PlanEntry>,
     toolOutcomes: Map<String, String>,
     toolRegistry: ToolRegistry,
-): List<SessionUpdate> {
-    val updates = mutableListOf<SessionUpdate>()
+): List<SessionUpdate> = buildList {
     history.forEach { message ->
         when (message) {
             is OpenAIMessage.User ->
                 message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                    updates += SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId())
+                    add(SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId()))
                 }
 
             is OpenAIMessage.Assistant -> {
                 message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                    updates += SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId())
+                    add(SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId()))
                 }
                 message.toolCalls.orEmpty().forEach { call ->
                     val toolName = call.function.name
                     val args = parseArguments(call.function.arguments)
                     val tool = toolRegistry.get(toolName)
-                    updates += SessionUpdate.ToolCall(
-                        toolCallId = ToolCallId(call.id),
-                        title = tool?.title(args) ?: toolName,
-                        kind = tool?.kind ?: ToolKind.OTHER,
-                        status = ToolCallStatus.PENDING,
-                        locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
-                        rawInput = args,
+                    add(
+                        SessionUpdate.ToolCall(
+                            toolCallId = ToolCallId(call.id),
+                            title = tool?.title(args) ?: toolName,
+                            kind = tool?.kind ?: ToolKind.OTHER,
+                            status = ToolCallStatus.PENDING,
+                            locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
+                            rawInput = args,
+                        )
                     )
                 }
             }
 
             is OpenAIMessage.Tool -> {
-                val status = when (toolOutcomes[message.toolCallId]) {
-                    TOOL_OUTCOME_FAILED -> ToolCallStatus.FAILED
-                    else -> ToolCallStatus.COMPLETED
-                }
-                updates += SessionUpdate.ToolCallUpdate(
-                    toolCallId = ToolCallId(message.toolCallId),
-                    status = status,
-                    content = listOf(
-                        ToolCallContent.Content(ContentBlock.Text(message.content.textOrNull().orEmpty()))
-                    ),
+                val failed = toolOutcomes[message.toolCallId] == TOOL_OUTCOME_FAILED
+                add(
+                    SessionUpdate.ToolCallUpdate(
+                        toolCallId = ToolCallId(message.toolCallId),
+                        status = if (failed) ToolCallStatus.FAILED else ToolCallStatus.COMPLETED,
+                        content = listOf(
+                            ToolCallContent.Content(ContentBlock.Text(message.content.textOrNull().orEmpty()))
+                        ),
+                    )
                 )
             }
 
             else -> Unit
         }
     }
-    plan.takeIf { it.isNotEmpty() }?.let { updates += SessionUpdate.PlanUpdate(it) }
-    return updates
+    plan.takeIf { it.isNotEmpty() }?.let { add(SessionUpdate.PlanUpdate(it)) }
 }
 
 /**

@@ -14,22 +14,29 @@ private val RUN_CONFIG_WRITE_MODES = BUILD_AND_BASH_MODES
  * The create tool's schema: `command` is required. The update tool's schema
  * keeps the same properties but omits `command` from the required list.
  */
-private fun configRunWriteParameters(mutable: Boolean): JsonObject =
+private fun configRunWriteParameters(mutable: Boolean): JsonObject = jsonSchema(
+    required("name", PropType.STRING, "Name of the run configuration"),
     if (mutable) {
-        jsonSchema(
-            required("name", PropType.STRING, "Name of the run configuration"),
-            required("command", PropType.STRING, "Shell command to run once the configuration is executed"),
-            optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
-        )
+        required("command", PropType.STRING, "Shell command to run once the configuration is executed")
     } else {
-        jsonSchema(
-            required("name", PropType.STRING, "Name of the run configuration"),
-            optional("command", PropType.STRING, "Shell command to run once the configuration is executed"),
-            optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
-        )
-    }
+        optional("command", PropType.STRING, "Shell command to run once the configuration is executed")
+    },
+    optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
+)
 
 private val NO_ARGUMENT_PARAMETERS: JsonObject = jsonSchema()
+
+/**
+ * Runs a run-config mutation and converts a [RunConfigException] into an
+ * error [ToolResult] (the exception message is the user-facing text), the
+ * shared failure conversion of the three write tools.
+ */
+private inline fun runConfigResult(defaultMessage: String, action: () -> ToolResult): ToolResult =
+    try {
+        action()
+    } catch (e: RunConfigException) {
+        ToolResult(e.message ?: defaultMessage, isError = true)
+    }
 
 /**
  * Lists the run configurations defined in `.ai/run.json`. Read-only and
@@ -77,11 +84,9 @@ internal class CreateRunConfigTool internal constructor(private val cwd: String)
         val command = arguments.stringArg("command")
         val description = arguments.stringArg("description")?.takeIf { it.isNotBlank() }
         if (arguments.isNullArg("description")) return ToolResult(arguments.argError("description"), true)
-        return try {
+        return runConfigResult("Could not create run configuration") {
             val config = createRunConfig(cwd, name, command, description)
             ToolResult("Created run configuration \"${config.name}\": ${config.command}")
-        } catch (e: RunConfigException) {
-            ToolResult(e.message ?: "Could not create run configuration", isError = true)
         }
     }
 }
@@ -109,7 +114,7 @@ internal class UpdateRunConfigTool internal constructor(private val cwd: String)
         val description = arguments.stringArg("description")
         if (arguments.isNullArg("command")) return ToolResult(arguments.argError("command"), true)
         if (arguments.isNullArg("description")) return ToolResult(arguments.argError("description"), true)
-        return try {
+        return runConfigResult("Could not update run configuration") {
             val config = updateRunConfig(cwd, name, command, description)
             val output = buildString {
                 append("Updated run configuration \"").append(config.name).append("\": ")
@@ -117,8 +122,6 @@ internal class UpdateRunConfigTool internal constructor(private val cwd: String)
                 if (config.description != null) append(" (").append(config.description).append(")")
             }
             ToolResult(output)
-        } catch (e: RunConfigException) {
-            ToolResult(e.message ?: "Could not update run configuration", isError = true)
         }
     }
 }
@@ -142,15 +145,13 @@ internal class DeleteRunConfigTool internal constructor(private val cwd: String)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
-        return try {
+        return runConfigResult("Could not delete run configuration") {
             val config = deleteRunConfig(cwd, name)
             val output = buildString {
                 append("Deleted run configuration \"").append(config.name).append("\"")
                 if (config.command.isNotBlank()) append(": ").append(config.command)
             }
             ToolResult(output)
-        } catch (e: RunConfigException) {
-            ToolResult(e.message ?: "Could not delete run configuration", isError = true)
         }
     }
 }

@@ -44,6 +44,7 @@ banner-suppressing API.
 
 * We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
   uses speaking variable and function names.
+* We use test-driven development by default, in small red→green→refactor cycles writing tests first. The tests are documenting our specification and expectations. If a test would be overly complicated, ask the user first if it is worth it.
 * Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
 * _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
@@ -119,12 +120,15 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # wire-shaped LLM data (chat traffic + persisted history)
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
                                      # provider endpoints feed)
+    llm/ModelLookup.kt               # List<OpenRouterModel>.forModel(id) - the single model lookup
     providerrouting/ProviderRouting.kt  # auto provider routing: throughput sort + median completion cap
     mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
                                      # mutating/kind/title), JsonObject->Any map
     mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE)
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
                                      # toolOutcomes: toolCallId -> completed|failed)
+    agent/SessionCoroutines.kt       # clientOrNull() + Content?.textOrNull() shared by the
+                                     # session facade, prompt runner and session state
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
@@ -155,7 +159,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
     tools/WebContentConverter.kt     # jsoup HTML -> line-based text (block tags, pre, li), pass-through otherwise
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
-    tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy)
+    tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move), isSymbolicLink
+    tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
+    tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy),
+                                     # StreamingLineReader + the shared truncateLine line cap
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/RunTool.kt                 # run tool (static description; configs surfaced in the system

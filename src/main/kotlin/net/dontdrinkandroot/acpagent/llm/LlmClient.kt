@@ -122,7 +122,7 @@ public class LlmClient(
         client.preparePost(CHAT_COMPLETIONS_PATH) {
             setBody(body)
         }.execute { response ->
-            if (response.status.value !in 200..299) {
+            if (!response.status.isSuccess()) {
                 val detail = response.bodyAsText().take(500)
                 throw LlmException("chat completion failed: HTTP ${response.status.value}: $detail")
             }
@@ -171,7 +171,7 @@ public class LlmClient(
      */
     internal suspend fun fetchModels(): List<OpenRouterModel> {
         val response = client.get(MODELS_PATH)
-        if (response.status.value !in 200..299) {
+        if (!response.status.isSuccess()) {
             throw LlmException("fetch models failed: HTTP ${response.status.value}: ${response.bodyAsText().take(500)}")
         }
         val models: OpenRouterModelsResponse = json.decodeFromString(response.bodyAsText())

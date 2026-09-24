@@ -37,27 +37,42 @@ public class MoveFileTool : AgentTool {
 
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
-    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawSource = arguments.stringArg("source") ?: return ToolResult(arguments.argError("source"), true)
-        val rawDestination = arguments.stringArg("destination")
-            ?: return ToolResult(arguments.argError("destination"), true)
-        val source = absoluteToolPath(context.cwd, rawSource)
-        val destination = absoluteToolPath(context.cwd, rawDestination)
-        return executeSafely("Move failed") {
-            val fs = SystemFileSystem
-            val sourcePath = Path(source)
-            val meta = fs.metadataOrNull(sourcePath)
-                ?: return@executeSafely ToolResult("Source not found: $source", true)
-            if (meta.isDirectory) return@executeSafely ToolResult(
-                "Source is a directory: $source (use move_directory)",
-                true
-            )
-            val destinationPath = Path(destination)
-            if (fs.exists(destinationPath)) return@executeSafely ToolResult("Destination exists: $destination", true)
-            fs.createDirectories(destinationPath.parent ?: Path("."))
-            movePath(sourcePath, destinationPath)
-            ToolResult("Moved $source to $destination")
+    override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
+        executeMove(arguments, context, requireDirectory = false, successPrefix = "Moved")
+}
+
+/**
+ * The shared move flow of move_file/move_directory: argument decoding,
+ * source type gate, destination-exists refusal, missing-parent creation and
+ * the move itself. [requireDirectory] selects which source type is expected
+ * and names the sibling tool in the refusal.
+ */
+internal suspend fun executeMove(
+    arguments: JsonObject,
+    context: ToolContext,
+    requireDirectory: Boolean,
+    successPrefix: String,
+): ToolResult {
+    val rawSource = arguments.stringArg("source") ?: return ToolResult(arguments.argError("source"), true)
+    val rawDestination = arguments.stringArg("destination")
+        ?: return ToolResult(arguments.argError("destination"), true)
+    val source = absoluteToolPath(context.cwd, rawSource)
+    val destination = absoluteToolPath(context.cwd, rawDestination)
+    return executeSafely("Move failed") {
+        val fs = SystemFileSystem
+        val sourcePath = Path(source)
+        val meta = fs.metadataOrNull(sourcePath)
+            ?: return@executeSafely ToolResult("Source not found: $source", true)
+        if (meta.isDirectory != requireDirectory) {
+            val shape = if (requireDirectory) "is not a directory" else "is a directory"
+            val sibling = if (requireDirectory) "move_file" else "move_directory"
+            return@executeSafely ToolResult("Source $shape: $source (use $sibling)", true)
         }
+        val destinationPath = Path(destination)
+        if (fs.exists(destinationPath)) return@executeSafely ToolResult("Destination exists: $destination", true)
+        fs.createDirectories(destinationPath.parent ?: Path("."))
+        movePath(sourcePath, destinationPath)
+        ToolResult("$successPrefix $source to $destination")
     }
 }
 

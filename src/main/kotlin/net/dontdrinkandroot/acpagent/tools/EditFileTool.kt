@@ -32,16 +32,10 @@ public class EditFileTool : AgentTool {
 
         return executeSafely("Edit failed") {
             val content = context.fileStore.readRaw(path)
-            // Count non-overlapping occurrences via indexOf so the number
-            // matches exactly what String.replace replaces: overlapping
-            // occurrences (e.g. old_string "aa" in "aaaa") are counted as
-            // replace counts them, not as windowed would.
-            var count = 0
-            var occurrence = content.indexOf(oldString)
-            while (occurrence != -1) {
-                count++
-                occurrence = content.indexOf(oldString, occurrence + oldString.length)
-            }
+            // Count non-overlapping occurrences so the number matches exactly
+            // what String.replace replaces: overlapping occurrences (e.g.
+            // old_string "aa" in "aaaa") count as replace counts them.
+            val count = Regex.fromLiteral(oldString).findAll(content).count()
             if (count == 0) return@executeSafely ToolResult("old_string not found in $path", true)
             if (count > 1) return@executeSafely ToolResult(
                 "old_string matches $count times in $path; make it unique",

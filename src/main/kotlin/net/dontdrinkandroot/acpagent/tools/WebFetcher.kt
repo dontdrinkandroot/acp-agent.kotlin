@@ -255,10 +255,4 @@ internal object WebFetcher {
     private fun blockedMessage(host: String): String =
         "refusing to fetch private or loopback host '$host' " +
                 "(set ACP_WEB_FETCH_ALLOW_PRIVATE=1 to allow)"
-
-    private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1L shl 20 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1048576.0)
-        bytes >= 1024 -> "${bytes / 1024} KB"
-        else -> "$bytes bytes"
-    }
 }

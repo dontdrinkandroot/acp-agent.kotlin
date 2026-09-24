@@ -75,11 +75,12 @@ internal class ToolCallExecutor(
         }
 
         val arguments = parseArguments(call.arguments)
+        val title = tool.title(arguments) ?: tool.name
         emitter.emit(
             Event.SessionUpdateEvent(
                 SessionUpdate.ToolCall(
                     toolCallId = toolCallId,
-                    title = tool.title(arguments) ?: tool.name,
+                    title = title,
                     kind = tool.kind,
                     status = ToolCallStatus.IN_PROGRESS,
                     locations = toolLocations(tool, arguments),
@@ -88,13 +89,13 @@ internal class ToolCallExecutor(
             )
         )
 
-        val allowed = shouldAllow(tool, toolCallId, arguments, toolContext.client, trustedReadPaths)
+        val allowed = shouldAllow(tool, toolCallId, arguments, title, toolContext.client, trustedReadPaths)
         if (!allowed) {
             val msg = "Permission denied for tool ${tool.name}"
             emitDenied(
                 emitter = emitter,
                 toolCallId = toolCallId,
-                title = tool.title(arguments) ?: tool.name,
+                title = title,
                 message = msg,
                 rawOutput = JsonPrimitive(msg),
             )
@@ -109,7 +110,7 @@ internal class ToolCallExecutor(
             Event.SessionUpdateEvent(
                 SessionUpdate.ToolCallUpdate(
                     toolCallId = toolCallId,
-                    title = tool.title(arguments) ?: tool.name,
+                    title = title,
                     status = if (result.isError) ToolCallStatus.FAILED else ToolCallStatus.COMPLETED,
                     content = toolCallContent(result),
                     rawOutput = JsonPrimitive(result.text),
@@ -147,6 +148,7 @@ internal class ToolCallExecutor(
         tool: AgentTool,
         toolCallId: ToolCallId,
         arguments: JsonObject,
+        title: String,
         client: ClientSessionOperations?,
         trustedReadPaths: List<String>,
     ): Boolean {
@@ -154,26 +156,20 @@ internal class ToolCallExecutor(
         if (client == null) return true
         state.permanentPermissions[tool.name]?.let { return it }
         val options = listOf(
-            PermissionOption(PermissionOptionId("allow_once"), "Allow once", PermissionOptionKind.ALLOW_ONCE),
+            "allow_once" to PermissionOptionKind.ALLOW_ONCE,
+            "allow_always" to PermissionOptionKind.ALLOW_ALWAYS,
+            "reject_once" to PermissionOptionKind.REJECT_ONCE,
+            "reject_always" to PermissionOptionKind.REJECT_ALWAYS,
+        ).map { (id, kind) ->
             PermissionOption(
-                PermissionOptionId("allow_always"),
-                "Always allow",
-                PermissionOptionKind.ALLOW_ALWAYS
-            ),
-            PermissionOption(
-                PermissionOptionId("reject_once"),
-                "Reject once",
-                PermissionOptionKind.REJECT_ONCE
-            ),
-            PermissionOption(
-                PermissionOptionId("reject_always"),
-                "Always reject",
-                PermissionOptionKind.REJECT_ALWAYS
-            ),
-        )
+                PermissionOptionId(id),
+                id.split('_').joinToString(" ") { word -> word.replaceFirstChar { it.uppercase() } },
+                kind,
+            )
+        }
         val update = SessionUpdate.ToolCallUpdate(
             toolCallId = toolCallId,
-            title = tool.title(arguments) ?: tool.name,
+            title = title,
             kind = tool.kind,
             status = ToolCallStatus.IN_PROGRESS,
             locations = toolLocations(tool, arguments),

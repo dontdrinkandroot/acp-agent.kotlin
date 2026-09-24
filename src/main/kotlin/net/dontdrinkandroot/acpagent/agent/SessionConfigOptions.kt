@@ -4,6 +4,7 @@ import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.jsonRpcInvalidParams
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
+import net.dontdrinkandroot.acpagent.llm.forModel
 
 private const val REASONING_OFF = "none"
 private val DEFAULT_REASONING_LEVELS = listOf("max", "xhigh", "high", "medium", "low", "minimal")
@@ -42,7 +43,7 @@ internal class SessionConfigOptions(
     private val state: SessionState,
 ) {
 
-    private fun modelInfo(): OpenRouterModel? = models.firstOrNull { it.id == state.currentModel }
+    private fun modelInfo(): OpenRouterModel? = models.forModel(state.currentModel)
 
     fun options(): List<SessionConfigOption> {
         val options = mutableListOf<SessionConfigOption>(
@@ -156,16 +157,12 @@ internal class SessionConfigOptions(
         if (!capability.mandatory) {
             options += ReasoningOption(REASONING_OFF, "Off", "Disable reasoning; falls back to the model default")
         }
-        var current = state.reasoningSelection
-        if (options.none { it.value == current }) {
-            current = capability.defaultEffort ?: ""
-            if (options.none { it.value == current }) {
-                current = REASONING_OFF
-                if (options.none { it.value == current }) {
-                    current = options.first().value
-                }
-            }
-        }
+        val current = sequenceOf(
+            state.reasoningSelection.takeIf { it.isNotBlank() },
+            capability.defaultEffort,
+            REASONING_OFF,
+        ).firstOrNull { candidate -> options.any { it.value == candidate } }
+            ?: options.first().value
         return ReasoningSelector(options, current)
     }
 

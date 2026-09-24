@@ -314,6 +314,4 @@ internal class SessionState(
     private fun truncatedTitle(title: String): String =
         if (title.codePointCount(0, title.length) <= MAX_TITLE_LENGTH) title
         else title.substring(0, title.offsetByCodePoints(0, MAX_TITLE_LENGTH)) + "…"
-
-    private fun Content?.textOrNull(): String? = this?.text()
 }
