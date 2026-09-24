@@ -3,10 +3,12 @@ package net.dontdrinkandroot.acpagent.mcp
 import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolResult
@@ -59,10 +61,15 @@ public class McpTool(
     override val description = tool.description ?: "MCP tool '${tool.name}' from server '${server.name}'"
     override val kind: ToolKind = annotationsKind(tool, trustAnnotations)
     override val mutating: Boolean = !(trustAnnotations && tool.annotations?.readOnlyHint == true)
-    override val parameters: JsonObject = buildJsonObject {
-        put("type", JsonPrimitive("object"))
-        tool.inputSchema.properties?.let { put("properties", it) }
-    }
+
+    /**
+     * The server's input schema, serialized verbatim via the SDK's own
+     * [McpJson] (encodeDefaults on, explicitNulls off), so `required`, `$defs`
+     * and `$schema` round-trip losslessly - the LLM must know which MCP
+     * arguments are mandatory. The SDK pins `type = "object"` (@EncodeDefault),
+     * so the wire shape always carries it.
+     */
+    override val parameters: JsonObject = McpJson.encodeToJsonElement(tool.inputSchema).jsonObject
 
     /**
      * The server-provided display name, when annotated; null (bare tool name)

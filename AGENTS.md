@@ -177,7 +177,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + MockToolCall / pathArgs
         MockMcpServer.kt             # in-process streamable-HTTP MCP mock (JSON POST responses,
                                      # 202 initialized, 405 GET/DELETE) with annotated tools
-                                     # (readOnly+title / unannotated / destructive+title) + marker file
+                                     # (readOnly+title / unannotated / destructive+title) + marker file;
+                                     # inputSchema carries required/$schema/$defs + a $ref property
+                                     # (pins the verbatim MCP schema advertisement, issue #12)
         ClientOperations.kt          # client session ops doubles: TestClientOperations
                                      # (records requests/notifications, allow_once) +
                                      # SuspendingPermissionOperations (stuck permission prompt)
@@ -556,6 +558,13 @@ Config comes from environment variables:
   `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
   mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
   tools carry the mandatory `inputSchema`).
+  The advertised tool schema is the server's `inputSchema` serialized **verbatim**
+  via the SDK's own `McpJson` (`mcp/McpBridge.kt`), so `required`, `$defs` and
+  `$schema` round-trip losslessly and the LLM knows which MCP arguments are
+  mandatory (issue #12: a `type`+`properties` rebuild dropped all three; the
+  `type = "object"` pin is the SDK's own `@EncodeDefault`, not a loss). Pinned at
+  the unit level (`McpBridgeTest`) and at the wire level (e2e: the schema
+  reaches the chat request's `function.parameters`).
 - **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
   see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
   relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by

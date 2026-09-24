@@ -10,10 +10,15 @@ import com.agentclientprotocol.model.SessionUpdate
 import com.agentclientprotocol.model.ToolCallStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -225,6 +230,66 @@ class E2eMcpToolPermissionTest : E2eAgentTest() {
                 println("[ok] initialize advertises mcpCapabilities.http")
             } finally {
                 connection.close()
+            }
+        }
+    }
+
+    /**
+     * Issue #12: the advertised MCP input schema must reach the LLM chat request
+     * verbatim - a rebuild used to drop `required`, `$defs` and `$schema`, so the
+     * model was told mandatory MCP arguments are optional. Effect-based pin: the
+     * tool advertised for `mcp_read` carries the mock server's `required` array,
+     * `$defs` and a `$ref` property in its `function.parameters`.
+     */
+    @Test
+    fun `e2e mcp input schema is advertised to the llm verbatim`() = runBlocking {
+        withE2eAgent(
+            "mcp-schema",
+            { MockOpenAiServer("unused", toolCall = MockToolCall("mcp_read", buildJsonObject { })) },
+        ) {
+            val markerFile = projectDir.toPath().resolve("marker.txt")
+            val mcpMock = MockMcpServer(markerFile)
+            mcpMock.start()
+            try {
+                val connection = connect()
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations()
+                    val session = connection.client.newSession(
+                        SessionCreationParameters(
+                            cwd = projectDir.absolutePath,
+                            mcpServers = listOf(mcpServer(mcpMock)),
+                        ),
+                        ClientOperationsFactory { _, _ -> ops },
+                    )
+                    collectPrompt(session, listOf(ContentBlock.Text("Read the mcp notes")))
+
+                    val request = llmMock.parseChatBody(llmMock.lastRequestBody)
+                    val tool = request["tools"]!!.jsonArray
+                        .map { it.jsonObject["function"]!!.jsonObject }
+                        .single { (it["name"] as JsonPrimitive).content == "mcp_read" }
+                    val parameters = tool["parameters"]!!.jsonObject
+                    assertEquals(
+                        "object",
+                        parameters["type"]?.jsonPrimitive?.content,
+                        "the schema must keep its object type: $parameters",
+                    )
+                    assertEquals(
+                        JsonArray(listOf(JsonPrimitive("path"))),
+                        parameters["required"],
+                        "the server's required array must reach the LLM: $parameters",
+                    )
+                    assertTrue(
+                        parameters.containsKey("\$defs") && parameters.containsKey("\$schema") &&
+                            (parameters["properties"]!!.jsonObject["page"]!!.jsonObject).containsKey("\$ref"),
+                        "\$defs, \$schema and the \$ref property must round-trip: $parameters",
+                    )
+                    println("[ok] MCP input schema reached the LLM chat request verbatim (required/defs/schema)")
+                } finally {
+                    connection.close()
+                }
+            } finally {
+                mcpMock.stop()
             }
         }
     }

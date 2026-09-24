@@ -130,10 +130,25 @@ internal class MockMcpServer(private val markerFile: Path) {
         })
     }
 
+    /**
+     * Carries `required`, `$defs` and `$schema` (plus a `$defs`-backed `$ref`
+     * property) so the e2e suite can pin that the agent advertises MCP input
+     * schemas verbatim to the LLM (issue #12: a rebuild dropped
+     * `required`/`$defs`/`$schema`).
+     */
     private fun inputSchemaJson() = buildJsonObject {
+        put("\$schema", "https://json-schema.org/draft/2020-12/schema")
         put("type", "object")
         put("properties", buildJsonObject {
             put("path", buildJsonObject { put("type", "string") })
+            put("page", buildJsonObject { put("\$ref", "#/\$defs/page") })
+        })
+        put("required", buildJsonArray { add(JsonPrimitive("path")) })
+        put("\$defs", buildJsonObject {
+            put("page", buildJsonObject {
+                put("type", "object")
+                put("properties", buildJsonObject { put("n", buildJsonObject { put("type", "integer") }) })
+            })
         })
     }
 

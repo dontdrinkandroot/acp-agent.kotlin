@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.mcp
 
 import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
+import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
@@ -94,6 +95,48 @@ class McpBridgeTest {
         val parameters = mcpTool.parameters
         assertEquals("object", parameters["type"]?.jsonPrimitive?.content)
         assertNotNull(parameters["properties"])
+    }
+
+    @Test
+    fun `mcp tool parameters round-trip required schema and defs verbatim`() {
+        val properties = buildJsonObject {
+            put("q", buildJsonObject { put("type", "string") })
+            put("page", buildJsonObject { put("\$ref", "#/\$defs/pageRef") })
+        }
+        val defs = buildJsonObject {
+            put("pageRef", buildJsonObject {
+                put("type", "object")
+                put("properties", buildJsonObject { put("n", buildJsonObject { put("type", "integer") }) })
+            })
+        }
+        val schemaUrl = "https://json-schema.org/draft/2020-12/schema"
+        val tool = Tool(
+            name = "search",
+            inputSchema = ToolSchema(
+                schema = schemaUrl,
+                properties = properties,
+                required = listOf("q"),
+                defs = defs,
+            ),
+        )
+        val mcpTool = McpTool(
+            McpServerConnection("srv", Client(clientInfo = createMcpClientInfo())),
+            tool,
+            trustAnnotations = true,
+        )
+        // Verbatim round-trip: the advertised schema is the SDK's own encoding
+        // of the server's inputSchema (required/$schema/$defs included).
+        assertEquals(McpJson.encodeToJsonElement(tool.inputSchema).jsonObject, mcpTool.parameters)
+        assertEquals("object", mcpTool.parameters["type"]?.jsonPrimitive?.content)
+        assertEquals(JsonArray(listOf(JsonPrimitive("q"))), mcpTool.parameters["required"])
+        assertEquals(schemaUrl, mcpTool.parameters["\$schema"]?.jsonPrimitive?.content)
+        assertEquals(defs, mcpTool.parameters["\$defs"])
+    }
+
+    @Test
+    fun `mcp tool parameters degrade to the bare object type when the schema is empty`() {
+        val mcpTool = mcpTool()
+        assertEquals(buildJsonObject { put("type", "object") }, mcpTool.parameters)
     }
 
     private fun mcpTool(
