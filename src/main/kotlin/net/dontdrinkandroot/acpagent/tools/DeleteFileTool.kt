@@ -58,7 +58,7 @@ public class DeleteFileTool : AgentTool {
  * exceeds [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
  */
 private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolResultDiff? {
-    if (context.fileStore is ClientFileStore) return null
+    if (context.fileStore.rendersChange) return null
     val oldText = try {
         context.fileStore.readRaw(path)
     } catch (e: Exception) {

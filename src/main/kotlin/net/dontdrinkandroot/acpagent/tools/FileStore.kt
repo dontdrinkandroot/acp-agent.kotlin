@@ -16,6 +16,16 @@ import kotlinx.io.writeString
  */
 internal interface FileStore {
     /**
+     * True when the store's write path already renders the modification to the
+     * user (the client fs proxy shows reviewable diffs and unsaved editor
+     * state), so the file tools must not duplicate it: result diffs are
+     * skipped and the wire stays lean. The local store renders nothing, so the
+     * tools carry their own `ToolResultDiff`.
+     */
+    val rendersChange: Boolean
+        get() = false
+
+    /**
      * Reads the requested line window of the file at [path]. Returns the
      * selected content, the raw number of lines it contains, whether the
      * selection covers the whole file ([ReadResult.complete]) and the file's
@@ -219,6 +229,8 @@ private fun ByteArray.indexOf(b: Byte, from: Int, to: Int): Int {
 internal class ClientFileStore(
     private val client: ClientSessionOperations,
 ) : FileStore {
+    override val rendersChange: Boolean = true
+
     override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult {
         val content = client.fsReadTextFile(
             path = path,

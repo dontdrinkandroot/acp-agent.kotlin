@@ -60,7 +60,7 @@ public class WriteFileTool : AgentTool {
  * payload sane.
  */
 private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
-    if (context.fileStore is ClientFileStore) return null
+    if (context.fileStore.rendersChange) return null
     val oldText = try {
         context.fileStore.readRaw(path)
     } catch (e: CancellationException) {

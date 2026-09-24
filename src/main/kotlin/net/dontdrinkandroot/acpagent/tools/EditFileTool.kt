@@ -68,7 +68,7 @@ private suspend fun editResultDiff(
     newContent: String,
     context: ToolContext,
 ): ToolResultDiff? {
-    if (context.fileStore is ClientFileStore) return null
+    if (context.fileStore.rendersChange) return null
     if (oldContent.length > MAX_DIFF_CONTENT_LENGTH || newContent.length > MAX_DIFF_CONTENT_LENGTH) return null
     return ToolResultDiff(path, newContent, oldContent)
 }
