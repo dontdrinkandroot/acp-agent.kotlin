@@ -116,7 +116,8 @@ internal class ToolCallExecutor(
                 )
             )
         )
-        state.appendToHistory(OpenAIMessage.Tool(Content.Text(result.text), toolCallId = call.id))
+        state.appendToolResult(call.id, Content.Text(result.text), result.isError)
+        state.persist()
     }
 
     private suspend fun emitDenied(
@@ -138,7 +139,8 @@ internal class ToolCallExecutor(
                 )
             )
         )
-        state.appendToHistory(OpenAIMessage.Tool(Content.Text(message), toolCallId = toolCallId.value))
+        state.appendToolResult(toolCallId.value, Content.Text(message), isError = true)
+        state.persist()
     }
 
     private suspend fun shouldAllow(

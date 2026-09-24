@@ -146,54 +146,9 @@ internal class AgentSessionImpl(
     override suspend fun postInitialize() {
         if (!replayOnInitialize) return
         val client = runCatching { currentCoroutineContext().client }.getOrNull() ?: return
-        replayHistory().forEach { client.notify(it) }
+        val (history, plan, toolOutcomes) = state.replaySnapshot()
+        buildReplayUpdates(history, plan, toolOutcomes, toolRegistry).forEach { client.notify(it) }
     }
-
-    private fun replayHistory(): List<SessionUpdate> {
-        val updates = mutableListOf<SessionUpdate>()
-        val (history, plan) = state.replaySnapshot()
-        history.forEach { message ->
-                when (message) {
-                    is OpenAIMessage.User ->
-                        message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                            updates += SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId())
-                        }
-
-                    is OpenAIMessage.Assistant -> {
-                        message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                            updates += SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId())
-                        }
-                        message.toolCalls.orEmpty().forEach { call ->
-                            val toolName = call.function?.name ?: ""
-                            val args = parseArguments(call.function?.arguments ?: "{}")
-                            val tool = toolRegistry.get(toolName)
-                            updates += SessionUpdate.ToolCall(
-                                toolCallId = ToolCallId(call.id),
-                                title = tool?.title(args) ?: toolName,
-                                kind = tool?.kind ?: ToolKind.OTHER,
-                                status = ToolCallStatus.PENDING,
-                                locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
-                                rawInput = args,
-                            )
-                        }
-                    }
-
-                    is OpenAIMessage.Tool -> updates += SessionUpdate.ToolCallUpdate(
-                        toolCallId = ToolCallId(message.toolCallId),
-                        status = ToolCallStatus.COMPLETED,
-                        content = listOf(
-                            ToolCallContent.Content(ContentBlock.Text(message.content.textOrNull().orEmpty()))
-                        ),
-                    )
-
-                    else -> Unit
-                }
-            }
-            plan.takeIf { it.isNotEmpty() }?.let { updates += SessionUpdate.PlanUpdate(it) }
-        return updates
-    }
-
-    private fun Content?.textOrNull(): String? = this?.text()
 
     /**
      * Stores the execution plan (for persistence and replay) and forwards it
@@ -309,6 +264,74 @@ internal fun permissionNeeded(
         return false
     }
     return tool.mutating || targets.isNotEmpty()
+}
+
+private fun Content?.textOrNull(): String? = this?.text()
+
+/**
+ * Builds the `session/load` replay updates from the persisted state snapshot:
+ * user/agent text as message chunks, assistant tool calls as PENDING
+ * `tool_call` introductions, tool results as terminal `tool_call_update`s and
+ * the plan as its update.
+ *
+ * A tool result's status comes from the persisted outcome map, so denied,
+ * disabled, unknown and failed calls replay as FAILED (the status they had
+ * live) instead of the historical blanket COMPLETED. Legacy records without
+ * outcomes (or with an unknown outcome value) replay COMPLETED fail-open, so
+ * old sessions render exactly as before.
+ */
+internal fun buildReplayUpdates(
+    history: List<OpenAIMessage>,
+    plan: List<PlanEntry>,
+    toolOutcomes: Map<String, String>,
+    toolRegistry: ToolRegistry,
+): List<SessionUpdate> {
+    val updates = mutableListOf<SessionUpdate>()
+    history.forEach { message ->
+        when (message) {
+            is OpenAIMessage.User ->
+                message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
+                    updates += SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId())
+                }
+
+            is OpenAIMessage.Assistant -> {
+                message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
+                    updates += SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId())
+                }
+                message.toolCalls.orEmpty().forEach { call ->
+                    val toolName = call.function.name
+                    val args = parseArguments(call.function.arguments)
+                    val tool = toolRegistry.get(toolName)
+                    updates += SessionUpdate.ToolCall(
+                        toolCallId = ToolCallId(call.id),
+                        title = tool?.title(args) ?: toolName,
+                        kind = tool?.kind ?: ToolKind.OTHER,
+                        status = ToolCallStatus.PENDING,
+                        locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
+                        rawInput = args,
+                    )
+                }
+            }
+
+            is OpenAIMessage.Tool -> {
+                val status = when (toolOutcomes[message.toolCallId]) {
+                    TOOL_OUTCOME_FAILED -> ToolCallStatus.FAILED
+                    else -> ToolCallStatus.COMPLETED
+                }
+                updates += SessionUpdate.ToolCallUpdate(
+                    toolCallId = ToolCallId(message.toolCallId),
+                    status = status,
+                    content = listOf(
+                        ToolCallContent.Content(ContentBlock.Text(message.content.textOrNull().orEmpty()))
+                    ),
+                )
+            }
+
+            else -> Unit
+        }
+    }
+    plan.takeIf { it.isNotEmpty() }?.let { updates += SessionUpdate.PlanUpdate(it) }
+    return updates
 }
 
 /**

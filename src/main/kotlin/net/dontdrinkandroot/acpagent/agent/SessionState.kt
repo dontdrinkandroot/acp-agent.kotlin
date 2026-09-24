@@ -18,6 +18,8 @@ import kotlin.concurrent.Volatile
 
 internal val DEFAULT_MODE = MODE_PLAN
 private const val MAX_TITLE_LENGTH = 72
+internal const val TOOL_OUTCOME_COMPLETED = "completed"
+internal const val TOOL_OUTCOME_FAILED = "failed"
 
 /**
  * The single source of truth for a session's mutable state and its record
@@ -41,6 +43,15 @@ internal class SessionState(
     private val history = mutableListOf<OpenAIMessage>().apply { restored?.let { addAll(it.history) } }
     private val historyLock = Any()
     private var plan: List<PlanEntry> = restored?.plan ?: emptyList()
+
+    /**
+     * Live terminal tool-call outcomes (toolCallId -> "completed" | "failed"),
+     * recorded when the tool result is appended to the history and persisted
+     * with the record so load replay renders the real outcome. Lenient at
+     * replay time: unknown values fall back to COMPLETED (legacy records carry
+     * no outcomes at all and replay everything COMPLETED).
+     */
+    private val toolOutcomes = mutableMapOf<String, String>().apply { restored?.let { putAll(it.toolOutcomes) } }
 
     /** Persistent allow/reject decisions, keyed by tool name. */
     val permanentPermissions = mutableMapOf<String, Boolean>()
@@ -95,6 +106,18 @@ internal class SessionState(
         synchronized(historyLock) { history.add(message) }
     }
 
+    /**
+     * Appends a tool result to the history and records its terminal outcome
+     * under the same lock, so a replay snapshot can never pair a result
+     * message with a missing outcome.
+     */
+    fun appendToolResult(toolCallId: String, content: Content.Text, isError: Boolean) {
+        synchronized(historyLock) {
+            history.add(OpenAIMessage.Tool(content, toolCallId = toolCallId))
+            toolOutcomes[toolCallId] = if (isError) TOOL_OUTCOME_FAILED else TOOL_OUTCOME_COMPLETED
+        }
+    }
+
     val planSnapshot: List<PlanEntry> get() = synchronized(historyLock) { plan }
 
     fun setPlan(entries: List<PlanEntry>) {
@@ -102,11 +125,12 @@ internal class SessionState(
     }
 
     /**
-     * An atomic combination of history and plan for load replay: both reads
-     * happen under the same lock so replay sees one consistent picture.
+     * An atomic combination of history, plan and tool outcomes for load
+     * replay: all reads happen under the same lock so replay sees one
+     * consistent picture.
      */
-    fun replaySnapshot(): Pair<List<OpenAIMessage>, List<PlanEntry>> =
-        synchronized(historyLock) { history.toList() to plan }
+    fun replaySnapshot(): Triple<List<OpenAIMessage>, List<PlanEntry>, Map<String, String>> =
+        synchronized(historyLock) { Triple(history.toList(), plan, toolOutcomes.toMap()) }
 
     private fun restoredModeOrDefault(restored: SessionRecord?): SessionModeId {
         val restoredMode = restored?.mode?.let { SessionModeId(it) }
@@ -244,6 +268,7 @@ internal class SessionState(
             model = currentModel,
             reasoning = reasoningSelection,
             plan = planSnapshot,
+            toolOutcomes = synchronized(historyLock) { toolOutcomes.toMap() },
         )
     }
 

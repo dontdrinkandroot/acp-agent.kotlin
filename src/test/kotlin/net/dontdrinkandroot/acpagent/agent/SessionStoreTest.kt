@@ -11,6 +11,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class SessionStoreTest {
@@ -61,6 +62,37 @@ class SessionStoreTest {
         val raw = Files.readString(dir.resolve("sess_0123456789abcdef.json"))
         assertTrue(raw.contains("\"role\":\"user\""), raw)
         assertTrue(raw.contains("\"tool_call_id\":\"call_1\""), raw)
+    }
+
+    @Test
+    fun `tool outcomes round-trip with the record`() {
+        val (store, _) = store()
+        val record = sampleRecord().copy(toolOutcomes = mapOf("call_1" to "completed", "call_2" to "failed"))
+        store.save(record)
+        val loaded = store.load(record.sessionId)
+        assertEquals(mapOf("call_1" to "completed", "call_2" to "failed"), loaded?.toolOutcomes)
+    }
+
+    @Test
+    fun `legacy record without outcomes decodes to an empty map`() {
+        val (store, dir) = store()
+        // The legacy wire shape (llmWireJson = snake_case, toolOutcomes did not exist yet)
+        Files.writeString(
+            dir.resolve("sess_0123456789abcdef.json"),
+            """
+                {
+                  "session_id": "sess_0123456789abcdef",
+                  "cwd": "/project",
+                  "mode": "plan",
+                  "title": "Fix the bug",
+                  "updated_at": 1700000000000,
+                  "history": []
+                }
+            """.trimIndent(),
+        )
+        val loaded = store.load("sess_0123456789abcdef")
+        assertNotNull(loaded)
+        assertEquals(emptyMap(), loaded.toolOutcomes)
     }
 
     @Test

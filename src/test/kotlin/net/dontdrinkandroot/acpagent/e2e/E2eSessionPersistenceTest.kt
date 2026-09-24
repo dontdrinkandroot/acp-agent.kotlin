@@ -11,12 +11,15 @@ import com.agentclientprotocol.model.SessionConfigOptionValue
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.SessionUpdate
+import com.agentclientprotocol.model.ToolCallContent
 import com.agentclientprotocol.model.ToolCallStatus
 import com.agentclientprotocol.model.ToolKind
 import com.agentclientprotocol.protocol.AcpExpectedError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.SessionStore
 import java.nio.file.Files
 import kotlin.test.Test
@@ -221,13 +224,140 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                     loadOps.notifications.last() is SessionUpdate.PlanUpdate,
                     "the plan update must be replayed after the history",
                 )
-                println("[ok] session/load replays the persisted plan")
+                val replayedResultUpdates = loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                assertEquals(1, replayedResultUpdates.size)
+                assertEquals(
+                    ToolCallStatus.COMPLETED,
+                    replayedResultUpdates.single().status,
+                    "a successful tool call must replay as COMPLETED",
+                )
+                println("[ok] session/load replays the persisted plan and the completed tool call")
             } finally {
                 second.close()
             }
 
             assertEquals(2, llmMock.requestCount.toInt())
             println("[ok] LLM called for the plan turn + final text turn (load/replay makes no LLM calls)")
+        }
+    }
+
+    /**
+     * Black-box denied tool calls across two agent processes:
+     *
+     *   process 1 (plan mode, rejecting permission client): one prompt whose
+     *     first LLM iteration calls read_file out-of-project (permission prompt
+     *     -> reject -> FAILED) and whose second iteration calls an unknown tool
+     *     (refused -> FAILED); the third iteration ends the turn with text.
+     *   process 2: session/load -> replay must render both as FAILED (not COMPLETED)
+     */
+    @Test
+    fun `e2e denied and unknown tool calls replay as FAILED after load`() = runBlocking {
+        val llmMock = MockOpenAiServer(
+            "unused",
+            toolCalls = listOf(
+                MockToolCall(
+                    "read_file",
+                    buildJsonObject { put("path", JsonPrimitive("/etc/acp-agent-does-not-exist")) },
+                ),
+                MockToolCall("no_such_tool", buildJsonObject { }),
+            ),
+        )
+        withE2eAgent("denied-replay", llmMock) {
+            val sessionId: SessionId
+            val first = connect()
+            try {
+                first.client.initialize(testClientInfo())
+                val ops = RejectingClientOperations()
+                val session = newSession(first.client, projectDir, ops)
+                sessionId = session.sessionId
+
+                val events = collectPrompt(session, listOf(ContentBlock.Text("Read the config")))
+                assertEndTurn(events)
+                val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
+                val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                    .associateBy { it.toolCallId.value }
+
+                val deniedResult = resultUpdates.getValue("call_read_file")
+                assertEquals(ToolCallStatus.FAILED, deniedResult.status)
+                assertTrue(
+                    deniedResult.rawOutput.toString().contains("Permission denied"),
+                    "expected the permission denial, got: ${deniedResult.rawOutput}",
+                )
+                assertEquals(1, ops.permissionRequests.size, "the out-of-project read must ask permission")
+                println("[ok] out-of-project read denied live (FAILED, no execution)")
+
+                val unknownResult = resultUpdates.getValue("call_no_such_tool")
+                assertEquals(ToolCallStatus.FAILED, unknownResult.status)
+                assertTrue(
+                    (unknownResult.rawOutput ?: unknownResult.content.orEmpty().firstOrNull())
+                        .toString().contains("unknown tool"),
+                    "expected the unknown-tool error, got: ${unknownResult.rawOutput}",
+                )
+                val introductions = updates.filterIsInstance<SessionUpdate.ToolCall>()
+                assertEquals(
+                    listOf("call_read_file"),
+                    introductions.map { it.toolCallId.value },
+                    "a known tool denied at permission still introduces its call live; " +
+                            "an unknown tool is refused before any introduction",
+                )
+                println("[ok] unknown tool call refused live (FAILED, no introduction)")
+            } finally {
+                first.close()
+            }
+
+            val record = SessionStore(sessionsStoreDir).load(sessionId.value)
+            assertNotNull(record)
+            assertEquals(
+                mapOf("call_read_file" to "failed", "call_no_such_tool" to "failed"),
+                record.toolOutcomes,
+                "both denied outcomes must be persisted with the record",
+            )
+            println("[ok] denied outcomes persisted (toolOutcomes)")
+
+            val second = connect()
+            try {
+                second.client.initialize(testClientInfo())
+                val loadOps = TestClientOperations()
+                second.client.loadSession(
+                    sessionId,
+                    SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
+                    ClientOperationsFactory { _, _ -> loadOps },
+                )
+                awaitUntil(5_000) {
+                    loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                        .any { it.toolCallId.value == "call_no_such_tool" }
+                }
+                val resultUpdates = loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                    .associateBy { it.toolCallId.value }
+                assertEquals(
+                    ToolCallStatus.FAILED,
+                    resultUpdates.getValue("call_read_file").status,
+                    "a permission-denied call must replay as FAILED (was COMPLETED before the fix)",
+                )
+                assertEquals(
+                    ToolCallStatus.FAILED,
+                    resultUpdates.getValue("call_no_such_tool").status,
+                    "an unknown-tool call must replay as FAILED",
+                )
+                val denialText = resultUpdates.getValue("call_read_file").content.orEmpty()
+                    .filterIsInstance<ToolCallContent.Content>()
+                    .mapNotNull { (it.content as? ContentBlock.Text)?.text }
+                    .joinToString("\n")
+                assertTrue(
+                    denialText.contains("Permission denied"),
+                    "the replayed update must carry the denial text, got: $denialText",
+                )
+                assertTrue(
+                    resultUpdates.values.none { it.status == ToolCallStatus.COMPLETED },
+                    "no replayed tool result may claim COMPLETED in this scenario",
+                )
+                println("[ok] session/load replays denied + unknown tool calls as FAILED with their denial text")
+            } finally {
+                second.close()
+            }
+
+            assertEquals(3, llmMock.requestCount.toInt())
+            println("[ok] LLM called 3 times (denied read + unknown tool + final text; load/replay makes none)")
         }
     }
 }

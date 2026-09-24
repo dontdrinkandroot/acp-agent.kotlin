@@ -123,12 +123,15 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
                                      # mutating/kind/title), JsonObject->Any map
     mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE)
-    agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt)
+    agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
+                                     # toolOutcomes: toolCallId -> completed|failed)
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
-                                     # permanent permissions) + record lifecycle (buildRecord/persist/delete)
+                                     # permanent permissions, toolOutcomes) + record lifecycle
+                                     # (buildRecord/persist/delete)
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
-                                     # AgentSession interface (config options, replay, prompt plumbing)
+                                     # AgentSession interface (config options, replay incl.
+                                     # buildReplayUpdates, prompt plumbing)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
                                        # AGENTS.md instructions)
@@ -263,17 +266,25 @@ Config comes from environment variables:
   `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
   record); `session/cancel` is coroutine cancellation. Sessions persist to
   `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
-  atomically (temp + move) on every completed turn and mode/config change. The record (`agent/SessionRecord.kt`) holds
-  history (Koog `OpenAIMessage` wire types via the shared
-  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning and plan.
-  Persist and delete share a `persistMutex` so a delete never resurrects the file; failures log
-  to stderr and never fail the turn. Client-supplied ids are format-checked (`isValidSessionId`)
-  so traversal/separators never reach the filesystem. Session creation (and restore) closes any
-  already-opened MCP connections and the `LlmClient` when the model feed fetch fails.
+  atomically (temp + move) on every completed turn and mode/config change **and after every
+  executed or denied tool call** (`ToolCallExecutor` -> `state.persist()`, so a crash mid-turn
+  keeps the effects-so-far visible in the record; fixes #26's per-turn window). The record
+  (`agent/SessionRecord.kt`) holds history (Koog `OpenAIMessage` wire types via the shared
+  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning, plan and
+  `toolOutcomes` (toolCallId -> `"completed"` | `"failed"`, recorded at history-append time in
+  `SessionState.appendToolResult`; lenient at replay - unknown values/legacy records fall back
+  to COMPLETED). Persist and delete share a `persistMutex` so a delete never resurrects the
+  file; failures log to stderr and never fail the turn. Client-supplied ids are format-checked
+  (`isValidSessionId`) so traversal/separators never reach the filesystem. Session creation
+  (and restore) closes any already-opened MCP connections and the `LlmClient` when the model
+  feed fetch fails.
 - **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
-  `tool_call` + completed `tool_call_update`, plan) from `postInitialize()` - after the load
-  response (SDK hook limitation); `session/resume` restores without replay. `session/list`
+  `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
+  disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
+  `postInitialize()` - after the load response (SDK hook limitation); the pure mapping is
+  `buildReplayUpdates` (`AgentSessionImpl.kt`, unit-pinned by `ReplayHistoryTest`);
+  `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
 - **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
@@ -710,7 +721,14 @@ agent's **wire contract**:
   governing mode's status text).
 - **Sessions** — persistence across three restarts (`session/list` ->
   `session/load` with replay -> `session/resume` -> delete), `update_plan`
-  persistence/replay.
+  persistence/replay, and the replay outcome contract: one prompt in plan mode
+  with a rejecting permission client denies an out-of-project `read_file` and
+  an unknown tool call, then `session/load` pins both replayed `tool_call_update`s
+  as FAILED with their denial text (was the issue #5 blanket-COMPLETED bug) and
+  the `update_plan` scenario pins the successful call replaying COMPLETED.
+  Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open),
+  `ToolCallExecutorTest` (outcome recording + immediate persistence),
+  `SessionStoreTest` (outcome round-trip + legacy decode).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
   provider routing (median cap, fail-open, disabled).
 - **Web fetch** — `web_fetch` over a loopback JDK `HttpServer` (`WebFetchToolTest`):

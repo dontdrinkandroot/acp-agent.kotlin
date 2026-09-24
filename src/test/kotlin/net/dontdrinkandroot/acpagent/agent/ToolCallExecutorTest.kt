@@ -15,8 +15,10 @@ import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.ToolResult
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** Collects emitted events for assertions. */
@@ -122,6 +124,71 @@ class ToolCallExecutorTest {
             2, historyAfter.size,
             "history: mode status seed + denied tool result; nothing else appended",
         )
+    }
+
+    @Test
+    fun `executed and denied calls record their terminal outcome`() = runBlocking {
+        val okTool = PathTool("write", mutating = true)
+        val failTool = object : RecordingTool("boom", false) {
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
+                ToolResult("it broke", true)
+        }
+        val registry = ToolRegistry().apply {
+            register(okTool)
+            register(failTool)
+        }
+        val state = state()
+        val executor = ToolCallExecutor("/project", registry, state)
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_ok", "write", """{"path":"/project/a.txt"}"""))
+        execute(executor, emitter, StreamToolCall("call_2", "boom", "{}"))
+        execute(executor, emitter, StreamToolCall("call_3", "no_such_tool", "{}"), SessionModeId("build"))
+
+        val expected = mapOf(
+            "call_ok" to TOOL_OUTCOME_COMPLETED,
+            "call_2" to TOOL_OUTCOME_FAILED,
+            "call_3" to TOOL_OUTCOME_FAILED,
+        )
+        assertEquals(expected, state.replaySnapshot().third)
+        assertEquals(
+            expected,
+            state.buildRecord().toolOutcomes,
+            "the outcomes must reach the persisted record",
+        )
+    }
+
+    @Test
+    fun `every executed or denied tool call persists the record immediately`() = runBlocking {
+        val storeDir = Files.createTempDirectory("acp-agent-executor-persist")
+        val store = SessionStore(storeDir)
+        val sessionId = SessionId("sess_0123456789abcdef")
+        val state = SessionState(
+            sessionId = sessionId,
+            cwd = "/project",
+            toolRegistry = ToolRegistry(),
+            config = Config("k", "m", "http://127.0.0.1:1"),
+            restored = null,
+            sessionStore = store,
+            closeResources = {},
+        )
+        val tool = PathTool("write", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor("/project", registry, state)
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "write", """{"path":"/project/a.txt"}"""))
+        execute(executor, emitter, StreamToolCall("call_2", "unknown_tool", "{}"))
+
+        val record = store.load(sessionId.value)
+        assertNotNull(record, "each tool call must have persisted the record")
+        assertEquals(
+            mapOf("call_1" to TOOL_OUTCOME_COMPLETED, "call_2" to TOOL_OUTCOME_FAILED),
+            record.toolOutcomes,
+            "the persisted record already carries the second call's outcome",
+        )
+        storeDir.toFile().deleteRecursively()
+        Unit
     }
 
     @Test

@@ -84,3 +84,28 @@ internal class TestClientOperations : ClientSessionOperations {
         return WriteTextFileResponse()
     }
 }
+
+/**
+ * Client operations whose permission prompts always resolve to reject_once,
+ * so a mutating call is denied by the user (drives the denied-tool-call
+ * replay scenarios).
+ */
+internal class RejectingClientOperations : ClientSessionOperations {
+    val permissionRequests = mutableListOf<SessionUpdate.ToolCallUpdate>()
+    val notifications = mutableListOf<SessionUpdate>()
+
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: JsonElement?,
+    ): RequestPermissionResponse {
+        permissionRequests += toolCall
+        return RequestPermissionResponse(
+            RequestPermissionOutcome.Selected(PermissionOptionId("reject_once"))
+        )
+    }
+
+    override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) {
+        notifications += notification
+    }
+}
