@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 
 public class EditFileTool : AgentTool {
@@ -31,7 +32,7 @@ public class EditFileTool : AgentTool {
         if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)
         val newString = arguments.stringArg("new_string") ?: ""
 
-        return runCatching {
+        return try {
             val content = context.fileStore.readRaw(path)
             // Count non-overlapping occurrences via indexOf so the number
             // matches exactly what String.replace replaces: overlapping
@@ -43,15 +44,22 @@ public class EditFileTool : AgentTool {
                 count++
                 occurrence = content.indexOf(oldString, occurrence + oldString.length)
             }
-            if (count == 0) return@runCatching ToolResult("old_string not found in $path", true)
-            if (count > 1) return@runCatching ToolResult(
+            if (count == 0) return ToolResult("old_string not found in $path", true)
+            if (count > 1) return ToolResult(
                 "old_string matches $count times in $path; make it unique",
                 true
             )
             val updated = content.replace(oldString, newString)
             context.fileStore.writeFile(path, updated)
             ToolResult("Edited $path", diff = editResultDiff(path, content, updated, context))
-        }.getOrElse { ToolResult("Edit failed: ${it.message}", true) }
+        } catch (e: CancellationException) {
+            // A cancelled turn (session/cancel) must abort the call — the fs
+            // proxy's read/write are suspending RPCs — never surface as a
+            // bogus tool error and continue the turn.
+            throw e
+        } catch (e: Exception) {
+            ToolResult("Edit failed: ${e.message}", true)
+        }
     }
 }
 

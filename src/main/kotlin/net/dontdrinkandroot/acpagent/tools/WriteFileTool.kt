@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -42,11 +43,18 @@ public class WriteFileTool : AgentTool {
         val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
         if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         val content = arguments.stringArg("content") ?: return ToolResult(arguments.argError("content"), true)
-        return runCatching {
+        return try {
             val diff = writeResultDiff(path, content, context)
             context.fileStore.writeFile(path, content)
             ToolResult("Written $path", diff = diff)
-        }.getOrElse { ToolResult("Write failed: ${it.message}", true) }
+        } catch (e: CancellationException) {
+            // A cancelled turn (session/cancel) must abort the call — the fs
+            // proxy's write is a suspending RPC — never surface as a bogus
+            // tool error and continue the turn.
+            throw e
+        } catch (e: Exception) {
+            ToolResult("Write failed: ${e.message}", true)
+        }
     }
 }
 
@@ -62,6 +70,11 @@ private suspend fun writeResultDiff(path: String, newText: String, context: Tool
     if (context.fileStore is ClientFileStore) return null
     val oldText = try {
         context.fileStore.readRaw(path)
+    } catch (e: CancellationException) {
+        // A cancelled turn must abort; the pre-read is best-effort but the
+        // cancellation is not: swallowing it here would defeat the tool's
+        // own rethrow.
+        throw e
     } catch (e: FileTooLargeException) {
         return null
     } catch (e: FileStoreException) {
