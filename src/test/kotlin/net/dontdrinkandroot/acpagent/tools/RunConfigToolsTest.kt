@@ -6,6 +6,7 @@ import com.agentclientprotocol.model.SessionModeId
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.nio.file.Files
 import kotlin.test.*
 
@@ -177,6 +178,29 @@ class RunConfigToolsTest {
         assertEquals(expect, CreateRunConfigTool("/tmp").modes)
         assertEquals(expect, UpdateRunConfigTool("/tmp").modes)
         assertEquals(expect, DeleteRunConfigTool("/tmp").modes)
+    }
+
+    @Test
+    fun `schemas pin the four tools with the create vs update command difference`() {
+        assertEquals(
+            """{"type":"object","properties":{},"required":[]}""",
+            llmWireJson.encodeToString(ListRunConfigsTool("/tmp").parameters),
+        )
+        val name = """{"type":"string","description":"Name of the run configuration"}"""
+        val command = """{"type":"string","description":"Shell command to run once the configuration is executed"}"""
+        val description = """{"type":"string","description":"Optional human-readable description of the configuration"}"""
+        assertEquals(
+            """{"type":"object","properties":{"name":$name,"command":$command,"description":$description},"required":["name","command"]}""",
+            llmWireJson.encodeToString(CreateRunConfigTool("/tmp").parameters),
+        )
+        assertEquals(
+            """{"type":"object","properties":{"name":$name,"command":$command,"description":$description},"required":["name"]}""",
+            llmWireJson.encodeToString(UpdateRunConfigTool("/tmp").parameters),
+        )
+        assertEquals(
+            """{"type":"object","properties":{"name":{"type":"string","description":"Name of the run configuration to delete"}},"required":["name"]}""",
+            llmWireJson.encodeToString(DeleteRunConfigTool("/tmp").parameters),
+        )
     }
 
     @Test

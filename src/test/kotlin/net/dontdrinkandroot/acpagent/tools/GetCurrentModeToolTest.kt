@@ -6,6 +6,7 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -33,11 +34,11 @@ class GetCurrentModeToolTest {
     }
 
     @Test
-    fun `schema declares no parameters`() {
-        val schema = tool.parameters
-        assertEquals("object", schema["type"].toString().trim('"'))
-        assertTrue(schema["properties"]?.jsonObject?.isEmpty() ?: false)
-        assertTrue(schema["required"]?.toString().orEmpty().trim('"').let { it == "[]" })
+    fun `schema pins the no-argument schema`() {
+        assertEquals(
+            """{"type":"object","properties":{},"required":[]}""",
+            llmWireJson.encodeToString(tool.parameters),
+        )
     }
 
     @Test

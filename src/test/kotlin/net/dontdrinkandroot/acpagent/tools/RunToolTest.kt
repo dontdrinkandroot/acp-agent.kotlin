@@ -10,6 +10,7 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -69,6 +70,15 @@ class RunToolTest {
         val tool = RunTool(tempDir())
         assertEquals(ToolKind.EXECUTE, tool.kind)
         assertFalse(tool.mutating)
+    }
+
+    @Test
+    fun `schema pins config with optional args`() {
+        val tool = RunTool(tempDir())
+        assertEquals(
+            """{"type":"object","properties":{"config":{"type":"string","description":"Name of the run configuration to execute"},"args":{"type":"string","description":"Optional arguments substituted for the {args} placeholder in the command"}},"required":["config"]}""",
+            llmWireJson.encodeToString(tool.parameters),
+        )
     }
 
     @Test

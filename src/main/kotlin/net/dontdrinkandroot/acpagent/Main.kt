@@ -36,24 +36,7 @@ public fun runAgent(args: Array<String>) {
     val config = Config.fromEnv()
     val sessionStore = SessionStore()
 
-    val localRegistry = ToolRegistry().apply {
-        listOf(
-            ReadFileTool(),
-            WriteFileTool(),
-            EditFileTool(),
-            MoveFileTool(),
-            MoveDirectoryTool(),
-            DeleteFileTool(),
-            DeleteDirectoryTool(),
-            ListDirTool(),
-            GlobTool(),
-            GrepTool(),
-            BashTool(),
-            WebFetchTool(),
-            UpdatePlanTool(),
-            GetCurrentModeTool(),
-        ).forEach(::register)
-    }
+    val localRegistry = ToolRegistry().apply { registerAll(localTools()) }
 
     suspend fun assembleSession(
         sessionId: SessionId,
@@ -64,11 +47,7 @@ public fun runAgent(args: Array<String>) {
         val registry = ToolRegistry().apply {
             registerAll(localRegistry.all())
             val cwd = restored?.cwd ?: parameters.cwd
-            register(RunTool(cwd))
-            register(ListRunConfigsTool(cwd))
-            register(CreateRunConfigTool(cwd))
-            register(UpdateRunConfigTool(cwd))
-            register(DeleteRunConfigTool(cwd))
+            registerAll(sessionTools(cwd))
         }
         val connections = mutableListOf<McpServerConnection>()
         suspend fun connect(server: McpServer) {

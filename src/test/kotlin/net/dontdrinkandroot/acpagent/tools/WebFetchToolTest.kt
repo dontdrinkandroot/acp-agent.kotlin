@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonNull
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
@@ -270,5 +271,13 @@ class WebFetchToolTest {
         assertEquals(ToolKind.FETCH, tool.kind)
         assertTrue(tool.targetPaths(buildJsonObject { put("url", "http://example.com") }).isEmpty())
         assertEquals("web_fetch(url: http://example.com)", tool.title(buildJsonObject { put("url", "http://example.com") }))
+    }
+
+    @Test
+    fun `schema pins url with optional paging parameters`() {
+        assertEquals(
+            """{"type":"object","properties":{"url":{"type":"string","description":"The http(s) URL to fetch."},"startLine":{"type":"integer","description":"First line to return (1-based). Defaults to the start."},"maxLines":{"type":"integer","description":"Maximum number of lines to return (1-2000). Defaults to 500."}},"required":["url"]}""",
+            llmWireJson.encodeToString(WebFetchTool().parameters),
+        )
     }
 }

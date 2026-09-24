@@ -8,6 +8,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -1067,25 +1068,106 @@ class MoveDeleteToolsTest {
 
 class ToolSchemaTest {
 
+    /**
+     * Every schema pin asserts the serialized string (JsonObject equality is
+     * order-insensitive), matching the ToolSchemaWireTest convention.
+     */
+
     @Test
-    fun `required is a json array in every tool schema`() {
-        val tools = listOf(
-            ReadFileTool(),
-            WriteFileTool(),
-            EditFileTool(),
-            MoveFileTool(),
-            MoveDirectoryTool(),
-            DeleteFileTool(),
-            DeleteDirectoryTool(),
-            ListDirTool(),
-            GlobTool(),
-            GrepTool(),
-            BashTool(),
+    fun `read_file schema pins path limit line`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"File path, absolute or relative to the working directory."},"limit":{"type":"integer","description":"Maximum number of lines to return (1-2000)."},"line":{"type":"integer","description":"First line to return (1-based). Defaults to the start of the file."}},"required":["path","limit"]}""",
+            llmWireJson.encodeToString(ReadFileTool().parameters),
         )
+    }
+
+    @Test
+    fun `write_file schema pins path content`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"File path, absolute or relative to the working directory."},"content":{"type":"string","description":"Full file content; replaces existing content."}},"required":["path","content"]}""",
+            llmWireJson.encodeToString(WriteFileTool().parameters),
+        )
+    }
+
+    @Test
+    fun `edit_file schema pins path old_string new_string`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"File path, absolute or relative to the working directory."},"old_string":{"type":"string","description":"Exact substring to replace; must match exactly once in the file."},"new_string":{"type":"string","description":"Replacement text; empty removes the old_string."}},"required":["path","old_string","new_string"]}""",
+            llmWireJson.encodeToString(EditFileTool().parameters),
+        )
+    }
+
+    @Test
+    fun `move_file schema pins source destination`() {
+        assertEquals(
+            """{"type":"object","properties":{"source":{"type":"string","description":"File to move, absolute or relative to the working directory."},"destination":{"type":"string","description":"New file location, absolute or relative to the working directory; missing parent directories are created."}},"required":["source","destination"]}""",
+            llmWireJson.encodeToString(MoveFileTool().parameters),
+        )
+    }
+
+    @Test
+    fun `move_directory schema pins source destination`() {
+        assertEquals(
+            """{"type":"object","properties":{"source":{"type":"string","description":"Directory to move, absolute or relative to the working directory."},"destination":{"type":"string","description":"New directory location, absolute or relative to the working directory; missing parent directories are created."}},"required":["source","destination"]}""",
+            llmWireJson.encodeToString(MoveDirectoryTool().parameters),
+        )
+    }
+
+    @Test
+    fun `delete_file schema pins path`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"File to delete, absolute or relative to the working directory."}},"required":["path"]}""",
+            llmWireJson.encodeToString(DeleteFileTool().parameters),
+        )
+    }
+
+    @Test
+    fun `delete_directory schema pins path`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"Directory to delete, absolute or relative to the working directory."}},"required":["path"]}""",
+            llmWireJson.encodeToString(DeleteDirectoryTool().parameters),
+        )
+    }
+
+    @Test
+    fun `list_dir schema pins path`() {
+        assertEquals(
+            """{"type":"object","properties":{"path":{"type":"string","description":"Directory path, absolute or relative to the working directory."}},"required":["path"]}""",
+            llmWireJson.encodeToString(ListDirTool().parameters),
+        )
+    }
+
+    @Test
+    fun `glob schema pins pattern with optional root`() {
+        assertEquals(
+            """{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."},"root":{"type":"string","description":"Directory to search, absolute or relative; defaults to the working directory."}},"required":["pattern"]}""",
+            llmWireJson.encodeToString(GlobTool().parameters),
+        )
+    }
+
+    @Test
+    fun `grep schema pins pattern with optional root and glob`() {
+        assertEquals(
+            """{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression matched against each line."},"root":{"type":"string","description":"Directory to search, absolute or relative; defaults to the working directory."},"glob":{"type":"string","description":"Optional glob filter; only files matching it are searched."}},"required":["pattern"]}""",
+            llmWireJson.encodeToString(GrepTool().parameters),
+        )
+    }
+
+    @Test
+    fun `every production tool advertises an object schema with a required array of strings`() {
+        val tools = localTools() + sessionTools("/tmp/schema-guard-cwd")
+        assertTrue(tools.isNotEmpty(), "the production tool catalog must not be empty")
         tools.forEach { tool ->
-            val required = tool.parameters["required"]
-            assertIs<JsonArray>(required, "${tool.name} required must be an array")
-            required.forEach { assertIs<JsonPrimitive>(it) }
+            val parameters = tool.parameters
+            assertEquals(
+                "object",
+                parameters["type"]?.jsonPrimitive?.contentOrNull,
+                "${tool.name}: parameters.type",
+            )
+            assertIs<JsonObject>(parameters["properties"], "${tool.name}: parameters.properties")
+            val required = parameters["required"]
+            assertIs<JsonArray>(required, "${tool.name}: required must be an array")
+            required.forEach { assertIs<JsonPrimitive>(it, "${tool.name}: required entries must be strings") }
         }
     }
 }

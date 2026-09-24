@@ -10,6 +10,7 @@ import kotlinx.io.readString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -78,6 +79,14 @@ class BashToolTest {
         assertEquals(
             "bash(command: ./gradlew test)",
             BashTool().title(buildJsonObject { put("command", "./gradlew test") }),
+        )
+    }
+
+    @Test
+    fun `schema pins the command argument`() {
+        assertEquals(
+            """{"type":"object","properties":{"command":{"type":"string","description":"Shell command to run (via /bin/sh) in the project working directory."}},"required":["command"]}""",
+            llmWireJson.encodeToString(BashTool().parameters),
         )
     }
 

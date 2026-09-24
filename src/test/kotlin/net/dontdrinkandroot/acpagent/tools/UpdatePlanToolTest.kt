@@ -6,6 +6,7 @@ import com.agentclientprotocol.model.PlanEntryStatus
 import com.agentclientprotocol.model.ToolKind
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -30,14 +31,11 @@ class UpdatePlanToolTest {
     }
 
     @Test
-    fun `schema declares a required entries array`() {
-        val schema = tool.parameters
-        assertEquals("object", schema["type"]?.toString().orEmpty().trim('"'))
-        val properties = schema["properties"] as JsonObject
-        val entries = properties["entries"] as JsonObject
-        assertEquals("array", entries["type"].toString().trim('"'))
-        val required = schema["required"] as JsonArray
-        assertEquals("entries", required.single().toString().trim('"'))
+    fun `schema pins the nested entries items schema with enums`() {
+        assertEquals(
+            """{"type":"object","properties":{"entries":{"type":"array","description":"Complete list of plan entries; send all entries on every call.","items":{"type":"object","description":"A step in the execution plan.","properties":{"content":{"type":"string","description":"Description of the step."},"priority":{"type":"string","description":"Priority of the step: high (critical), medium (important), low (nice to have).","enum":["high","medium","low"]},"status":{"type":"string","description":"Status of the step; exactly one entry may be in_progress at a time.","enum":["pending","in_progress","completed"]}},"required":["content","priority","status"]}}},"required":["entries"]}""",
+            llmWireJson.encodeToString(tool.parameters),
+        )
     }
 
     @Test

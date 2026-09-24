@@ -152,6 +152,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local; future source: .aiignore
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
+    tools/ToolCatalog.kt             # localTools() + sessionTools(cwd): the production tool list
+                                     # (Main.kt assembles the registries from it; iterated by the
+                                     # schema guard test)
     tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
     tools/BashTool.kt                # bash tool (ProcessBuilder)
     tools/WebFetchTool.kt            # web_fetch tool (line-paged HTTP fetch, ToolKind.FETCH)
@@ -758,6 +761,21 @@ whole-file diff convention and the fs-proxy diff skip, the strict JSON-null argu
 rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
 mapping, `title` annotation) are unit-tested in
 `ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`.
+
+**Tool schema pins**: every registered local tool pins its `parameters` schema as an
+encoded string (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive —
+JsonObject equality is order-insensitive) in its own test class (`ToolSchemaTest` in
+`ToolsTest.kt` covers the path tools, the remaining tools in their dedicated classes:
+`BashToolTest`, `WebFetchToolTest`, `RunToolTest`, `RunConfigToolsTest`,
+`UpdatePlanToolTest`, `GetCurrentModeToolTest`). The registry-wide guard test
+(`ToolSchemaTest.every production tool advertises an object schema…`) iterates
+`localTools()` + `sessionTools(cwd)` from `tools/ToolCatalog.kt` — the same helpers
+`Main.kt` assembles the production registry from — asserting `type=object`, a
+`properties` object and a `required` string array for every tool. It checks
+**structure only**: a tool newly added to `ToolCatalog.kt` will pass it until its
+schema pin is added, so treat touching the catalog list as the reminder to add the
+pin in the same change. The schema
+builder itself is pinned at the raw-string level by `ToolSchemaWireTest`.
 
 **e2e change policy**: e2e scenarios pin the agent's **wire contract** — protocol
 message flow, security boundaries (permission routing, mode restrictions,
