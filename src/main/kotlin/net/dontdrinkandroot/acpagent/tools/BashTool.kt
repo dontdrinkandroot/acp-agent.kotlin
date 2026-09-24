@@ -202,6 +202,35 @@ internal object ProcessRunner {
     } ?: false
 }
 
+/**
+ * Runs [command] via [ProcessRunner] and renders the result text shared by the
+ * `bash` and `run` tools. A cancelled turn (`session/cancel`) rethrows the
+ * [CancellationException] — it must abort the tool call, never surface as a
+ * bogus failed tool result; every other failure still becomes an error
+ * [ToolResult] with the exception message.
+ */
+internal suspend fun runShellCommand(command: String, context: ToolContext, failureLabel: String): ToolResult = try {
+    val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
+    val output = buildString {
+        if (result.timedOut) {
+            append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")
+        }
+        if (result.stdout.isNotBlank()) append(result.stdout)
+        if (result.stderr.isNotBlank()) {
+            if (isNotEmpty()) append("\n")
+            append("STDERR:\n").append(result.stderr)
+        }
+    }
+    ToolResult(
+        text = if (output.isBlank()) "(no output, exit ${result.exitCode})" else output,
+        isError = result.exitCode != 0 || result.timedOut,
+    )
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    ToolResult("$failureLabel: ${e.message}", true)
+}
+
 public class BashTool : AgentTool {
     override val name = "bash"
     override val description = "Run a shell command in the project working directory. For build/test/git/diagnostics."
@@ -216,22 +245,6 @@ public class BashTool : AgentTool {
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val command = arguments.stringArg("command") ?: return ToolResult(arguments.argError("command"), true)
-        return runCatching {
-            val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
-            val output = buildString {
-                if (result.timedOut) {
-                    append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")
-                }
-                if (result.stdout.isNotBlank()) append(result.stdout)
-                if (result.stderr.isNotBlank()) {
-                    if (isNotEmpty()) append("\n")
-                    append("STDERR:\n").append(result.stderr)
-                }
-            }
-            ToolResult(
-                text = if (output.isBlank()) "(no output, exit ${result.exitCode})" else output,
-                isError = result.exitCode != 0 || result.timedOut,
-            )
-        }.getOrElse { ToolResult("Command failed: ${it.message}", true) }
+        return runShellCommand(command, context, "Command failed")
     }
 }

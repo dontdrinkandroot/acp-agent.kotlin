@@ -463,6 +463,21 @@ Config comes from environment variables:
   `CancellationException` instead of swallowing it into a bogus "Permission denied". A
   cancelled turn also terminates a running bash command (interruptible wait +
   process-tree kill), so `session/cancel` does not leave orphans behind.
+  Cancellation must **propagate out of tool execution** (`runShellCommand` in
+  `tools/BashTool.kt` rethrows it before the generic catch, like `WebFetchTool`; the
+  executor rethrows at `ToolCallExecutor.kt`): a swallowing tool turns `session/cancel`
+  into a bogus failed `ToolResult`. Same contract for the fs-proxy file tools
+  (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with the client fs proxy their
+  `FileStore` calls are suspending RPCs; #28, fixed 2026-09-24, incl. the inner
+  `writeResultDiff` pre-read catch) and for the process tools' duplicate run/format
+  helper. Testing this swallow needs an outcome-capture
+  detector, not `Deferred.isCancelled` — a `cancelAndJoin`ed deferred is
+  `isCancelled` even when the body swallowed and returned a value
+  (`BashToolTest`/`RunToolTest` "cancelling the tool during a running command"
+  tests; verified to fail with the bug re-introduced). Today the SDK's
+  `SafeCollector.emit` (`currentContext.ensureActive()`) masks a swallowed
+  cancellation before the bogus `ToolCallUpdate(FAILED)` is emitted, so the
+  end-to-end symptom is latent, not observed.
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
   `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
   builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
@@ -593,7 +608,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # flow + UUIDv7 messageIds, usage_update, attribution headers
         E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
                                      # restarts + update_plan persistence/replay
-        E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt
+        E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
+                                     # cancel during a running bash command (no FAILED update)
         E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
                                      # before permission/execution (bash in build mode)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion

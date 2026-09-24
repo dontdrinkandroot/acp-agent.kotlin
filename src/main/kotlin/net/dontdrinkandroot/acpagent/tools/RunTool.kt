@@ -232,22 +232,6 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
         // Every occurrence is substituted so multi-placeholder commands do not
         // leak a literal "{args}" into the shell.
         val resolvedCommand = config.command.replace(ARGS_PLACEHOLDER, args.orEmpty())
-        return runCatching {
-            val result = ProcessRunner.run(resolvedCommand, context.cwd, context.bashTimeoutSeconds.toLong())
-            val output = buildString {
-                if (result.timedOut) {
-                    append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")
-                }
-                if (result.stdout.isNotBlank()) append(result.stdout)
-                if (result.stderr.isNotBlank()) {
-                    if (isNotEmpty()) append("\n")
-                    append("STDERR:\n").append(result.stderr)
-                }
-            }
-            ToolResult(
-                text = if (output.isBlank()) "(no output, exit ${result.exitCode})" else output,
-                isError = result.exitCode != 0 || result.timedOut,
-            )
-        }.getOrElse { ToolResult("Run configuration failed: ${it.message}", true) }
+        return runShellCommand(resolvedCommand, context, "Run configuration failed")
     }
 }

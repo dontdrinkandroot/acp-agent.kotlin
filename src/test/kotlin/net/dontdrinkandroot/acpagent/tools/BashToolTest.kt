@@ -13,6 +13,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class BashToolTest {
@@ -144,6 +145,30 @@ class BashToolTest {
         delay(200)
         val alive = ProcessBuilder("kill", "-0", pid).start().waitFor() == 0
         assertFalse(alive, "process $pid must be dead after cancellation")
+    }
+
+    @Test
+    fun `cancelling the tool during a running command propagates instead of a failed result`() = runBlocking {
+        val dir = Files.createTempDirectory("acp-bash-cancel-tool").toString()
+        val pidFile = "$dir/pid"
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+        )
+        // Regression (issue #1): the tool used to swallow the CancellationException
+        // into a bogus "Command failed" ToolResult; it must propagate instead.
+        // The captured outcome distinguishes the two: a swallowing body returns
+        // a ToolResult (no suspension point after the catch), a propagating body
+        // never completes normally, so it stays null.
+        var outcome: ToolResult? = null
+        val job = launch(Dispatchers.IO) {
+            outcome = BashTool().execute(buildJsonObject { put("command", "echo \$\$ > $pidFile; sleep 30") }, ctx)
+        }
+        awaitPid(pidFile)
+        job.cancelAndJoin()
+        assertNull(outcome, "cancellation must propagate; the tool must not return a failed result, got: $outcome")
     }
 
     private suspend fun awaitPid(file: String, timeoutMillis: Long = 5000): String {

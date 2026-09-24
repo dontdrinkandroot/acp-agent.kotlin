@@ -3,13 +3,18 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.io.buffered
+import kotlinx.io.files.Path
+import kotlinx.io.files.SystemFileSystem
+import kotlinx.io.readString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RunToolTest {
@@ -94,6 +99,38 @@ class RunToolTest {
         val result = RunTool(dir).execute(buildJsonObject { put("config", "greet") }, context(dir))
         assertFalse(result.isError, result.text)
         assertEquals("hello", result.text)
+    }
+
+    @Test
+    fun `cancelling the tool during a running command propagates instead of a failed result`() = runBlocking {
+        val dir = tempDir()
+        val pidFile = "$dir/pid"
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), "{\"sleep\":{\"command\":\"echo \$\$ > $pidFile; sleep 30\"}}")
+        // Regression (issue #1): the tool used to swallow the CancellationException
+        // into a bogus "Run configuration failed" ToolResult; it must propagate instead.
+        // The captured outcome distinguishes the two: a swallowing body returns
+        // a ToolResult (no suspension point after the catch), a propagating body
+        // never completes normally, so it stays null.
+        var outcome: ToolResult? = null
+        val job = launch(Dispatchers.IO) {
+            outcome = RunTool(dir).execute(buildJsonObject { put("config", "sleep") }, context(dir))
+        }
+        awaitPid(pidFile)
+        job.cancelAndJoin()
+        assertNull(outcome, "cancellation must propagate; the tool must not return a failed result, got: $outcome")
+    }
+
+    private suspend fun awaitPid(file: String, timeoutMillis: Long = 5000): String {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            val content = runCatching {
+                SystemFileSystem.source(Path(file)).buffered().use { it.readString() }
+            }.getOrNull()
+            if (!content.isNullOrBlank()) return content.trim()
+            delay(50)
+        }
+        error("pid file $file was never written")
     }
 
     @Test
