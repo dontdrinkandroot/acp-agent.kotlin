@@ -979,9 +979,15 @@ communicate that with the user so we can review them.
 - **Shutdown**: do not drive shutdown from the transport's `onClose`; `runAgent` polls
   `transport.state.value == Transport.State.CLOSED` and then calls `protocol.close()`
   (`Main.kt`).
-- **Gradle lock timeout**: `Timeout waiting to lock file hash cache ...` means another
-  build/daemon holds the lock (the error names the owning PID). Wait and retry - never
-  kill processes or delete lock files.
+- **Gradle lock timeout**: `Timeout waiting to lock file hash cache ...` (or the journal
+  cache) means another build/daemon holds the lock (the error names the owning PID). First
+  aid is the shipped `gradleUnstick` run config - graceful daemon stop, hard-kill of
+  leftovers, then wiping stale user-cache AND project-local lock files only when no daemon
+  process remains (it is deliberately guarded; do not hand-kill or wipe while a daemon is
+  alive). Wait-and-retry is the gentler alternative when the owning build is expected to
+  finish soon. Known benign aftermath of a wipe: the next Gradle run may spew
+  `CorruptedCacheException ... file-access.bin` stderr lines (the journal cache was
+  truncated mid-write) while the build itself succeeds.
 
 ## Recipes
 

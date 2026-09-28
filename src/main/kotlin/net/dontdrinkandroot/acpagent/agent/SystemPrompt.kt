@@ -67,10 +67,12 @@ internal class SystemPromptBuilder(
         appendLine("- Modify existing code with `edit_file` deltas; use `write_file` only for new files or an intentional whole-file rewrite (read the full file first - a hasty rewrite can drop the tail).")
         appendLine("- When asserting behavior in a test, derive the expectation from the code being tested or its existing tests, not from assumptions.")
         appendLine("- Prefer the `run` tool's named configurations for the standard build/test/compile loop over `bash` shells.")
+        appendLine("- Run configurations are durable, shared project workflows: create or update them only for commands worth repeating (build, test, lint, deploy...). Never mint a configuration just to execute a one-off diagnostic or workaround.")
         appendLine(
             "- On a mode switch, continue with the mode stated in the latest status message; tool schemas " +
-                    "in the request are already filtered to that mode. If a tool you wanted is not available, ask the " +
-                    "user to switch mode rather than attempting a workaround."
+                    "in the request are already filtered to that mode. If no durable run configuration can be used " +
+                    "or created to solve or investigate a problem, or using one would make things awkwardly " +
+                    "complicated, ask the user for bash mode instead of improvising one-off workarounds."
         )
         append(trustedReadPathsSection(trustedReadPaths))
         append(excludedFilesSection(excludedFileGlobs))
