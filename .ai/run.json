@@ -31,17 +31,17 @@
         "command": "bash .ai/scripts/show-test-failures.sh",
         "description": "Print failure messages from the latest JUnit XML reports"
     },
-    "sdk_sources": {
-        "command": "bash .ai/scripts/sdk-sources.sh {args}",
-        "description": "Extract a *-sources.jar from the Gradle cache to /tmp/acp-sdk-sources for inspection (args: coordinate substring [version])"
+    "sources": {
+        "command": "timeout 120 ./gradlew unpackLibrarySources",
+        "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions"
     },
     "git": {
         "command": "git {args}",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
     },
-    "gradleStop": {
-        "command": "./gradlew --stop; pkill -f GradleDaemon || true; sleep 2",
-        "description": "Stop Gradle daemons and kill any lingering daemon processes holding cache locks"
+    "gradleUnstick": {
+        "command": "./gradlew --stop; pkill -f '[G]radleDaemon'; sleep 2; if pgrep -f '[G]radleDaemon' > /dev/null; then echo \"Daemons still running - locks NOT wiped\"; else echo \"No daemons left - wiping stale cache locks\"; find ~/.gradle/caches .gradle -name '*.lock' -delete; fi",
+        "description": "First aid for stuck Gradle daemons/locks: graceful stop, hard-kill leftovers, then wipe stale user-cache AND project-local .gradle lock files only when no daemon process remains"
     },
     "test_scripts": {
         "command": "timeout 300 tests/bash/run-all",

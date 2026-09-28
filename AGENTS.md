@@ -74,12 +74,26 @@ Use the `run` tool's configurations for the standard dev loop:
 - `build` — assemble + all tests
 - `install_dist` — relink the e2e launcher
 - `dependency_updates` — outdated deps (stable-only)
+- `sources` — resolve + unpack the `-sources` jars of the main+test classpath into
+  `build/library-sources-unpacked/<artifact>/` for browsing library code at the exact resolved
+  versions (see Library-source investigation below)
 
 The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
 `OPENROUTER_API_KEY_FILE` required):
 
 - `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
 - `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README)
+
+**Library-source investigation**: the `sources` run config (`./gradlew unpackLibrarySources`
+backed by the `downloadLibrarySources` + `unpackLibrarySources` Sync tasks in
+`build.gradle.kts`) resolves + unpacks the `-sources` jars of `runtimeClasspath` +
+`testRuntimeClasspath` into `build/library-sources-unpacked/<artifact>/` for browsing/grep'ing
+library code at the exact resolved versions — first stop for "how does library X actually
+behave" questions, before web research. Both tasks are `Sync`, so stale artifacts of old
+versions are wiped automatically on version bumps. Built on the current
+`ArtifactView.withVariantReselection()` API; the often-copied
+`createArtifactResolutionQuery` recipe is legacy Gradle (maintenance mode, removal targeted
+at 9.x — gradle/gradle#26365) and is deliberately not used.
 
 **Shutdown**: `runAgent` loops until `transport.state.value == Transport.State.CLOSED`
 (small delay) then `protocol.close()`.
@@ -364,9 +378,11 @@ Config comes from environment variables:
   `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
   composition - also wired into Gradle `check` as the `testScripts` Exec task),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
-  `.ai/scripts/show-test-failures.sh`) and `sdk_sources` (extract a `*-sources.jar` from
-  the Gradle cache for inspection via `.ai/scripts/sdk-sources.sh`, for the SDK contract
-  checks). The gradle configs are
+  `.ai/scripts/show-test-failures.sh`) and `sources` (resolve + unpack the `-sources` jars of the
+  main+test classpath into `build/library-sources-unpacked/<artifact>/` via the Gradle tasks
+  `downloadLibrarySources` + `unpackLibrarySources` in `build.gradle.kts`, for browsing library
+  code at the exact resolved versions - see Library-source investigation under Building / running).
+  The gradle configs are
   wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
   a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
   config (`git {args}`, arbitrary arguments, read-only inspection only) and a `gradleStop`
@@ -826,7 +842,9 @@ update this file: (1) `GET /models` wire types - still `internal`? still without
 `reasoning` block? (2) chat request - does Koog's OpenRouter request model carry
 `reasoning {effort}` now? (3) `agents-features-acp` - still batch-emits events, no
 permission flow/modes/usage indicator/replay? The moment any of these closes, port that
-surface to Koog.
+surface to Koog. Run config `sources` (e.g.
+`build/library-sources-unpacked/prompt-executor-openrouter-client-jvm-1.2.0/`) is the
+mechanism to check these against the exact resolved Koog sources.
 
 **Definition of done**: a change is done when the `build` run configuration passes
 (compile + all tests incl. the black-box e2e).

@@ -1,4 +1,8 @@
 import java.io.File
+import org.gradle.api.attributes.Bundling
+import org.gradle.api.attributes.Category
+import org.gradle.api.attributes.DocsType
+import org.gradle.api.attributes.Usage
 plugins {
     kotlin("jvm") version "2.4.10"
     kotlin("plugin.serialization") version "2.4.10"
@@ -37,6 +41,42 @@ val generateGitProperties = tasks.register("generateGitProperties") {
 }
 
 sourceSets.main.get().resources.srcDir(generateGitProperties)
+
+// Resolves the -sources jars of every main and test classpath dependency into
+// build/library-sources for browsing library code at the exact resolved versions
+// (e.g. to verify SDK contract checks against sources instead of guessing docs).
+// Uses the current ArtifactView-withVariantReselection API; the often-copied
+// createArtifactResolutionQuery recipe is legacy (maintenance mode, slated for
+// removal in Gradle 9.x, gradle/gradle#26365).
+val sourcesViewAttributes: ArtifactView.ViewConfiguration.() -> Unit = {
+	withVariantReselection()
+	attributes {
+		attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+		attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.DOCUMENTATION))
+		attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling.EXTERNAL))
+		attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objects.named(DocsType.SOURCES))
+	}
+}
+val downloadLibrarySources = tasks.register<Sync>("downloadLibrarySources") {
+	group = "documentation"
+	description = "Resolves -sources jars for the main and test classpaths into build/library-sources."
+	from(
+		configurations.runtimeClasspath.get().incoming.artifactView(sourcesViewAttributes).files,
+		configurations.testRuntimeClasspath.get().incoming.artifactView(sourcesViewAttributes).files,
+	)
+	into(layout.buildDirectory.dir("library-sources"))
+}
+val unpackLibrarySources = tasks.register<Sync>("unpackLibrarySources") {
+	group = "documentation"
+	description = "Unpacks the -sources jars into build/library-sources-unpacked/<artifact>/ for browsing."
+	dependsOn(downloadLibrarySources)
+	for (jar in configurations.runtimeClasspath.get().incoming.artifactView(sourcesViewAttributes).files +
+		configurations.testRuntimeClasspath.get().incoming.artifactView(sourcesViewAttributes).files
+	) {
+		from(zipTree(jar)) { into(jar.name.removeSuffix("-sources.jar")) }
+	}
+	into(layout.buildDirectory.dir("library-sources-unpacked"))
+}
 
 repositories {
     mavenCentral()
