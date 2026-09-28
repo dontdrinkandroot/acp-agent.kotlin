@@ -46,5 +46,10 @@
     "test_scripts": {
         "command": "timeout 300 tests/bash/run-all",
         "description": "Run the shell test suite (tests/bash) pinning the docker launcher composition"
+    },
+    "compile_test": {
+        "command": "timeout 60 ./gradlew compileTestKotlin",
+        "description": "Compile test sources (fastest loop for test-code errors)"
     }
 }
+

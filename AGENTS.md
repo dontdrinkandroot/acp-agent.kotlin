@@ -47,7 +47,10 @@ banner-suppressing API.
 
 * We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
   uses speaking variable and function names.
-* We use test-driven development by default, in small red→green→refactor cycles writing tests first. The tests are documenting our specification and expectations. If a test would be overly complicated, ask the user first if it is worth it.
+* We use test-driven development by default, in small red→green→refactor cycles writing tests first.
+  Do not write multiple tests at once, always one test, then implementation, then refactor.
+  The tests are documenting our specification and expectations.
+  If a test would be overly complicated, ask the user first if it is worth it.
 * Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
 * _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
@@ -493,6 +496,16 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   symlink scan and the recursive delete are depth-capped (64) like the search walker.
   The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
   object files are binary noise for content searches) and symlinks.
+- **Search/list root validation** (`searchRootError` in `GlobTool.kt`): the three
+  directory-consuming tools fail loudly on a wrong root instead of silently returning an
+  empty result (`No matches`/empty listing) — `Root not found` (missing), `Not a directory`
+  (file as root; fixes the silent `No matches` of #31), `Not readable` (chmod-000 root,
+  fixes #32's silent empty `list_dir` listing). `list_dir`'s missing-path message changed
+  from `Not a directory` to `Root not found`. Out-of-scope residuals (documented here so
+  they stay visible): an unlistable subdirectory mid-walk still silently prunes its whole
+  subtree (`File.list()` returns null on I/O error - the walk-time swallow is deliberate
+  for unreadable dirs, only the root is validated), so the skip-note counter undercounts;
+  and a file root is rejected rather than searched as a single file.
 - **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
   explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
   prepending `...(truncated: N chars omitted from the beginning)...` (Locale.ROOT; bounded

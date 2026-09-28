@@ -35,10 +35,10 @@ public class GrepTool : AgentTool {
         val glob = arguments.stringArg("glob")
         if (arguments.isNullArg("glob")) return ToolResult(arguments.argError("glob"), true)
         return executeSafely("Grep failed") {
+            searchRootError(root)?.let { return@executeSafely ToolResult(it, true) }
             val regex = Regex(pattern)
             val fileFilter = glob?.let { globToRegex(it) }
             val base = Path(root)
-            if (!SystemFileSystem.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
             var skippedBinaryOrOversized = 0
             val matches = mutableListOf<GrepMatch>()
             walk(base, 0) { f ->

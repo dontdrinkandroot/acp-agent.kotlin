@@ -532,6 +532,54 @@ class FileToolsTest {
     fun `glob root not found errors`() = runBlocking {
         val result = GlobTool().execute(buildJsonObject { put("root", "/nonexistent-root"); put("pattern", "*") }, context("/tmp"))
         assertTrue(result.isError)
+        assertEquals("Root not found: /nonexistent-root", result.text)
+    }
+
+    @Test
+    fun `grep root not found errors`() = runBlocking {
+        val result = GrepTool().execute(buildJsonObject { put("root", "/nonexistent-root"); put("pattern", "needle") }, context("/tmp"))
+        assertTrue(result.isError)
+        assertEquals("Root not found: /nonexistent-root", result.text)
+    }
+
+    @Test
+    fun `glob and grep with a file as root fail loudly instead of silently matching nothing`() = runBlocking {
+        val dir = tmpDir()
+        WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "needle") }, context(dir))
+
+        val glob = GlobTool().execute(buildJsonObject { put("root", "$dir/a.txt"); put("pattern", "**/*") }, context(dir))
+        assertTrue(glob.isError, "glob with a file as root must fail loudly, was: ${glob.text}")
+        assertEquals("Not a directory: $dir/a.txt", glob.text)
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", "$dir/a.txt"); put("pattern", "needle") }, context(dir))
+        assertTrue(grep.isError, "grep with a file as root must fail loudly, was: ${grep.text}")
+        assertEquals("Not a directory: $dir/a.txt", grep.text)
+    }
+
+    @Test
+    fun `list glob and grep fail loudly on an unreadable root directory`() = runBlocking {
+        val dir = tmpDir()
+        SystemFileSystem.createDirectories(Path("$dir/locked"))
+        val nioLocked = java.nio.file.Path.of("$dir/locked")
+        nioLocked.toFile().setReadable(false)
+        // Read-trusting environments (e.g. tests running as root) cannot exercise
+        // this; skip honestly instead of failing there.
+        if (java.nio.file.Files.isReadable(nioLocked)) {
+            println("Skipping unreadable-root test: process can read chmod-000 dirs (likely running as root)")
+            return@runBlocking
+        }
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", "$dir/locked") }, context(dir))
+        assertTrue(list.isError, "list_dir on an unreadable directory must fail loudly, was: ${list.text}")
+        assertEquals("Not readable: $dir/locked", list.text)
+
+        val glob = GlobTool().execute(buildJsonObject { put("root", "$dir/locked"); put("pattern", "**/*") }, context(dir))
+        assertTrue(glob.isError, "glob on an unreadable directory must fail loudly, was: ${glob.text}")
+        assertEquals("Not readable: $dir/locked", glob.text)
+
+        val grep = GrepTool().execute(buildJsonObject { put("root", "$dir/locked"); put("pattern", "x") }, context(dir))
+        assertTrue(grep.isError, "grep on an unreadable directory must fail loudly, was: ${grep.text}")
+        assertEquals("Not readable: $dir/locked", grep.text)
     }
 
     @Test

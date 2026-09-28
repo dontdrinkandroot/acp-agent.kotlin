@@ -24,8 +24,7 @@ public class ListDirTool : AgentTool {
         val path = absoluteToolPath(context.cwd, rawPath)
         return executeSafely("List failed") {
             val dir = Path(path)
-            val meta = SystemFileSystem.metadataOrNull(dir)
-            if (meta == null || !meta.isDirectory) return@executeSafely ToolResult("Not a directory: $path", true)
+            searchRootError(path)?.let { return@executeSafely ToolResult(it, true) }
             val sorted = SystemFileSystem.list(dir)
                 .filter { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) == null }
                 .map { it.name }

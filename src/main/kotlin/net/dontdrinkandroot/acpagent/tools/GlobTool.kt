@@ -5,6 +5,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Path as NioPath
+import java.nio.file.Files
 
 public class GlobTool : AgentTool {
     override val name = "glob"
@@ -33,7 +34,7 @@ public class GlobTool : AgentTool {
         return executeSafely("Glob failed") {
             val regex = globToRegex(pattern)
             val base = Path(root)
-            if (!SystemFileSystem.exists(base)) return@executeSafely ToolResult("Root not found: $root", true)
+            searchRootError(root)?.let { return@executeSafely ToolResult(it, true) }
             val results = mutableListOf<String>()
             walk(base, 0) { f ->
                 if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) return@walk
@@ -72,6 +73,17 @@ internal fun relativeToRoot(root: String, path: String): String {
     val rootPath = NioPath.of(root).toAbsolutePath().normalize()
     val abs = NioPath.of(path).toAbsolutePath().normalize()
     return if (abs.startsWith(rootPath)) rootPath.relativize(abs).toString() else abs.toString()
+}
+
+/**
+ * Validates a search root for the directory-consuming tools (glob/grep, and
+ * list_dir with the same convention) so a wrong root fails loudly instead of
+ * silently producing "No matches": missing, a file, or OS-unreadable.
+ */
+internal fun searchRootError(root: String): String? {
+    val meta = SystemFileSystem.metadataOrNull(Path(root)) ?: return "Root not found: $root"
+    if (!meta.isDirectory) return "Not a directory: $root"
+    return if (!Files.isReadable(NioPath.of(root))) "Not readable: $root" else null
 }
 
 /**
