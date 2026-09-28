@@ -20,8 +20,8 @@
         "description": "Produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
     },
     "dependency_updates": {
-        "command": "timeout 60 ./gradlew dependencyUpdates -Drevision=release",
-        "description": "Report outdated dependencies (stable releases only)"
+        "command": "timeout 60 ./gradlew dependencyUpdates",
+        "description": "Dependency update audit: stable-only candidates, report-only (not wired into check); Koog bumps additionally go through the AGENTS.md Koog upgrade checklist"
     },
     "lint_scripts": {
         "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash",

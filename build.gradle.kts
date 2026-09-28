@@ -1,11 +1,13 @@
 import java.io.File
+import com.github.benmanes.gradle.versions.updates.DependencyUpdatesTask
 import org.gradle.api.attributes.Bundling
 import org.gradle.api.attributes.Category
 import org.gradle.api.attributes.DocsType
 import org.gradle.api.attributes.Usage
 plugins {
-    kotlin("jvm") version "2.4.10"
-    kotlin("plugin.serialization") version "2.4.10"
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.versions)
     application
 }
 
@@ -83,21 +85,21 @@ repositories {
 }
 
 dependencies {
-    implementation("com.agentclientprotocol:acp:0.30.1")
-    implementation("io.modelcontextprotocol:kotlin-sdk-client:0.15.0")
-    implementation("io.ktor:ktor-client-core:3.5.1")
-    implementation("io.ktor:ktor-client-cio:3.5.1")
-    implementation("io.ktor:ktor-client-encoding:3.5.1")
-    implementation("org.jsoup:jsoup:1.23.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-io-core:0.9.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-    implementation("ai.koog:prompt-executor-openrouter-client:1.2.0")
-    implementation("com.github.f4b6a3:uuid-creator:6.1.1")
-    implementation("org.slf4j:slf4j-simple:2.0.17")
-    implementation("io.github.oshai:kotlin-logging:8.0.4")
+    implementation(libs.acp)
+    implementation(libs.mcp.kotlin.sdk.client)
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.cio)
+    implementation(libs.ktor.client.encoding)
+    implementation(libs.jsoup)
+    implementation(libs.kotlinx.io.core)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.koog.openrouter.client)
+    implementation(libs.uuid.creator)
+    implementation(libs.slf4j.simple)
+    implementation(libs.kotlin.logging)
     testImplementation(kotlin("test"))
-    testImplementation("io.ktor:ktor-client-mock:3.5.1")
+    testImplementation(libs.ktor.client.mock)
 }
 
 application {
@@ -133,4 +135,21 @@ val testScripts = tasks.register<Exec>("testScripts") {
 
 tasks.named("check") {
     dependsOn(testScripts)
+}
+
+// Dependency updates: informational report only (run config dependency_updates),
+// deliberately not wired into check. Only stable candidates are suggested - a
+// non-stable candidate is rejected unless the current version is itself non-stable
+// (ben-manes/versions README recommendation). The plugin's -Drevision=release flag
+// was removed in 0.52 and is silently ignored, so the filter lives here instead.
+tasks.withType<DependencyUpdatesTask>().configureEach {
+    gradleReleaseChannel = "current"
+    rejectVersionIf {
+        isNonStable(candidate.version) && !isNonStable(currentVersion)
+    }
+}
+
+private fun isNonStable(version: String): Boolean {
+    val stableKeyword = listOf("RELEASE", "FINAL", "GA").any { version.uppercase().contains(it) }
+    return stableKeyword.not() && Regex("^[0-9,.v-]+(-r)?$").matches(version).not()
 }

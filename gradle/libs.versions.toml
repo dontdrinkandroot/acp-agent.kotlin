@@ -1,0 +1,36 @@
+# Version catalog: single source of truth for the versions this build owns.
+[versions]
+kotlin = "2.4.10"
+acp = "0.30.1"
+mcpKotlinSdk = "0.15.0"
+ktor = "3.5.1"
+jsoup = "1.23.2"
+kotlinxIo = "0.9.1"
+kotlinxCoroutines = "1.11.0"
+kotlinxSerializationJson = "1.11.0"
+koog = "1.2.0"
+uuidCreator = "6.1.1"
+slf4jSimple = "2.0.17"
+kotlinLogging = "8.0.4"
+versionsPlugin = "0.61.0"
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+versions = { id = "io.github.ben-manes.versions", version.ref = "versionsPlugin" }
+
+[libraries]
+acp = { module = "com.agentclientprotocol:acp", version.ref = "acp" }
+mcp-kotlin-sdk-client = { module = "io.modelcontextprotocol:kotlin-sdk-client", version.ref = "mcpKotlinSdk" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-encoding = { module = "io.ktor:ktor-client-encoding", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+kotlinx-io-core = { module = "org.jetbrains.kotlinx:kotlinx-io-core", version.ref = "kotlinxIo" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+koog-openrouter-client = { module = "ai.koog:prompt-executor-openrouter-client", version.ref = "koog" }
+uuid-creator = { module = "com.github.f4b6a3:uuid-creator", version.ref = "uuidCreator" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4jSimple" }
+kotlin-logging = { module = "io.github.oshai:kotlin-logging", version.ref = "kotlinLogging" }

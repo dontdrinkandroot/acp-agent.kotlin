@@ -15,26 +15,29 @@ client/IDE, and never exposes an MCP server - it only *consumes* MCP servers.
 ## Tech stack
 
 JVM-only application in a single module (`kotlin("jvm")` + `application`). Main sources in
-`src/main/kotlin`, tests in `src/test/kotlin`.
+`src/main/kotlin`, tests in `src/test/kotlin`. All owned versions are centralized in the
+version catalog `gradle/libs.versions.toml` (single source of truth; declared versions match
+what actually resolves).
 
 | Layer                  | Dependency                                                                            | Version                           |
 |------------------------|---------------------------------------------------------------------------------------|-----------------------------------|
 | Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.6) | 2.4.10                            |
-| Dep update check       | `io.github.ben-manes.versions.settings` (in `settings.gradle.kts`; `dependencyUpdates`) | 0.61.0                            |
+| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)       | 0.61.0                            |
 | ACP                    | `com.agentclientprotocol:acp`                                                         | 0.30.1                            |
 | MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                            |
 | HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                             |
 |                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.5.1                             |
 | HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                            |
-| Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (resolved)                 |
+| Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved)      |
 | IO                     | kotlinx-io-core                                                                       | 0.9.1                             |
-| JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (resolved; declared 1.9.0) |
+| JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (declared + resolved)      |
 | OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.2.0                             |
 | UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)        | 6.1.1                             |
 | Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.17                    |
 
-Gradle conflict resolution overrides our declared kotlinx versions (Koog forces the
-resolved ones); that is expected. Koog is used as a wire-model / serialization library
+Gradle conflict resolution picks the Koog-forced kotlinx versions; the catalog declares them
+at the values that actually resolve (1.11.0), so there is no declared-vs-resolved drift. Koog
+is used as a wire-model / serialization library
 only (no framework); its OpenAI-compat wire types are the internal LLM contract (see the
 LLM provider bullet below). kotlin-logging 8.0.4 is declared explicitly because
 Koog/ktor/ACP pull 7.0.0 and 8.0.01 transitives; pinning 8.0.4 pins the
@@ -373,7 +376,8 @@ Config comes from environment variables:
   round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class/method via `{args}`),
-  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only),
+  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
+report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
   `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
   composition - also wired into Gradle `check` as the `testScripts` Exec task),
