@@ -691,6 +691,11 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
   `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
   builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
+  The builder stage copies an explicit build-input allowlist (wrapper scripts, wrapper
+  jars, `gradle/libs.versions.toml`, the build scripts, `gradle.properties`, `src/`), so a
+  new file the Gradle build reads must be added to that COPY list; the dockerfile
+  shell test (`tests/bash/test_dockerfile.bash`) pins the allowlist against the real
+  build inputs.
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
   home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
