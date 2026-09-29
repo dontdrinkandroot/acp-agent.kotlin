@@ -474,7 +474,11 @@ fi
 if [ -n "${ACP_DOCKER_HOME_VOLUME:-}" ]; then
     home_args=(--mount "type=volume,src=$ACP_DOCKER_HOME_VOLUME,dst=$container_home")
 else
-    home_args=(--tmpfs "$container_home:uid=$uid,gid=$gid,mode=700,size=1g")
+    # exec is required: toolchains execute native binaries extracted into
+    # $HOME (Kotlin/Native under ~/.konan, AGP's AAPT2 from Maven under
+    # ~/.gradle) - docker's --tmpfs defaults include noexec, which surfaced
+    # as "AAPT2 ... Daemon startup failed" (see issue #33).
+    home_args=(--tmpfs "$container_home:uid=$uid,gid=$gid,mode=700,size=1g,exec")
 fi
 
 cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
@@ -491,11 +495,15 @@ cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
 # content-addressed bind-mountpoints (caches/modules-2, caches/jars-*,
 # wrapper/dists) root-owned inside the root tmpfs, and Gradle must be able to
 # write new children of caches/ (versioned caches/<ver>/ metadata, jvms/) and
-# wrapper/ - which stay on the private tmpfs, not the host binds.
+# wrapper/ - which stay on the private tmpfs, not the host binds. exec is
+# required on the Gradle depths: AGP extracts AAPT2 from Maven into the
+# versioned caches/<ver>/ (a transform output dir) and executes it from there;
+# under docker's noexec tmpfs default that surfaced as "AAPT2 ... Daemon
+# startup failed" (see issue #33). The host bind leaves never restricted exec.
 gradle_args=(
-    --tmpfs "$container_home/.gradle:uid=$uid,gid=$gid,mode=700,size=1g"
-    --tmpfs "$container_home/.gradle/caches:uid=$uid,gid=$gid,mode=700,size=1g"
-    --tmpfs "$container_home/.gradle/wrapper:uid=$uid,gid=$gid,mode=700,size=1g"
+    --tmpfs "$container_home/.gradle:uid=$uid,gid=$gid,mode=700,size=1g,exec"
+    --tmpfs "$container_home/.gradle/caches:uid=$uid,gid=$gid,mode=700,size=1g,exec"
+    --tmpfs "$container_home/.gradle/wrapper:uid=$uid,gid=$gid,mode=700,size=1g,exec"
 )
 
 # ~/.local is covered by tmpfs mounts: runc creates missing bind-mount

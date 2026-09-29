@@ -48,6 +48,11 @@ test_home_local_directories_get_uid_mapped_tmpfs_mounts() {
     assert_exit_status 0
     local line
     line=$(last_run_line)
+    # The home tmpfs is exec-allowed: toolchains execute native binaries
+    # extracted into $HOME (Kotlin/Native under ~/.konan; see issue #33).
+    assert_contains "$line" \
+        "--tmpfs /home/dev:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
+    # ~/.local/.cache keep docker's noexec default - nothing executes there.
     assert_contains "$line" \
         "--tmpfs /home/dev/.local:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_contains "$line" \
@@ -102,11 +107,11 @@ test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
     gradle_tmpfs=$(printf '%s\n' "$line" | tr ' ' '\n' | grep '^--tmpfs' | grep '\.gradle' || true)
     assert_eq "3" "$(printf '%s\n' "$gradle_tmpfs" | grep -c '^--tmpfs' || true)"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
 }
 
 test_api_key_never_travels_through_the_env() {
@@ -347,11 +352,11 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
     # leave as root-owned tmpfs mountpoints stay writable for the versioned
     # caches/<ver>/ metadata Gradle creates.
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle/daemon"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle/caches/9.6.0"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle,"
@@ -371,11 +376,11 @@ test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
     mounts=$(mount_values "$line")
     assert_not_contains "$mounts" "gradle"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
 }
 
@@ -391,11 +396,11 @@ test_gradle_no_mount_without_a_host_gradle_home() {
     mounts=$(mount_values "$line")
     assert_not_contains "$mounts" "gradle"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
-        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
 }
 

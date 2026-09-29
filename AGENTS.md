@@ -725,6 +725,14 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   of the leaf bind-mountpoints root-owned inside the root tmpfs, which would otherwise
   make the versioned `caches/<ver>/` metadata (incl. `jvms/`) and new wrapper state
   unwritable (observed as `Could not open cache directory ... caches/<ver>/jvms`).
+  All home-side tmpfs mounts (`/home/dev` and the three `.gradle` depths) are
+  **exec-allowed** (`exec` appended, overriding docker's `noexec` tmpfs default; moby
+  keeps the seeded `nosuid,nodev` when merging): toolchains execute native binaries
+  extracted into those caches - AGP's AAPT2 from Maven (transform output dir under
+  `caches/<ver>/`) and Kotlin/Native under `~/.konan` - which the former host
+  bind-mount home never restricted (noexec surfaced as
+  `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
+  noexec default (nothing executes from there).
   `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
   of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK is shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
   else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container

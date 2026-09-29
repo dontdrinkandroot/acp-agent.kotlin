@@ -55,7 +55,9 @@ On first use the launcher pulls `ghcr.io/dontdrinkandroot/acp-agent.kotlin:lates
 (when offline it falls back to an already-pulled copy). To build the image locally
 instead, run `./build-docker` and start with `--skip-pull`. The image runs
 hardened: no capabilities, read-only rootfs, tmpfs home, non-root user matching
-your host UID. Your project directory is bind-mounted, and session state is
+your host UID. The home and Gradle tmpfs mounts are exec-allowed because
+toolchains execute native binaries extracted into them (AAPT2 from Maven,
+Kotlin/Native). Your project directory is bind-mounted, and session state is
 persisted on the host so conversations survive container restarts.
 
 Your host Android SDK is shared into the container automatically: when
@@ -134,7 +136,7 @@ Docker launcher extras (host side, not forwarded into the container):
 |---------------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | `ACP_DOCKER_STATE_DIR`    | `$XDG_STATE_HOME/ddr-acp-agent` | Host directory for session state. Absolute paths only. Useful when your home is fscrypt-encrypted (see Troubleshooting). |
 | `ACP_DOCKER_HOME_VOLUME`  | *(tmpfs)*                       | Named Docker volume for the container home instead of a tmpfs.                                                           |
-| `ACP_DOCKER_MOUNT_CACHES` | enabled                         | `0` disables sharing host tool caches (uv, cargo, …) into the container. Gradle is special: only the content-addressed cache leaves (`caches/modules-2`, `caches/jars-*`, `wrapper/dists`, `jdks`) are shared rw, never the whole `~/.gradle` — the daemon registry/logs and per-version state live in a container-private `.gradle` tmpfs so container and host Gradle daemons never interfere. |
+| `ACP_DOCKER_MOUNT_CACHES` | enabled                         | `0` disables sharing host tool caches (uv, cargo, …) into the container. Gradle is special: only the content-addressed cache leaves (`caches/modules-2`, `caches/jars-*`, `wrapper/dists`, `jdks`) are shared rw, never the whole `~/.gradle` — the daemon registry/logs and per-version state live in a container-private `.gradle` tmpfs so container and host Gradle daemons never interfere. The home and Gradle tmpfs mounts are exec-allowed (toolchains execute binaries extracted into them, e.g. AAPT2, Kotlin/Native). |
 | `ACP_DOCKER_EXTRA_MOUNTS` | *(none)*                        | Comma-separated host paths mounted at the identical in-container path, e.g. `/srv/data,/mnt/scratch:rw`. Default mode `ro`, suffix `:ro`/`:rw`; dirs and files; absolute host paths, must exist. Mounts inside the project dir or the container home are skipped (built-ins shadow extras; later, deeper mounts win). The effective extras are injected as `ACP_EXTRA_MOUNTS`, making them read-trusted for the agent. |
 | `ACP_DOCKER_NETWORK`      | `development`                   | Docker network for the container.                                                                                        |
 | `ACP_DOCKER_RW_ROOTFS`    | *(read-only)*                   | `1` leaves the container rootfs writable.                                                                                |
