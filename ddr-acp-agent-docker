@@ -223,7 +223,6 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache yarn "$container_cache_dir/yarn" YARN_CACHE_FOLDER "$host_cache_home/yarn"
     add_tool_cache huggingface "$container_cache_dir/huggingface" HF_HOME "$host_cache_home/huggingface"
     add_tool_cache npm "$container_home/.npm" NPM_CONFIG_CACHE "$HOME/.npm"
-    add_tool_cache gradle "$container_home/.gradle" GRADLE_USER_HOME "$HOME/.gradle"
     add_tool_cache maven "$container_home/.m2" "" "$HOME/.m2"
     add_tool_cache cargo "$container_home/.cargo" CARGO_HOME "$HOME/.cargo"
     add_tool_cache go "$container_home/go/pkg/mod" GOMODCACHE "$HOME/go/pkg/mod"
@@ -232,6 +231,62 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache pnpm-store "$container_data_dir/pnpm/store" "" "$host_data_home/pnpm/store"
     add_tool_cache pnpm-cache "$container_cache_dir/pnpm" "" "$host_cache_home/pnpm"
     add_tool_cache konan "$container_home/.konan" KONAN_DATA_DIR "$HOME/.konan"
+    # The Gradle user home is NOT shared as a whole (that would merge the
+    # daemon registry + logs across the host and container PID namespaces:
+    # probing clients remove unreachable entries and gradle --stop kills
+    # daemons of both environments). The GUH root stays container-private
+    # (uid-mapped .gradle tmpfs, see gradle_args below) for daemon/, .tmp and
+    # the per-version caches/<ver>/ state (fileHashes, journal-1/file-access.bin,
+    # transforms ...). Only the content-addressed, machine-independent leaves
+    # are shared rw at their identical in-container path, so dependencies and
+    # wrapper dists persist on the host and are shared with host builds:
+    #   caches/modules-2   downloaded dependencies (relative-path encoded, copyable)
+    #   caches/jars-*      instrumented classpath jars
+    #   wrapper/dists      wrapper distributions
+    #   jdks               provisioned toolchain JDKs
+    # The env pin below makes GRADLE_USER_HOME explicit (and the mount sources
+    # are resolved against the host GUH), independent of the base image's
+    # default. Sources are created on first run like every other tool cache;
+    # the ./gradle or ./caches siblings (native/, kotlin/, build-cache-1,
+    # journal-1, caches/<ver>/) stay on the private tmpfs.
+    gradle_guh=${GRADLE_USER_HOME:-}
+    case "$gradle_guh" in
+        /*) ;;
+        *) gradle_guh= ;;
+    esac
+    if [ -z "$gradle_guh" ] && [ -d "$HOME/.gradle" ]; then
+        gradle_guh=$HOME/.gradle
+    fi
+    if [ -n "$gradle_guh" ] && [ "$gradle_guh" != / ]; then
+        case "$gradle_guh" in
+            "$project_dir"|"$project_dir"/*) gradle_guh= ;;
+        esac
+    fi
+    if [ -n "$gradle_guh" ]; then
+        mkdir -p "$gradle_guh/caches/modules-2" \
+            "$gradle_guh/caches/jars-9" \
+            "$gradle_guh/wrapper/dists" \
+            "$gradle_guh/jdks" 2>/dev/null || true
+        # Content-addressed leaves; matches GUH layout across Gradle 6-9
+        # (shared caches live directly under caches/: modules-2, jars-N; the
+        # trailing format number varies per Gradle generation - mount the
+        # jars-* glob via a loop over the existing host dirs).
+        local_jars_dirs=()
+        for jars in "$gradle_guh"/caches/jars-*; do
+            [ -d "$jars" ] && local_jars_dirs+=("$jars")
+        done
+        for leaf in "$gradle_guh/caches/modules-2" "${local_jars_dirs[@]}" \
+                    "$gradle_guh/wrapper/dists" "$gradle_guh/jdks"; do
+            [ -d "$leaf" ] || continue
+            gradle_dst=$container_home/.gradle/${leaf#"$gradle_guh"/}
+            case "$mounted_dsts" in
+                *" $gradle_dst "*) continue ;;
+            esac
+            cache_mounts+=(--mount "type=bind,src=$leaf,dst=$gradle_dst")
+            mounted_dsts="$mounted_dsts $gradle_dst "
+            mounted_caches="$mounted_caches gradle($leaf)"
+        done
+    fi
     # The host Android SDK is mounted at the SDK's in-container default and
     # ANDROID_HOME/ANDROID_SDK_ROOT are pinned to it (see the validation block
     # above). Candidate: a validated ANDROID_HOME/ANDROID_SDK_ROOT, else an
@@ -385,6 +440,12 @@ for var_name in OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_
         forwarded_env+=(--env "$var_name=${!var_name}")
     fi
 done
+# GRADLE_USER_HOME is always pinned to the container-private .gradle root
+# (tmpfs): the host value must never leak in, and Gradle must resolve its
+# daemon/process state to the private tmpfs regardless of the base image's
+# default and of ACP_DOCKER_MOUNT_CACHES (which only gates the shared leaf
+# binds, see the gradle leaf mounts above).
+forwarded_env+=(--env "GRADLE_USER_HOME=$container_home/.gradle")
 
 rootfs_args=(--read-only)
 if [ "${ACP_DOCKER_RW_ROOTFS:-}" = 1 ]; then
@@ -418,6 +479,15 @@ fi
 
 cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
 
+# The Gradle user home root is a container-private uid-mapped tmpfs (same
+# treatment as ~/.local): it holds daemon/, .tmp, kotlin/, native/ and the
+# per-version caches/<ver>/ state, which must never be shared with the host
+# (see the gradle leaf mounts above). The shared content-addressed leaf binds
+# land on top of this tmpfs; daemon state is therefore always ephemeral per
+# container session, and the tmpfs stays even under ACP_DOCKER_MOUNT_CACHES=0
+# (like the ~/.cache and ~/.local tmpfs mounts).
+gradle_args=(--tmpfs "$container_home/.gradle:uid=$uid,gid=$gid,mode=700,size=1g")
+
 # ~/.local is covered by tmpfs mounts: runc creates missing bind-mount
 # mountpoints root-owned inside the container, so the deep session-state and
 # pnpm-store binds would otherwise leave a root-owned ~/.local behind that the
@@ -449,6 +519,7 @@ fi
     --mount "type=bind,src=$project_dir,dst=$project_dir" \
     "${env_local_mounts[@]}" \
     "${home_args[@]}" \
+    "${gradle_args[@]}" \
     "${cache_args[@]}" \
     "${local_args[@]}" \
     "${cache_mounts[@]}" \

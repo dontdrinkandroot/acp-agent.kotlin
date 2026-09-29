@@ -711,7 +711,17 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   missing) points at a custom dir or the host default dir already
   exists (never created) - mounted at the tool's in-container default with the env var
   pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
-  ...), host Android SDK shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
+  ...). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is *not*
+  shared (one daemon registry + logs across the host and container PID namespaces would
+  let probing clients prune each other's daemons and `gradle --stop` kill both sides'
+  daemons). Instead the GUH root is a container-private uid-mapped `.gradle` tmpfs
+  (holding `daemon/`, `.tmp`, `kotlin/`, `native/` and the per-version
+  `caches/<ver>/` state incl. `journal-1`/`file-access.bin` - always ephemeral per
+  session), and only the content-addressed, machine-independent leaves are shared rw at
+  their identical in-container path: `caches/modules-2`, `caches/jars-*`, `wrapper/dists`
+  and `jdks` (dependencies + wrapper dists persist on the host and are shared with host
+  builds). `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
+  of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK is shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
   else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
   default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;
   a set-but-unusable var - relative, `/`, missing dir - fails loudly before any

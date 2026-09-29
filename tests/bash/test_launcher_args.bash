@@ -79,7 +79,8 @@ test_state_bind_lands_on_top_of_the_local_state_tmpfs() {
 
 test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
     # ACP_DOCKER_MOUNT_CACHES=0 disables the cache binds, but never the
-    # uid-mapped tmpfs mounts: ~/.local and ~/.cache stay writable.
+    # uid-mapped tmpfs mounts: ~/.local, ~/.cache and the private Gradle
+    # user-home root stay writable.
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
         ACP_DOCKER_MOUNT_CACHES=0 --skip-pull
     assert_exit_status 0
@@ -91,6 +92,13 @@ test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
         "--tmpfs /home/dev/.local:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_contains "$line" \
         "--tmpfs /home/dev/.cache:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    # The private Gradle root tmpfs is unconditional: no whole-GUH bind and
+    # no leaf binds under ACP_DOCKER_MOUNT_CACHES=0, but the .gradle tmpfs
+    # is still present so daemon/process state stays container-private and
+    # writable.
+    assert_not_contains "$(mount_values "$line")" "gradle"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
 }
 
 test_api_key_never_travels_through_the_env() {
@@ -292,6 +300,92 @@ test_android_sdk_inside_the_project_dir_pins_the_host_path() {
     assert_not_contains "$(mount_values "$line")" "Android/Sdk"
     assert_eq "$sdk_in_project" "$(env_value_for "$line" ANDROID_HOME)"
     assert_eq "$sdk_in_project" "$(env_value_for "$line" ANDROID_SDK_ROOT)"
+}
+
+GRADLE_HOME_FIXTURE=$TEST_TMP/gradle-home
+mkdir -p "$GRADLE_HOME_FIXTURE/.gradle/caches/modules-2" \
+    "$GRADLE_HOME_FIXTURE/.gradle/caches/jars-9" \
+    "$GRADLE_HOME_FIXTURE/.gradle/caches/jars-8" \
+    "$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0" \
+    "$GRADLE_HOME_FIXTURE/.gradle/wrapper/dists" \
+    "$GRADLE_HOME_FIXTURE/.gradle/jdks" \
+    "$GRADLE_HOME_FIXTURE/.gradle/daemon"
+
+test_gradle_content_addressed_leaves_are_shared_rw() {
+    # Only the content-addressed, machine-independent leaves of the Gradle
+    # user home are bind-mounted (modules-2, jars-*, wrapper/dists, jdks) at
+    # their identical in-container path; daemon/, per-version caches and the
+    # private root are left to the .gradle tmpfs. The GUH root itself is not
+    # mounted whole (no daemon-registry merge across PID namespaces).
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
+    assert_exit_status 0
+    local line mounts
+    line=$(last_run_line)
+    mounts=$(mount_values "$line")
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/modules-2,dst=/home/dev/.gradle/caches/modules-2"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/jars-9,dst=/home/dev/.gradle/caches/jars-9"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/jars-8,dst=/home/dev/.gradle/caches/jars-8"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/wrapper/dists,dst=/home/dev/.gradle/wrapper/dists"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/jdks,dst=/home/dev/.gradle/jdks"
+    # The private root stays a tmpfs; daemon state and per-version caches are
+    # never shared.
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_not_contains "$mounts" "dst=/home/dev/.gradle/daemon"
+    assert_not_contains "$mounts" "dst=/home/dev/.gradle/caches/9.6.0"
+    assert_not_contains "$mounts" "dst=/home/dev/.gradle,"
+    # GRADLE_USER_HOME is pinned to the container-private root.
+    assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
+}
+
+test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
+    # ACP_DOCKER_MOUNT_CACHES=0 skips even the content-addressed leaves, but
+    # the private .gradle tmpfs and the GRADLE_USER_HOME pin remain.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        ACP_DOCKER_MOUNT_CACHES=0 "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
+    assert_exit_status 0
+    local line mounts
+    line=$(last_run_line)
+    mounts=$(mount_values "$line")
+    assert_not_contains "$mounts" "gradle"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
+}
+
+test_gradle_no_mount_without_a_host_gradle_home() {
+    # No GRADLE_USER_HOME and no existing $HOME/.gradle: nothing is shared,
+    # but the private root tmpfs and the pin stay (the container Gradle uses
+    # its ephemeral private GUH).
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "HOME=$TEST_TMP/empty-gradle-home" --skip-pull
+    assert_exit_status 0
+    local line mounts
+    line=$(last_run_line)
+    mounts=$(mount_values "$line")
+    assert_not_contains "$mounts" "gradle"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
+}
+
+test_gradle_user_home_env_overrides_home() {
+    # An explicit absolute GRADLE_USER_HOME wins over $HOME/.gradle.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "GRADLE_USER_HOME=$GRADLE_HOME_FIXTURE/.gradle" "HOME=$TEST_TMP/other-home" --skip-pull
+    assert_exit_status 0
+    local line mounts
+    line=$(last_run_line)
+    mounts=$(mount_values "$line")
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/modules-2,dst=/home/dev/.gradle/caches/modules-2"
+    assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
 }
 
 test_pull_failure_falls_back_to_a_local_image() {

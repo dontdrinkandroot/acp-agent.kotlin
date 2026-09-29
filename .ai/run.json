@@ -35,6 +35,10 @@
         "command": "timeout 120 ./gradlew unpackLibrarySources",
         "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions"
     },
+    "listLibs": {
+        "command": "cd /srv/git/gitlab.com/sorst/philip/home.sorst.net.android && ./gradlew :app:dependencies {args} --console=plain -q 2>&1 | tail -60",
+        "description": "Print resolved dependency trees with exact versions; pass --configuration debugRuntimeClasspath or --configuration debugUnitTestRuntimeClasspath"
+    },
     "git": {
         "command": "git {args}",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"

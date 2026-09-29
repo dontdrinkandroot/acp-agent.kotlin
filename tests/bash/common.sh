@@ -68,7 +68,8 @@ run_docker_launcher() {
     # never leak into test output or the stub log; tests opt into a fake one.
     # shellcheck disable=SC2034  # OUT is asserted on by the tests
     OUT=$(cd "$project_dir" && env -u OPENROUTER_API_KEY -u OPENROUTER_API_KEY_FILE \
-        -u ACP_DOCKER_EXTRA_MOUNTS -u ANDROID_HOME -u ANDROID_SDK_ROOT "${env_args[@]}" \
+        -u ACP_DOCKER_EXTRA_MOUNTS -u ANDROID_HOME -u ANDROID_SDK_ROOT \
+        -u GRADLE_USER_HOME "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.
