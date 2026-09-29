@@ -720,7 +720,12 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   session), and only the content-addressed, machine-independent leaves are shared rw at
   their identical in-container path: `caches/modules-2`, `caches/jars-*`, `wrapper/dists`
   and `jdks` (dependencies + wrapper dists persist on the host and are shared with host
-  builds). `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
+  builds). The `caches/` and `wrapper/` intermediate depths get their own per-depth
+  uid tmpfs (same treatment as the `~/.local` depths): runc creates the missing parents
+  of the leaf bind-mountpoints root-owned inside the root tmpfs, which would otherwise
+  make the versioned `caches/<ver>/` metadata (incl. `jvms/`) and new wrapper state
+  unwritable (observed as `Could not open cache directory ... caches/<ver>/jvms`).
+  `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
   of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK is shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
   else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
   default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;

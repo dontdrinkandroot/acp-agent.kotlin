@@ -485,8 +485,18 @@ cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
 # (see the gradle leaf mounts above). The shared content-addressed leaf binds
 # land on top of this tmpfs; daemon state is therefore always ephemeral per
 # container session, and the tmpfs stays even under ACP_DOCKER_MOUNT_CACHES=0
-# (like the ~/.cache and ~/.local tmpfs mounts).
-gradle_args=(--tmpfs "$container_home/.gradle:uid=$uid,gid=$gid,mode=700,size=1g")
+# (like the ~/.cache and ~/.local tmpfs mounts). The caches/ and wrapper/
+# intermediate depths get their own per-depth uid-mapped tmpfs for the same
+# reason the ~/.local depths do: runc creates the missing parents of the
+# content-addressed bind-mountpoints (caches/modules-2, caches/jars-*,
+# wrapper/dists) root-owned inside the root tmpfs, and Gradle must be able to
+# write new children of caches/ (versioned caches/<ver>/ metadata, jvms/) and
+# wrapper/ - which stay on the private tmpfs, not the host binds.
+gradle_args=(
+    --tmpfs "$container_home/.gradle:uid=$uid,gid=$gid,mode=700,size=1g"
+    --tmpfs "$container_home/.gradle/caches:uid=$uid,gid=$gid,mode=700,size=1g"
+    --tmpfs "$container_home/.gradle/wrapper:uid=$uid,gid=$gid,mode=700,size=1g"
+)
 
 # ~/.local is covered by tmpfs mounts: runc creates missing bind-mount
 # mountpoints root-owned inside the container, so the deep session-state and

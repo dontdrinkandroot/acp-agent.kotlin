@@ -92,13 +92,21 @@ test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
         "--tmpfs /home/dev/.local:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_contains "$line" \
         "--tmpfs /home/dev/.cache:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
-    # The private Gradle root tmpfs is unconditional: no whole-GUH bind and
-    # no leaf binds under ACP_DOCKER_MOUNT_CACHES=0, but the .gradle tmpfs
-    # is still present so daemon/process state stays container-private and
-    # writable.
+    # The private Gradle tmpfs root + intermediate depths are unconditional:
+    # no whole-GUH bind and no leaf binds under ACP_DOCKER_MOUNT_CACHES=0, but
+    # the .gradle root/caches/wrapper tmpfs mounts are still present so
+    # daemon/process state stays container-private and every depth the binds
+    # would otherwise leave root-owned stays writable.
     assert_not_contains "$(mount_values "$line")" "gradle"
+    local gradle_tmpfs
+    gradle_tmpfs=$(printf '%s\n' "$line" | tr ' ' '\n' | grep '^--tmpfs' | grep '\.gradle' || true)
+    assert_eq "3" "$(printf '%s\n' "$gradle_tmpfs" | grep -c '^--tmpfs' || true)"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
 }
 
 test_api_key_never_travels_through_the_env() {
@@ -334,9 +342,16 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
     assert_contains "$mounts" \
         "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/jdks,dst=/home/dev/.gradle/jdks"
     # The private root stays a tmpfs; daemon state and per-version caches are
-    # never shared.
+    # never shared. The caches/ and wrapper/ intermediate depths get their own
+    # per-depth uid tmpfs (like the ~/.local depths) so the depths the binds
+    # leave as root-owned tmpfs mountpoints stay writable for the versioned
+    # caches/<ver>/ metadata Gradle creates.
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle/daemon"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle/caches/9.6.0"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle,"
@@ -346,7 +361,8 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
 
 test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
     # ACP_DOCKER_MOUNT_CACHES=0 skips even the content-addressed leaves, but
-    # the private .gradle tmpfs and the GRADLE_USER_HOME pin remain.
+    # the private .gradle tmpfs (root + intermediate depths) and the
+    # GRADLE_USER_HOME pin remain.
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
         ACP_DOCKER_MOUNT_CACHES=0 "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
     assert_exit_status 0
@@ -356,13 +372,17 @@ test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
     assert_not_contains "$mounts" "gradle"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
 }
 
 test_gradle_no_mount_without_a_host_gradle_home() {
     # No GRADLE_USER_HOME and no existing $HOME/.gradle: nothing is shared,
-    # but the private root tmpfs and the pin stay (the container Gradle uses
-    # its ephemeral private GUH).
+    # but the private root + intermediate depth tmpfs mounts and the pin stay
+    # (the container Gradle uses its ephemeral private GUH).
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
         "HOME=$TEST_TMP/empty-gradle-home" --skip-pull
     assert_exit_status 0
@@ -372,6 +392,10 @@ test_gradle_no_mount_without_a_host_gradle_home() {
     assert_not_contains "$mounts" "gradle"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
 }
 
