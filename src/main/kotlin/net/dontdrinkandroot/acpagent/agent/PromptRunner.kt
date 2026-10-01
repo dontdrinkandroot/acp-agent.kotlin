@@ -102,35 +102,24 @@ internal class PromptRunner(
 
                 iteration.truncated -> {
                     logAbnormalEnd(iteration, "survived the retry")
-                    val note = INTERRUPTED_NOTE
-                    state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
-                    state.persist()
-                    emitUsageUpdate(usage)
-                    emitTextChunk(emitter, note, newMessageId())
-                    emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
+                    endTurn(emitter, usage, INTERRUPTED_NOTE, emitChunk = true)
                     return
                 }
 
                 iteration.finishReason == "content_filter" -> {
                     logger.warn { "Chat completion blocked by content filtering; ending the turn" }
                     val partial = iteration.text.takeIf { it.isNotEmpty() }
-                    val note = "The response was blocked by content filtering."
                     if (partial != null) {
                         state.appendToHistory(OpenAIMessage.Assistant(Content.Text(partial)))
                     }
-                    state.appendToHistory(OpenAIMessage.Assistant(Content.Text(note)))
-                    state.persist()
-                    emitUsageUpdate(usage)
-                    if (partial != null) emitTextChunk(emitter, note, newMessageId())
-                    emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
+                    endTurn(emitter, usage, "The response was blocked by content filtering.", emitChunk = true)
                     return
                 }
 
                 iteration.toolCalls.isEmpty() -> {
-                    state.appendToHistory(OpenAIMessage.Assistant(content = Content.Text(iteration.text)))
-                    state.persist()
-                    emitUsageUpdate(usage)
-                    emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
+                    // The text was already streamed live by the delta relay, so
+                    // no chunk is emitted here - only history + the turn end.
+                    endTurn(emitter, usage, iteration.text, emitChunk = false)
                     return
                 }
 
@@ -182,6 +171,31 @@ internal class PromptRunner(
         state.persist()
         emitUsageUpdate(usage)
         emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.MAX_TURN_REQUESTS)))
+    }
+
+    /**
+     * Ends a turn from one of the terminal loop branches: appends the final
+     * assistant message to the history, persists the turn's end state,
+     * reports the usage indicator and emits the END_TURN prompt response -
+     * the exit ceremony every terminal branch must run, in one place. The
+     * chunk is emitted only when the text was NOT already streamed live by
+     * the delta relay (the synthesized notes); re-emitting streamed text
+     * would duplicate it in the client's message (pinned by the e2e
+     * messageId-per-iteration contract).
+     */
+    private suspend fun endTurn(
+        emitter: FlowCollector<Event>,
+        usage: OpenAIUsage?,
+        finalText: String,
+        emitChunk: Boolean,
+    ) {
+        state.appendToHistory(OpenAIMessage.Assistant(content = Content.Text(finalText)))
+        state.persist()
+        emitUsageUpdate(usage)
+        if (emitChunk && finalText.isNotEmpty()) {
+            emitTextChunk(emitter, finalText, newMessageId())
+        }
+        emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
     }
 
     /**

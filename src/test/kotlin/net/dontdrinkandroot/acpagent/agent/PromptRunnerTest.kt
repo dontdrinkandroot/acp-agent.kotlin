@@ -163,7 +163,7 @@ class PromptRunnerTest {
                 state,
             ),
             toolRegistry = registry,
-            toolCallExecutor = ToolCallExecutor("/project", registry, state),
+            toolCallExecutor = ToolCallExecutor(registry, state),
             maxTurnRequests = 2,
             models = listOf(testModel),
         )
@@ -245,7 +245,7 @@ class PromptRunnerTest {
                 state,
             ),
             toolRegistry = registry,
-            toolCallExecutor = ToolCallExecutor("/project", registry, state),
+            toolCallExecutor = ToolCallExecutor(registry, state),
             maxTurnRequests = 1,
             models = listOf(testModel),
         )
@@ -399,7 +399,7 @@ class PromptRunnerTest {
                 state,
             ),
             toolRegistry = ToolRegistry(),
-            toolCallExecutor = ToolCallExecutor("/project", ToolRegistry(), state),
+            toolCallExecutor = ToolCallExecutor(ToolRegistry(), state),
             maxTurnRequests = 1,
             models = listOf(testModel),
         )

@@ -1,7 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
@@ -12,11 +11,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.tools.AgentTool
-import net.dontdrinkandroot.acpagent.tools.ToolContext
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import net.dontdrinkandroot.acpagent.tools.ToolResult
-import net.dontdrinkandroot.acpagent.tools.executeSafely
+import net.dontdrinkandroot.acpagent.tools.*
 
 /**
  * Executes one streamed tool call: mode gating (a tool disabled in the current
@@ -27,7 +22,6 @@ import net.dontdrinkandroot.acpagent.tools.executeSafely
  */
 @OptIn(UnstableApi::class)
 internal class ToolCallExecutor(
-    private val cwd: String,
     private val toolRegistry: ToolRegistry,
     private val state: SessionState,
     /**
@@ -89,7 +83,7 @@ internal class ToolCallExecutor(
             )
         )
 
-        val allowed = shouldAllow(tool, toolCallId, arguments, title, toolContext.client, trustedReadPaths)
+        val allowed = shouldAllow(tool, toolCallId, arguments, title, toolContext.client, toolContext)
         if (!allowed) {
             val msg = "Permission denied for tool ${tool.name}"
             emitDenied(
@@ -150,9 +144,9 @@ internal class ToolCallExecutor(
         arguments: JsonObject,
         title: String,
         client: ClientSessionOperations?,
-        trustedReadPaths: List<String>,
+        toolContext: ToolContext,
     ): Boolean {
-        if (!permissionNeeded(cwd, tool, arguments, trustedReadPaths)) return true
+        if (!permissionNeeded(toolContext.cwd, tool, arguments, trustedReadPaths)) return true
         if (client == null) return true
         state.permanentPermissions[tool.name]?.let { return it }
         val options = listOf(

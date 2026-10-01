@@ -46,7 +46,7 @@ class SessionConfigOptionsTest {
     )
 
     @Test
-    fun `mode switches append mode status messages with per-mode tool lists`() {
+    fun `mode status messages are written only at prompt start`() {
         val registry = net.dontdrinkandroot.acpagent.tools.ToolRegistry().apply {
             register(ToolStub("read_file", mutating = false, modes = emptyList()))
             register(
@@ -67,27 +67,29 @@ class SessionConfigOptionsTest {
             sessionStore = null,
             closeResources = {},
         )
-        // Fresh session seeds the current (default) mode status message.
+        // A fresh session writes no seed message; indication happens at prompt
+        // start. A mode switch flips the governing mode without appending
+        // history.
 
+        assertEquals(0, s.historySnapshot.size, "no seed: indication happens at prompt start")
+
+        s.requestMode(SessionModeId("build"))
+        assertEquals(0, s.historySnapshot.size, "switches only flip - the message waits for prompt start")
+
+        // At prompt start exactly one message for the latest mode is appended,
+        // with the new mode's tools.
+
+        s.indicateCurrentMode()
         assertEquals(
-            "Mode: plan. Read-only: research, analyze and plan; do not modify files. Available tools: read_file.",
+            "Mode: build. Read-write: read, write, edit, move and delete files to implement the task. Available tools: read_file, write_file.",
             s.historySnapshot.single()
                 .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
                 .text(),
         )
-        // Switching modes appends a new status message with the new mode's tools.
+        // Re-indicating without a mode change appends nothing.
 
-        s.requestMode(SessionModeId("build"))
-        assertEquals(
-            "Mode: build. Read-write: read, write, edit, move and delete files to implement the task. Available tools: read_file, write_file.",
-            s.historySnapshot.last()
-                .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
-                .text(),
-        )
-        // Same-value re-set appends nothing.
-
-        s.requestMode(SessionModeId("build"))
-        assertEquals(2, s.historySnapshot.size, "same-value mode re-set must not append a status message")
+        s.indicateCurrentMode()
+        assertEquals(1, s.historySnapshot.size, "same-mode re-indication must not append a status message")
     }
 
     @Test

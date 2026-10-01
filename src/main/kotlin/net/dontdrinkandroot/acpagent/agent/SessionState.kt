@@ -9,11 +9,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.tools.ALL_MODES
-import net.dontdrinkandroot.acpagent.tools.MODE_PLAN
-import net.dontdrinkandroot.acpagent.tools.MODE_BUILD
-import net.dontdrinkandroot.acpagent.tools.MODE_BASH
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
+import net.dontdrinkandroot.acpagent.tools.*
 import kotlin.concurrent.Volatile
 
 internal val DEFAULT_MODE = MODE_PLAN
@@ -75,6 +71,17 @@ internal class SessionState(
     val initialMode: SessionModeId = restoredModeOrDefault(restored)
 
     var currentMode: SessionModeId = initialMode
+
+    /**
+     * The mode whose [modeStatusText] is currently in the conversation
+     * history. Restored sessions parse it from the trail's last `Mode:`
+     * message (nothing new is persisted; the record's [SessionRecord.mode]
+     * stays the source of truth for the governing mode), so a switch that was
+     * applied after the last message - e.g. a turn-end flush persisted but a
+     * crash before the next prompt - self-heals: the next prompt start writes
+     * the corrective message.
+     */
+    private var lastIndicatedMode: SessionModeId? = lastIndicatedTrailMode(restored?.history.orEmpty())
 
     /**
      * The mode the client requested while a prompt turn is in flight. It does
@@ -196,8 +203,10 @@ internal class SessionState(
     /**
      * Records a mode request. While a prompt turn is running the request only
      * updates the pending mode (latest wins) and applies nothing; idle, it
-     * applies immediately (no turn to keep consistent). Same-value requests
-     * are no-ops in both cases.
+     * flips the current mode immediately (the client is notified by the
+     * caller). Same-value requests are no-ops in both cases. Neither branch
+     * touches the history - the `Mode:` message is written once, at prompt
+     * start, by [indicateCurrentMode] (issue #36).
      */
     fun requestMode(mode: SessionModeId) {
         synchronized(historyLock) {
@@ -209,16 +218,17 @@ internal class SessionState(
                 pendingMode = mode
             } else {
                 currentMode = mode
-                appendModeStatusMessage(mode)
             }
         }
     }
 
     /**
-     * Applies the pending mode (if any) exactly once: flips the current mode,
-     * appends its status message and clears the pending. Returns true when a
-     * mode was actually applied (so the caller knows to announce+persist it).
-     * No-op and false when nothing is pending.
+     * Applies the pending mode (if any) exactly once: flips the current mode
+     * and clears the pending. Returns true when a mode was actually applied
+     * (so the caller knows to announce+persist it). The mode status message
+     * is NOT written here - it waits for the next prompt start
+     * ([indicateCurrentMode]), like every other switch (issue #36). No-op and
+     * false when nothing is pending.
      */
     fun flushPendingMode(): Boolean {
         synchronized(historyLock) {
@@ -226,8 +236,23 @@ internal class SessionState(
             pendingMode = null
             if (pending == currentMode) return false
             currentMode = pending
-            appendModeStatusMessage(pending)
             return true
+        }
+    }
+
+    /**
+     * The single writer of mode status messages: appends the `Mode:` message
+     * for the current mode iff it changed since the last indicated one (the
+     * trail's last message, parsed from the record at restore). Called at
+     * prompt start before the user message is appended, so every `Mode:`
+     * message in the trail is immediately followed by a turn that ran under
+     * it and no trail ever contains a mode that governed nothing (issue #36).
+     */
+    fun indicateCurrentMode() {
+        synchronized(historyLock) {
+            if (currentMode == lastIndicatedMode) return
+            appendModeStatusMessage(currentMode)
+            lastIndicatedMode = currentMode
         }
     }
 
@@ -242,15 +267,27 @@ internal class SessionState(
         }
     }
 
-    init {
-        // A fresh session starts with a status message stating its initial
-        // (default) mode and the tools available in it, so the model always
-        // knows the mode from the start of the conversation. Restored sessions
-        // reuse their persisted trail as-is (a trail without mode status
-        // messages, i.e. a session created before this feature, stays silent).
-        if (restored == null) {
-            appendModeStatusMessage(initialMode)
-        }
+    /**
+     * Parses the mode whose status message was appended last from a
+     * persisted trail (`Mode: <id>.` prefix, per [modeStatusText]); null when
+     * the trail carries no mode message (a fresh session, or a legacy record
+     * from before the feature). The record's [SessionRecord.mode] stays the
+     * source of truth for the governing mode - this only seeds
+     * [lastIndicatedMode] so the next prompt start does not append a
+     * duplicate message.
+     */
+    private fun lastIndicatedTrailMode(history: List<OpenAIMessage>): SessionModeId? =
+        history.filterIsInstance<OpenAIMessage.System>()
+            .mapNotNull { (it.content as? Content.Text)?.text() }
+            .lastOrNull { it.startsWith(MODE_TRAIL_PREFIX) }
+            ?.let { text ->
+                text.removePrefix(MODE_TRAIL_PREFIX).substringBefore('.').let { raw ->
+                    SessionModeId(raw).takeIf { candidate -> candidate in ALL_MODES }
+                }
+            }
+
+    private companion object {
+        const val MODE_TRAIL_PREFIX = "Mode: "
     }
 
     fun buildRecord(): SessionRecord {

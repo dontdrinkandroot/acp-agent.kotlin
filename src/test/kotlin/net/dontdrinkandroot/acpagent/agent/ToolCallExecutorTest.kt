@@ -104,7 +104,7 @@ class ToolCallExecutorTest {
         }
         val registry = ToolRegistry().apply { register(gated) }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "gated", "{}"), SessionModeId("build"))
@@ -113,16 +113,17 @@ class ToolCallExecutorTest {
         val update = toolCallUpdates(emitter).single()
         assertEquals(ToolCallStatus.FAILED, update.status)
         assertEquals("Disabled in current mode", update.title)
-        // The disabled tool result is recorded for the model (besides the mode status
-        // seed)and nothing else is appended by the execution.
+        // The disabled tool result is recorded for the model and nothing else
+        // is appended by the execution (no seed message: mode messages are
+        // written at prompt start only, issue #36).
         val historyAfter = state.historySnapshot
         assertTrue(
             historyAfter.last() is OpenAIMessage.Tool,
             "the denied tool result must be the last history entry",
         )
         assertEquals(
-            2, historyAfter.size,
-            "history: mode status seed + denied tool result; nothing else appended",
+            1, historyAfter.size,
+            "history: denied tool result only; nothing else appended",
         )
     }
 
@@ -138,7 +139,7 @@ class ToolCallExecutorTest {
             register(failTool)
         }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_ok", "write", """{"path":"/project/a.txt"}"""))
@@ -174,7 +175,7 @@ class ToolCallExecutorTest {
         )
         val tool = PathTool("write", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "write", """{"path":"/project/a.txt"}"""))
@@ -196,7 +197,7 @@ class ToolCallExecutorTest {
         val tool = PathTool("write", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "write", """{"path":"/project/a.txt"}"""))
@@ -210,7 +211,7 @@ class ToolCallExecutorTest {
         val tool = PathTool("read", mutating = false)
         val registry = ToolRegistry().apply { register(tool) }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
         val client = AllowOnceClient()
 
@@ -226,7 +227,7 @@ class ToolCallExecutorTest {
         val tool = RecordingTool("bash", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "bash", "{}"))
@@ -245,7 +246,7 @@ class ToolCallExecutorTest {
             }
         }
         val registry = ToolRegistry().apply { register(tool) }
-        val executor = ToolCallExecutor("/project", registry, state())
+        val executor = ToolCallExecutor(registry, state())
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "capture", """{"path":"/project/a.txt","n":2}"""))
@@ -273,7 +274,7 @@ class ToolCallExecutorTest {
             }
         }
         val registry = ToolRegistry().apply { register(tool) }
-        val executor = ToolCallExecutor("/project", registry, state())
+        val executor = ToolCallExecutor(registry, state())
         val emitter = RecordingEmitter()
 
         execute(executor, emitter, StreamToolCall("call_1", "capture", "not json"))
@@ -292,7 +293,7 @@ class ToolCallExecutorTest {
         }
         val registry = ToolRegistry().apply { register(gated) }
         val state = state()
-        val executor = ToolCallExecutor("/project", registry, state)
+        val executor = ToolCallExecutor(registry, state)
         val photoBuild = RecordingEmitter()
         val emitterBash = RecordingEmitter()
 

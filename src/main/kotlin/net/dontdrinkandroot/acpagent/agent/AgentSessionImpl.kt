@@ -1,10 +1,7 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIContentPart
 import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.agent.AgentSession
-import com.agentclientprotocol.agent.client
 import com.agentclientprotocol.agent.clientInfo
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
@@ -21,7 +18,6 @@ import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
-import net.dontdrinkandroot.acpagent.tools.isWithinAnyRoot
 
 internal class AgentSessionImpl(
     override val sessionId: SessionId,
@@ -66,7 +62,7 @@ internal class AgentSessionImpl(
 
     private val sessionConfigOptions = SessionConfigOptions(availableModes, models, state)
 
-    private val toolCallExecutor = ToolCallExecutor(cwd, toolRegistry, state, config.extraMounts)
+    private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, config.extraMounts)
 
     private val promptRunner = PromptRunner(
         state = state,
@@ -103,6 +99,8 @@ internal class AgentSessionImpl(
     override suspend fun setMode(modeId: SessionModeId, _meta: JsonElement?): SetSessionModeResponse {
         sessionConfigOptions.apply(SessionConfigId("mode"), SessionConfigOptionValue.of(modeId.value))
         notifyModeState()
+        // persist() records the governing-mode change only; the mode status
+        // message is written at the next prompt start (issue #36).
         state.persist()
         return SetSessionModeResponse()
     }
@@ -168,13 +166,19 @@ internal class AgentSessionImpl(
         val client = clientOrNull()
         val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
             ?: com.agentclientprotocol.model.ClientCapabilities()
-        val mode = state.currentMode
         val instructions = loadAgentsInstructions(cwd)
-        val userContent = contentBlocksToLlmContent(
+        val userContent = contentBlocksToLlmContentTopLevel(
             blocks = content,
             modelSupportsImage = modelInfo()?.architecture?.inputModalities?.contains("image") == true,
         )
+        // The single writer of mode status messages: before the user message
+        // is appended, state the mode iff it changed since the last indicated
+        // one (first prompt, or any switch - idle or flushed - since then).
+        // Runs before `mode` is captured so the stated mode and the turn's
+        // governing mode are captured together.
+        state.indicateCurrentMode()
         state.appendToHistory(OpenAIMessage.User(userContent))
+        val mode = state.currentMode
 
         val toolContext = ToolContext(
             cwd = cwd,
@@ -193,6 +197,8 @@ internal class AgentSessionImpl(
             promptRunner.run(this, mode, instructions, toolContext)
             // The turn handed control back: apply any mode requested while it
             // ran (latest wins) as a single flush, then persist + announce it.
+            // The flush flips the mode only - its status message waits for the
+            // next prompt start (indicateCurrentMode).
             val changed = state.flushPendingMode()
             state.persist()
             if (changed) {
@@ -209,16 +215,6 @@ internal class AgentSessionImpl(
             state.setPromptActive(false)
         }
     }
-
-    /**
-     * Converts prompt content blocks into LLM message content. Plain text stays
-     * a flat string; any multimodal block switches the message to an array of
-     * content parts. Images are forwarded as base64 data URIs only when the
-     * session model accepts image input, otherwise the block degrades to a text
-     * placeholder so the model learns it was omitted.
-     */
-    private fun contentBlocksToLlmContent(blocks: List<ContentBlock>, modelSupportsImage: Boolean): Content =
-        contentBlocksToLlmContentTopLevel(blocks, modelSupportsImage)
 
     override suspend fun cancel() {
         // The flow is cancelled via coroutine cancellation.
@@ -266,71 +262,6 @@ internal fun permissionNeeded(
 }
 
 /**
- * Builds the `session/load` replay updates from the persisted state snapshot:
- * user/agent text as message chunks, assistant tool calls as PENDING
- * `tool_call` introductions, tool results as terminal `tool_call_update`s and
- * the plan as its update.
- *
- * A tool result's status comes from the persisted outcome map, so denied,
- * disabled, unknown and failed calls replay as FAILED (the status they had
- * live) instead of the historical blanket COMPLETED. Legacy records without
- * outcomes (or with an unknown outcome value) replay COMPLETED fail-open, so
- * old sessions render exactly as before.
- */
-internal fun buildReplayUpdates(
-    history: List<OpenAIMessage>,
-    plan: List<PlanEntry>,
-    toolOutcomes: Map<String, String>,
-    toolRegistry: ToolRegistry,
-): List<SessionUpdate> = buildList {
-    history.forEach { message ->
-        when (message) {
-            is OpenAIMessage.User ->
-                message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                    add(SessionUpdate.UserMessageChunk(ContentBlock.Text(it), newMessageId()))
-                }
-
-            is OpenAIMessage.Assistant -> {
-                message.content.textOrNull()?.takeIf { it.isNotEmpty() }?.let {
-                    add(SessionUpdate.AgentMessageChunk(ContentBlock.Text(it), newMessageId()))
-                }
-                message.toolCalls.orEmpty().forEach { call ->
-                    val toolName = call.function.name
-                    val args = parseArguments(call.function.arguments)
-                    val tool = toolRegistry.get(toolName)
-                    add(
-                        SessionUpdate.ToolCall(
-                            toolCallId = ToolCallId(call.id),
-                            title = tool?.title(args) ?: toolName,
-                            kind = tool?.kind ?: ToolKind.OTHER,
-                            status = ToolCallStatus.PENDING,
-                            locations = tool?.let { toolLocations(it, args) } ?: emptyList(),
-                            rawInput = args,
-                        )
-                    )
-                }
-            }
-
-            is OpenAIMessage.Tool -> {
-                val failed = toolOutcomes[message.toolCallId] == TOOL_OUTCOME_FAILED
-                add(
-                    SessionUpdate.ToolCallUpdate(
-                        toolCallId = ToolCallId(message.toolCallId),
-                        status = if (failed) ToolCallStatus.FAILED else ToolCallStatus.COMPLETED,
-                        content = listOf(
-                            ToolCallContent.Content(ContentBlock.Text(message.content.textOrNull().orEmpty()))
-                        ),
-                    )
-                )
-            }
-
-            else -> Unit
-        }
-    }
-    plan.takeIf { it.isNotEmpty() }?.let { add(SessionUpdate.PlanUpdate(it)) }
-}
-
-/**
  * Selects the file backend for the session: the client fs proxy when it is
  * available (both read and write capabilities) and enabled, otherwise a local
  * store. Selection is independent of the permission flow, which governs where
@@ -347,80 +278,4 @@ internal fun selectFileStore(
     } else {
         LocalFileStore()
     }
-}
-
-/**
- * Converts prompt content blocks into LLM message content. Plain text stays a
- * flat string; any multimodal block switches the message to an array of content
- * parts. Images are forwarded as base64 data URIs only when the session model
- * accepts image input, otherwise the block degrades to a text placeholder so
- * the model learns it was omitted.
- */
-internal fun contentBlocksToLlmContentTopLevel(
-    blocks: List<ContentBlock>,
-    modelSupportsImage: Boolean,
-): Content {
-    val text = StringBuilder()
-    val parts = mutableListOf<OpenAIContentPart>()
-    fun writeLine(line: String) {
-        if (line.isEmpty()) return
-        if (text.isNotEmpty()) text.append('\n')
-        text.append(line)
-    }
-
-    fun flush() {
-        if (text.isEmpty()) return
-        parts += OpenAIContentPart.Text(text.toString())
-        text.clear()
-    }
-
-    for (block in blocks) {
-        when (block) {
-            is ContentBlock.Text -> writeLine(block.text)
-            is ContentBlock.ResourceLink -> writeLine(resourceLinkText(block))
-            is ContentBlock.Resource -> when (val resource = block.resource) {
-                is EmbeddedResourceResource.TextResourceContents ->
-                    writeLine("Resource ${resource.uri}:\n${resource.text}")
-
-                is EmbeddedResourceResource.BlobResourceContents -> {
-                    flush()
-                    parts += OpenAIContentPart.Text("(binary resource ${resource.uri} omitted)")
-                }
-            }
-
-            is ContentBlock.Image -> {
-                flush()
-                parts += imagePart(block, modelSupportsImage)
-            }
-
-            is ContentBlock.Audio -> {
-                flush()
-                parts += OpenAIContentPart.Text("(audio content is not supported)")
-            }
-        }
-    }
-    if (parts.isNotEmpty()) {
-        flush()
-        return Content.Parts(parts)
-    }
-    if (text.isEmpty()) return Content.Text("(empty message)")
-    return Content.Text(text.toString())
-}
-
-private fun resourceLinkText(block: ContentBlock.ResourceLink): String {
-    val label = block.title?.takeIf { it.isNotBlank() }
-        ?: block.name.takeIf { it.isNotBlank() }
-        ?: return block.uri
-    return "[$label](${block.uri})"
-}
-
-private fun imagePart(block: ContentBlock.Image, modelSupportsImage: Boolean): OpenAIContentPart {
-    if (!modelSupportsImage) {
-        return OpenAIContentPart.Text("(image omitted: the selected model does not support image input)")
-    }
-    if (block.data.isEmpty()) {
-        return OpenAIContentPart.Text("(image omitted: no data provided)")
-    }
-    val mime = block.mimeType.ifEmpty { "image/png" }
-    return OpenAIContentPart.Image(OpenAIContentPart.ImageUrl("data:$mime;base64,${block.data}"))
 }

@@ -154,8 +154,12 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # permanent permissions, toolOutcomes) + record lifecycle
                                      # (buildRecord/persist/delete)
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
-                                     # AgentSession interface (config options, replay incl.
-                                     # buildReplayUpdates, prompt plumbing)
+                                     # AgentSession interface (config options, prompt plumbing)
+    agent/PromptContent.kt           # contentBlocksToLlmContentTopLevel: prompt content blocks ->
+                                     # LLM content (multimodal conversion; pure, pinned by
+                                     # AgentSessionPromptContentTest)
+    agent/ReplayUpdates.kt           # buildReplayUpdates: persisted state snapshot -> load-replay
+                                     # updates (pure, pinned by ReplayHistoryTest)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
                                        # AGENTS.md instructions)
@@ -227,6 +231,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # cancel during a running bash command (no FAILED update)
         E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
                                      # before permission/execution (bash in build mode)
+        E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
+                                     # one latest-mode message at the next prompt start (issue #36)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
                                      # + trusted read paths (ACP_EXTRA_MOUNTS: read prompt-free, write
@@ -316,7 +322,7 @@ Config comes from environment variables:
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
   `postInitialize()` - after the load response (SDK hook limitation); the pure mapping is
-  `buildReplayUpdates` (`AgentSessionImpl.kt`, unit-pinned by `ReplayHistoryTest`);
+  `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`);
   `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
@@ -341,15 +347,31 @@ Config comes from environment variables:
   a static "Modes" table (what plan/build/bash mean) and no current-mode
   statement; the current mode and the tools available in it are stated in the
   conversation history instead — modal status messages (`OpenAIMessage.System`,
-  LLM-internal, never rendered by the client`: a fresh session seeds one at
-  session start (`SessionState.init`) and every applied mode change appends one,
-  each stating the mode's semantics ("Mode: ... Read-only / Read-write / ...")
-  plus the tools available in it (`ToolRegistry.availableForMode`)). **Mode
+  LLM-internal, never rendered by the client), each stating the mode's semantics ("Mode: ... Read-only /
+  Read-write / ...") plus the tools available in it (`ToolRegistry.availableForMode`). **The mode status message has a
+  single
+  writer: prompt start** (`SessionState.indicateCurrentMode`, called from the
+  prompt flow before the user message is appended; fixes #36): it appends the
+  message iff the current mode differs from the last *indicated* one, so the
+  model sees exactly one message per mode that actually governs a turn. No
+  session-start seed (a fresh session states the mode at its first prompt),
+  no message on the switch itself: idle switches only flip `currentMode` (+
+  immediate client notification, never deferred), mid-turn switches apply at
+  the turn-end flush, and both write their message at the *next* prompt start
+  - N flips without submitting coalesce into one message for the latest mode,
+    and a flip back to the already-indicated mode writes nothing. Restore parses
+    `lastIndicatedMode` from the trail's last `Mode: <id>.` system message (`SessionState.lastIndicatedTrailMode`), so a
+    switch applied after the last
+    message (e.g. a turn-end flush persisted, then a crash before the next
+    prompt) self-heals at the next prompt start; a legacy record without mode
+    messages (pre-#36) gets one message at its next prompt instead of staying
+    silent forever. **Mode
   switches are deferred**: a `mode` request while a prompt turn is running only
   records a pending mode on `SessionState` (`requestMode`, latest wins) and is
   applied as a single flush when the turn hands control back
   (`flushPendingMode` in the prompt flow's try, before `setPromptActive (false)`),
-  with one `current_mode_update` at that point; the `finally` drops whatever is
+    with one `current_mode_update` at that point (the flush flips the mode only -
+    its status message waits for the next prompt start); the `finally` drops whatever is
   still pending and clears `promptActive` (so a cancelled turn never leaks its
   requested mode into the next turn), and `notifyModeState` is suppressed only
   while a mode is pending (`hasPendingMode`) so mid-turn model/reasoning
@@ -669,7 +691,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
   are inlined as `Resource <uri>:\n<text>`, blob/audio degrade to placeholders,
   `resource_link` renders as a markdown link (`contentBlocksToLlmContentTopLevel` in
-  `agent/AgentSessionImpl.kt`).
+  `agent/PromptContent.kt`).
 - **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
   `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
   missing file ignored, read errors logged and never fail the turn (`agent/AgentsMd.kt`).
@@ -799,7 +821,12 @@ agent's **wire contract**:
   of a stuck permission prompt, mode enforcement
   (`E2eModeRestrictionTest`: registered tool disabled in the current mode is
   refused before permission/execution; `get_current_mode` prompt-free with the
-  governing mode's status text).
+  governing mode's status text), and the coalesced mode indication (`E2eModeIndicationTest`: idle/mid-turn switches emit
+  their client
+  notifications immediately but write one `Mode:` system message for the latest
+  mode, at the next prompt start only — never one per flip, none for a mode
+  that did not govern a turn; deferred switching itself pinned by
+  `E2eDeferredModeSwitchTest`).
 - **Sessions** — persistence across three restarts (`session/list` ->
   `session/load` with replay -> `session/resume` -> delete), `update_plan`
   persistence/replay, and the replay outcome contract: one prompt in plan mode
