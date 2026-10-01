@@ -26,6 +26,10 @@ edits your project, runs commands, and talks to LLMs via
   `read_file`. Binary payloads are refused loudly (download via `bash` instead),
   and private/loopback hosts are blocked unless you opt in with
   `ACP_WEB_FETCH_ALLOW_PRIVATE=1`.
+- **Run configurations** — project-defined commands in `.ai/run.json` (also surfaced to the
+  model as `run` tool configs) execute prompt-free in every mode; the model's `args` array is
+  passed to the command as positional parameters at the `[args]` slot — one element is one
+  argument, never shell-interpreted.
 - **Bounded output & budgets** — tool output is capped (no context explosions),
   shell commands are killed after a configurable timeout, and tool-calling turns are
   capped with a final synthesis pass.

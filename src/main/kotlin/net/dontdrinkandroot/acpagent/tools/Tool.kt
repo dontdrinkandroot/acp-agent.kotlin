@@ -13,16 +13,16 @@ private const val MAX_TITLE_ARGUMENTS_KEEP = 97
 
 /**
  * Formats a tool-call title for the `run` tool: `run(config)` or
- * `run(config: args)`. The config name always leads and is never truncated
+ * `run(config: arg1 arg2)`. The config name always leads and is never truncated
  * (it identifies *what* runs); only the args part is capped at
  * [MAX_TITLE_ARGUMENTS_LENGTH] so long args cannot push the name out of the
  * title. Order-independent: reads named keys instead of the JSON insertion
  * order the model chose.
  */
-public fun formatRunToolTitle(config: String?, args: String?): String = when {
+public fun formatRunToolTitle(config: String?, args: List<String>?): String = when {
     config == null -> "run"
-    args.isNullOrBlank() -> "run($config)"
-    else -> "run($config: ${args.flattenForTitle().truncateForTitle()})"
+    args.isNullOrEmpty() || args.all { it.isBlank() } -> "run($config)"
+    else -> "run($config: ${args.joinToString(" ").flattenForTitle().truncateForTitle()})"
 }
 
 /**
@@ -119,6 +119,21 @@ public fun JsonObject.argError(name: String, type: String = "a string"): String 
         is JsonNull -> "'$name' must not be null"
         else -> "'$name' must be $type"
     }
+
+/**
+ * Reads a string-array tool argument; null when the key is absent or holds an
+ * explicit JSON null. Elements that are not strings (numbers, booleans,
+ * objects, null elements) are rejected with null so the caller renders
+ * [argError] - the same strictness as [stringArg]/[longArg] for scalars.
+ */
+public fun JsonObject.stringListArg(name: String): List<String>? {
+    val value = this[name]
+    if (value == null || value is JsonNull) return null
+    if (value !is JsonArray) return null
+    return value.map { element ->
+        (element as? JsonPrimitive)?.takeIf { it !is JsonNull && it.isString }?.content ?: return null
+    }
+}
 
 /**
  * True when the argument is present but an explicit JSON null. Optional

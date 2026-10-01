@@ -118,8 +118,8 @@ internal class SystemPromptBuilder(
                 appendLine()
             }
             appendLine(
-                "Execute one via the `run` tool with `config: <name>`; pass `args` only for " +
-                        "configurations whose command contains the {args} placeholder."
+                "Execute one via the `run` tool with `config: <name>`; pass `args` (an array; " +
+                        "one element = one argument) only for configurations whose command contains the [args] slot."
             )
         }
     }

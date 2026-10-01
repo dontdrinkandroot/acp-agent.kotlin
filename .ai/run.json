@@ -12,7 +12,7 @@
         "description": "Run the full test suite (120s: full suite)"
     },
     "test_class": {
-        "command": "timeout 60 ./gradlew test --tests \"{args}\"",
+        "command": "timeout 60 ./gradlew test --tests [args]",
         "description": "Run a single test class (or Class.method), e.g. LlmRequestTest (re-links installDist first)"
     },
     "install_dist": {
@@ -36,11 +36,11 @@
         "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions"
     },
     "listLibs": {
-        "command": "./gradlew :app:dependencies {args} --console=plain -q 2>&1 | tail -60",
+        "command": "./gradlew :app:dependencies [args] --console=plain -q 2>&1 | tail -60",
         "description": "Print resolved dependency trees with exact versions; pass --configuration debugRuntimeClasspath or --configuration debugUnitTestRuntimeClasspath"
     },
     "git": {
-        "command": "git {args}",
+        "command": "git [args]",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
     },
     "gradleUnstick": {

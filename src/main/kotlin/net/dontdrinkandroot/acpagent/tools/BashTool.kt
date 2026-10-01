@@ -100,12 +100,20 @@ internal object ProcessRunner {
         tail.append(decoder.decode(ByteBuffer.allocate(0)).toString())
     }
 
+    /**
+     * Runs [command] via `/bin/sh -c`. The [args] elements are appended as
+     * positional parameters after the `$0` placeholder (`sh -c <command> sh
+     * <args...>`), so they are delivered to the command as literal argv
+     * tokens - one element is one argument, never re-interpreted by the shell
+     * (no splitting, quoting, globbing or substitution of the contents).
+     */
     public suspend fun run(
         command: String,
         cwd: String? = null,
         timeoutSeconds: Long = 600,
+        args: List<String> = emptyList(),
     ): ProcessResult = withContext(Dispatchers.IO) {
-        val process = ProcessBuilder("/bin/sh", "-c", command)
+        val process = ProcessBuilder(listOf("/bin/sh", "-c", command, "sh") + args)
             .apply {
                 cwd?.let { directory(java.io.File(it)) }
             }
@@ -203,14 +211,21 @@ internal object ProcessRunner {
 
 /**
  * Runs [command] via [ProcessRunner] and renders the result text shared by the
- * `bash` and `run` tools. Failure conversion is centralized in
- * [executeSafely]: a cancelled turn (`session/cancel`) rethrows and aborts the
- * tool call (never a bogus failed tool result), every other failure becomes an
- * error [ToolResult] prefixed with [failureLabel].
+ * `bash` and `run` tools. [args] is passed through to [ProcessRunner.run] as
+ * positional parameters (the `run` tool's argv delivery, issue #4); `bash`
+ * passes none. Failure conversion is centralized in [executeSafely]: a
+ * cancelled turn (`session/cancel`) rethrows and aborts the tool call (never a
+ * bogus failed tool result), every other failure becomes an error [ToolResult]
+ * prefixed with [failureLabel].
  */
-internal suspend fun runShellCommand(command: String, context: ToolContext, failureLabel: String): ToolResult =
+internal suspend fun runShellCommand(
+    command: String,
+    context: ToolContext,
+    failureLabel: String,
+    args: List<String> = emptyList(),
+): ToolResult =
     executeSafely(failureLabel) {
-        val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong())
+        val result = ProcessRunner.run(command, context.cwd, context.bashTimeoutSeconds.toLong(), args)
         val output = buildString {
             if (result.timedOut) {
                 append("(command timed out after ${context.bashTimeoutSeconds}s and was terminated)\n")

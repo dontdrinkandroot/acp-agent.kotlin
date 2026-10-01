@@ -1,7 +1,9 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -68,10 +70,10 @@ class FormatToolTitleTest {
     @Test
     fun `run title leads with the config name`() {
         assertEquals("run(marker)", formatRunToolTitle("marker", null))
-        assertEquals("run(marker: --watch)", formatRunToolTitle("marker", "--watch"))
+        assertEquals("run(marker: --watch)", formatRunToolTitle("marker", listOf("--watch")))
         assertEquals("run", formatRunToolTitle(null, null))
-        assertEquals("run(marker)", formatRunToolTitle("marker", ""))
-        assertEquals("run(marker)", formatRunToolTitle("marker", "   "))
+        assertEquals("run(marker)", formatRunToolTitle("marker", emptyList()))
+        assertEquals("run(marker)", formatRunToolTitle("marker", listOf("   ")))
     }
 
     // The config name identifies what runs and must survive even a very long
@@ -79,9 +81,17 @@ class FormatToolTitleTest {
     @Test
     fun `run title truncates args but never the config name`() {
         val args = "x".repeat(200)
-        val title = formatRunToolTitle("marker", args)
+        val title = formatRunToolTitle("marker", listOf(args))
         assertTrue(title.startsWith("run(marker: "), title)
         assertEquals("run(marker: ${"x".repeat(97)}...)", title)
+    }
+
+    @Test
+    fun `run title joins array elements with spaces`() {
+        assertEquals(
+            "run(git: -m Fix the bug)",
+            formatRunToolTitle("git", listOf("-m", "Fix the bug")),
+        )
     }
 
     @Test
@@ -89,12 +99,12 @@ class FormatToolTitleTest {
         val first = RunTool("").title(
             buildJsonObject {
                 put("config", "test")
-                put("args", "The quick brown fox jumps over the lazy dog and then some more")
+                putJsonArray("args") { add("The quick brown fox jumps over the lazy dog and then some more") }
             },
         )
         val second = RunTool("").title(
             buildJsonObject {
-                put("args", "The quick brown fox jumps over the lazy dog and then some more")
+                putJsonArray("args") { add("The quick brown fox jumps over the lazy dog and then some more") }
                 put("config", "test")
             },
         )

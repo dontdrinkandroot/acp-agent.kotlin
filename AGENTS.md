@@ -76,7 +76,7 @@ Use the `run` tool's configurations for the standard dev loop:
 
 - `compile` — compile main sources (fastest loop)
 - `test` — full suite (unit + black-box e2e; drives the installDist launcher)
-- `test_class` — single test class/method via `{args}` (re-links installDist)
+- `test_class` — single test class/method via `[args]` (re-links installDist)
 - `build` — assemble + all tests
 - `install_dist` — relink the e2e launcher
 - `dependency_updates` — outdated deps (stable-only)
@@ -176,7 +176,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # (Main.kt assembles the registries from it; iterated by the
                                      # schema guard test)
     tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
-    tools/BashTool.kt                # bash tool (ProcessBuilder)
+    tools/BashTool.kt                # bash tool (ProcessRunner: /bin/sh -c, tree-kill,
+                                     # progressive bounded tail) + optional positional-parameter args
+                                     # + shared runShellCommand rendering
     tools/WebFetchTool.kt            # web_fetch tool (line-paged HTTP fetch, ToolKind.FETCH)
     tools/WebFetcher.kt              # fetch pipeline: ktor CIO client, redirects + SSRF guard,
                                      # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
@@ -189,7 +191,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
-                                     # prompt) + run-config storage (load/create/update/delete, atomic write)
+                                     # prompt; args = argv tokens at the [args] slot → "$@")
+                                     # + run-config storage (load/create/update/delete, atomic write)
     tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
     tools/ReadFileTool.kt            # read_file tool (via FileStore)
     tools/WriteFileTool.kt           # write_file tool (via FileStore)
@@ -234,7 +237,7 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
-                                     # unknown config fails loudly
+                                     # unknown config fails loudly, args = literal argv tokens
         E2eRunConfigCrudTest.kt      # create/update/delete_run_config: .ai/run.json persistence
                                      # and permission prompts
         E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
@@ -362,10 +365,17 @@ Config comes from environment variables:
   read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,
   location-agnostic string; the available configs (name + command + description) are surfaced in
   the system prompt instead. Commands are shell strings run
-  via `ProcessRunner`; the model's `args` are substituted for **every** `{args}` occurrence (was first-only, which
-  leaked a literal `{args}` into the shell for multi-placeholder
-  configs),
-  configs without the placeholder reject arguments. `mutating = false` so `run` never asks for
+  via `ProcessRunner`; the model's `args` are an **array of strings** delivered as **positional
+  parameters** at the command's `[args]` slot (one element = one argv token, never
+  shell-interpreted; fixes #4's raw `{args}` string splice, which let a model-controlled
+  `args` value execute arbitrary shell prompt-free even in plan mode - hard switch: a config
+  still carrying the legacy `{args}` placeholder no longer substitutes and must be migrated;
+  quoting around the slot, e.g. `--tests "[args]"`, silently degrades: the quotes concatenate
+  to nothing and the expansion loses its quoting, so `'a b'` word-splits and `*` globs - the
+  shipped `test_class` was migrated to `--tests [args]` for exactly this). Every `[args]`
+  occurrence becomes a quoted `"$@"` (so elements with whitespace stay
+  one token) and the command runs as `/bin/sh -c '<command>' sh <args...>`; configs without the
+  slot reject non-empty args (empty arrays pass). `mutating = false` so `run` never asks for
   permission in any mode (incl. plan); the trust model is that the config file is
   project-controlled (same trust tier as AGENTS.md). The `title` override (`run(config: ...)`,
   see the tool-call title note under Permissions) still renders in tool-call progress.
@@ -378,7 +388,7 @@ Config comes from environment variables:
   touch a corrupt/unparseable file; unknown entry fields
   round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
-  `test` (full `test` suite), `test_class` (single class/method via `{args}`),
+  `test` (full `test` suite), `test_class` (single class/method via `[args]`),
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
 report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
@@ -392,7 +402,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   The gradle configs are
   wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
   a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
-  config (`git {args}`, arbitrary arguments, read-only inspection only) and a `gradleStop`
+  config (`git [args]`, arbitrary arguments, read-only inspection only) and a `gradleStop`
   config (stop daemons and kill lingering processes holding cache locks). A
   `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
@@ -765,7 +775,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
 ## Testing
 
 Drive the suites through the run configurations: `test` for the whole suite,
-`test_class` (single class/method via `{args}`; re-links installDist) for one
+`test_class` (single class/method via `[args]`; re-links installDist) for one
 target, `show_failures` for the failure messages of the last run.
 
 The suite is unit tests plus a **black-box e2e harness** (feature-area scenario

@@ -2,14 +2,13 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.ToolCallStatus
-import com.agentclientprotocol.model.ToolKind
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -60,6 +59,55 @@ class E2eRunToolTest : E2eAgentTest() {
                 assertTrue(marker.isFile, "the config command must have written the marker file")
                 assertEquals("hello", marker.readText().trim())
                 println("[ok] run tool executed .ai/run.json config without permission (plan mode)")
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    @Test
+    fun `e2e run args elements are delivered as literal argv tokens in plan mode`() = runBlocking {
+        // Regression (issue #4): args used to be spliced into the command
+        // string, so a model-controlled value executed arbitrary shell in
+        // prompt-free plan mode. The element must reach the command as one
+        // literal argument instead.
+        withE2eAgent("run-args", { projectDir ->
+            val aiDir = projectDir.resolve(".ai").apply { mkdirs() }
+            aiDir.resolve("run.json").writeText("""{"echo":{"command":"printf '[%s]' [args]"}}""")
+            MockOpenAiServer(
+                "unused",
+                toolCall = MockToolCall(
+                    "run",
+                    buildJsonObject {
+                        put("config", "echo")
+                        putJsonArray("args") { add("""x"; rm -rf ~ #""") }
+                    },
+                ),
+            )
+        }) {
+            val connection = connect()
+            try {
+                connection.client.initialize(testClientInfo())
+                val ops = TestClientOperations()
+                val session = newSession(connection.client, projectDir, ops)
+                val events = collectPrompt(session, listOf(ContentBlock.Text("Run the echo config")))
+                assertEndTurn(events)
+
+                val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
+                assertTrue(ops.permissionRequests.isEmpty(), "run is non-mutating and must not ask permission")
+                val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                assertTrue(resultUpdates.isNotEmpty(), "expected a ToolCallUpdate result")
+                assertEquals(ToolCallStatus.COMPLETED, resultUpdates.last().status)
+                val resultText = (resultUpdates.last().content ?: emptyList())
+                    .filterIsInstance<ToolCallContent.Content>()
+                    .map { it.content }
+                    .filterIsInstance<ContentBlock.Text>()
+                    .joinToString("") { it.text }
+                assertTrue(
+                    resultText.contains("""[x"; rm -rf ~ #]"""),
+                    "the element must arrive as one literal argument: $resultText",
+                )
+                println("[ok] run args elements are literal argv tokens (no shell re-interpretation)")
             } finally {
                 connection.close()
             }

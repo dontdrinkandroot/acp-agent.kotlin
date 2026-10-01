@@ -9,13 +9,9 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.nio.file.Files
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import java.nio.file.Files
+import kotlin.test.*
 
 class BashToolTest {
 
@@ -135,6 +131,22 @@ class BashToolTest {
             result.text.contains("started"),
             "output captured before the drain timeout was discarded: ${result.text}",
         )
+    }
+
+    @Test
+    fun `args are delivered as literal argv tokens`() = runBlocking {
+        // Regression (issue #4): run-tool arguments must reach the command as
+        // positional parameters - one list element is one argument, never
+        // re-interpreted by the shell (no splitting, quoting, globbing or
+        // substitution of the element contents).
+        val result = ProcessRunner.run(
+            "printf '[%s]' \"\$@\"",
+            null,
+            600,
+            listOf("a b", "c\"d", "e;f", "\$HOME", "*"),
+        )
+        assertEquals(0, result.exitCode, result.stderr)
+        assertEquals("""[a b][c"d][e;f][${'$'}HOME][*]""", result.stdout)
     }
 
     @Test

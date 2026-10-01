@@ -66,7 +66,7 @@ class SystemPromptTest {
             runConfigsProvider = {
                 listOf(
                     RunConfig("compile", "./gradlew compileKotlin", "Compile main sources (fastest loop)"),
-                    RunConfig("test_class", "./gradlew test --tests \"{args}\"", "Run a single test class"),
+                    RunConfig("test_class", "./gradlew test --tests [args]", "Run a single test class"),
                     RunConfig("relint", "npm run lint", null),
                 )
             },
@@ -74,10 +74,10 @@ class SystemPromptTest {
         val prompt = builder.build(null)
         assertTrue(prompt.contains("Available run configurations"), prompt)
         assertTrue(prompt.contains("- compile: ./gradlew compileKotlin — Compile main sources (fastest loop)"), prompt)
-        assertTrue(prompt.contains("- test_class: ./gradlew test --tests \"{args}\" — Run a single test class"), prompt)
+        assertTrue(prompt.contains("- test_class: ./gradlew test --tests [args] — Run a single test class"), prompt)
         assertTrue(prompt.contains("- relint: npm run lint"), prompt)
         assertTrue(
-            prompt.contains("pass `args` only for configurations whose command contains the {args} placeholder"),
+            prompt.contains("pass `args` (an array; one element = one argument) only for configurations whose command contains the [args] slot"),
             prompt,
         )
     }

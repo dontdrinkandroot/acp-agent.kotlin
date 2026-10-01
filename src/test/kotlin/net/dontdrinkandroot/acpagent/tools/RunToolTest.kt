@@ -8,15 +8,10 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class RunToolTest {
 
@@ -55,12 +50,17 @@ class RunToolTest {
             RunTool(tempDir()).title(
                 buildJsonObject {
                     put("config", "test")
-                    put("args", "--watch")
+                    putJsonArray("args") { add("--watch") }
                 },
             ),
         )
         val longArgs = "arg ".repeat(40)
-        val title = RunTool(tempDir()).title(buildJsonObject { put("config", "test"); put("args", longArgs) }) ?: ""
+        val title = RunTool(tempDir()).title(
+            buildJsonObject {
+                put("config", "test")
+                putJsonArray("args") { add(longArgs.trim()) }
+            },
+        ) ?: ""
         assertTrue(title.startsWith("run(test: "), title)
         assertTrue(title.contains("..."), title)
     }
@@ -76,7 +76,7 @@ class RunToolTest {
     fun `schema pins config with optional args`() {
         val tool = RunTool(tempDir())
         assertEquals(
-            """{"type":"object","properties":{"config":{"type":"string","description":"Name of the run configuration to execute"},"args":{"type":"string","description":"Optional arguments substituted for the {args} placeholder in the command"}},"required":["config"]}""",
+            """{"type":"object","properties":{"config":{"type":"string","description":"Name of the run configuration to execute"},"args":{"type":"array","description":"Optional arguments passed to the configuration command as positional parameters (one element = one argument, never shell-interpreted); the command's [args] slot receives them.","items":{"type":"string"}}},"required":["config"]}""",
             llmWireJson.encodeToString(tool.parameters),
         )
     }
@@ -147,11 +147,11 @@ class RunToolTest {
     fun `substitutes args for the placeholder`() = runBlocking {
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
-        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '%s' {args}"}}""")
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '%s' [args]"}}""")
         val result = RunTool(dir).execute(
             buildJsonObject {
                 put("config", "echo")
-                put("args", "world")
+                putJsonArray("args") { add("world") }
             },
             context(dir),
         )
@@ -160,32 +160,132 @@ class RunToolTest {
     }
 
     @Test
+    fun `multi-word element arrives as one argument`() = runBlocking {
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '[%s]' [args]"}}""")
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "echo")
+                putJsonArray("args") { add("a b") }
+            },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertEquals("[a b]", result.text, "one element is exactly one argument, spaces included")
+    }
+
+    @Test
+    fun `injection-shaped element is passed through literally`() = runBlocking {
+        // Regression (issue #4): model-controlled args were spliced into the
+        // command string, so `x"; rm -rf ~ #` on the quoted test_class config
+        // executed the rm. With argv delivery the same element is one literal
+        // token that the command sees as data.
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '[%s]' [args]"}}""")
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "echo")
+                putJsonArray("args") { add("""x"; rm -rf ~ #""") }
+            },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertEquals("""[x"; rm -rf ~ #]""", result.text)
+    }
+
+    @Test
     fun `substitutes args for every placeholder occurrence`() = runBlocking {
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
         Files.writeString(
             aiDir.resolve("run.json"),
-            """{"twice":{"command":"printf '%s-%s' {args} {args}"}}""",
+            """{"twice":{"command":"printf '%s-%s' [args] [args]"}}""",
         )
         val result = RunTool(dir).execute(
             buildJsonObject {
                 put("config", "twice")
-                put("args", "ab")
+                putJsonArray("args") { add("ab") }
             },
             context(dir),
         )
         assertFalse(result.isError, result.text)
-        assertEquals("ab-ab", result.text, "every {args} occurrence must be substituted")
+        assertEquals("ab-ab", result.text, "every [args] occurrence must be substituted")
     }
 
     @Test
-    fun `missing placeholder substitutes empty string`() = runBlocking {
+    fun `args reaching the shell as separate tokens still re-orders as argv`() = runBlocking {
+        // Deliberate semantics pin: the command text keeps the shell (the
+        // config author writes pipelines/redirects there), so positional
+        // parameters are delivered where the command's argv conventions put
+        // them - the config decides the slot, the model only fills it.
         val dir = tempDir()
         val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
-        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf 'a{args}b'"}}""")
-        val result = RunTool(dir).execute(buildJsonObject { put("config", "echo") }, context(dir))
+        Files.writeString(aiDir.resolve("run.json"), """{"twice":{"command":"printf '[%s][%s]' [args] [args]"}}""")
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "twice")
+                putJsonArray("args") {
+                    add("a")
+                    add("b")
+                }
+            },
+            context(dir),
+        )
         assertFalse(result.isError, result.text)
-        assertEquals("ab", result.text)
+        assertEquals("[a][b][a][b]", result.text, "both placeholders expand to the full args list")
+    }
+
+    @Test
+    fun `empty args array is allowed on a configuration without placeholder`() = runBlocking {
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"test":{"command":"true"}}""")
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "test")
+                putJsonArray("args") {}
+            },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+    }
+
+    @Test
+    fun `non-string or null args element errors`() = runBlocking {
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '%s' [args]"}}""")
+        for (element in listOf<JsonElement>(JsonNull, JsonPrimitive(42))) {
+            val result = RunTool(dir).execute(
+                buildJsonObject {
+                    put("config", "echo")
+                    putJsonArray("args") { add(element) }
+                },
+                context(dir),
+            )
+            assertTrue(result.isError, result.text)
+            assertTrue(result.text.contains("'args'"), result.text)
+        }
+    }
+
+    @Test
+    fun `placeholder with empty args vanishes`() = runBlocking {
+        // Quoted "$@" with zero positional parameters expands to nothing, so a
+        // command like `printf 'a[args]b'` renders "ab" with no args.
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '[%s]' [args]"}}""")
+        val result = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "echo")
+                putJsonArray("args") {}
+            },
+            context(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertEquals("[]", result.text)
     }
 
     @Test
@@ -207,12 +307,34 @@ class RunToolTest {
         val result = RunTool(dir).execute(
             buildJsonObject {
                 put("config", "test")
-                put("args", "-- --watch")
+                putJsonArray("args") { add("--watch") }
             },
             context(dir),
         )
         assertTrue(result.isError)
         assertTrue(result.text.contains("does not accept arguments"), result.text)
+    }
+
+    @Test
+    fun `legacy braces placeholder is a literal word and rejects args`() = runBlocking {
+        // Hard switch (issue #4): `{args}` is no longer substituted; a config
+        // still carrying it must fail loudly with args instead of running the
+        // injection-prone splice.
+        val dir = tempDir()
+        val aiDir = Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        Files.writeString(aiDir.resolve("run.json"), """{"echo":{"command":"printf '%s' {args}"}}""")
+        val withArgs = RunTool(dir).execute(
+            buildJsonObject {
+                put("config", "echo")
+                putJsonArray("args") { add("hi") }
+            },
+            context(dir),
+        )
+        assertTrue(withArgs.isError, withArgs.text)
+        assertTrue(withArgs.text.contains("does not accept arguments"), withArgs.text)
+        val withoutArgs = RunTool(dir).execute(buildJsonObject { put("config", "echo") }, context(dir))
+        assertFalse(withoutArgs.isError, withoutArgs.text)
+        assertEquals("{args}", withoutArgs.text, "without args the literal word passes through unchanged")
     }
 
     @Test
