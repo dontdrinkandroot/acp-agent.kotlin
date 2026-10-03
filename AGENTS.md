@@ -160,6 +160,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # AgentSessionPromptContentTest)
     agent/ReplayUpdates.kt           # buildReplayUpdates: persisted state snapshot -> load-replay
                                      # updates (pure, pinned by ReplayHistoryTest)
+    agent/ToolCallPairing.kt         # repairToolCallPairing: dangling tool calls -> synthetic
+                                     # FAILED result (pure; issue #38, pinned by
+                                     # ToolCallPairingRepairTest)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
                                        # AGENTS.md instructions)
@@ -229,6 +232,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # restarts + update_plan persistence/replay
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
                                      # cancel during a running bash command (no FAILED update)
+        E2eToolCallPairingRepairTest.kt # pairing invariant e2e (issue #38): cancelled call closed
+                                     # in the next chat request; poisoned record heals at load
+                                     # (terminal FAILED replay); mid-batch cancel record pin
         E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
                                      # before permission/execution (bash in build mode)
         E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
@@ -316,7 +322,19 @@ Config comes from environment variables:
   file; failures log to stderr and never fail the turn. Client-supplied ids are format-checked
   (`isValidSessionId`) so traversal/separators never reach the filesystem. Session creation
   (and restore) closes any already-opened MCP connections and the `LlmClient` when the model
-  feed fetch fails.
+  feed fetch fails. **Tool-call pairing invariant** (issue #38): a cancelled turn leaves the
+  call it was running in the history without a result, and a strict provider (Azure/OpenAI)
+  rejects any later chat request with 400 "No tool output found for function call <id>" —
+  observed on 13 of 172 real sessions. The invariant is therefore enforced at the **observation boundary, not at the
+  write sites**: `repairToolCallPairing`
+  (`agent/ToolCallPairing.kt`, pure + idempotent) closes every assistant tool-call id that has
+  no matching `role:"tool"` result with one synthetic FAILED result ("Tool call was
+  interrupted before a result was produced; any effects may already be applied."), inserted
+  after the batch's already-present results, and runs inside `SessionState.historySnapshot` /
+  `replaySnapshot` / `buildRecord` — so the LLM request, the load replay and the persisted
+  record are always pair-complete while the in-memory history is never mutated by the repair (a cancelled call only
+  reaches disk with the next persist, O1-accepted). One warn log per
+  snapshot keeps the dangling state visible on stderr.
 - **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
@@ -835,6 +853,10 @@ agent's **wire contract**:
   as FAILED with their denial text (was the issue #5 blanket-COMPLETED bug) and
   the `update_plan` scenario pins the successful call replaying COMPLETED.
   Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open),
+  `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
+  semantics, idempotence, duplicate ids count as answered) and
+  `SessionStateRepairTest` (the three view consumers close dangling calls while
+  the stored history is never mutated; a real outcome is never overridden),
   `ToolCallExecutorTest` (outcome recording + immediate persistence),
   `SessionStoreTest` (outcome round-trip + legacy decode).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto

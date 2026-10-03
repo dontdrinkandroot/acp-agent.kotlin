@@ -53,6 +53,13 @@ internal class SessionState(
     val permanentPermissions = mutableMapOf<String, Boolean>()
 
     /**
+     * Dangling tool-call ids already warned about: the repaired view warns
+     * once per id, not once per snapshot read (a cancelled call stays in the
+     * stored history until the next persist, so snapshots repeat it).
+     */
+    private val warnedDanglingIds = mutableSetOf<String>()
+
+    /**
      * Serializes the record lifecycle: persist (deleted check through save) and
      * delete (mark deleted through record removal) share this mutex, so a delete
      * cannot interleave with an in-flight persist and resurrect the record.
@@ -107,7 +114,8 @@ internal class SessionState(
      */
     var reasoningSelection: String = restored?.reasoning?.takeIf { it.isNotBlank() } ?: ""
 
-    val historySnapshot: List<OpenAIMessage> get() = synchronized(historyLock) { history.toList() }
+    val historySnapshot: List<OpenAIMessage>
+        get() = synchronized(historyLock) { repairedViewLocked().history }
 
     fun appendToHistory(message: OpenAIMessage) {
         synchronized(historyLock) { history.add(message) }
@@ -137,7 +145,10 @@ internal class SessionState(
      * consistent picture.
      */
     fun replaySnapshot(): Triple<List<OpenAIMessage>, List<PlanEntry>, Map<String, String>> =
-        synchronized(historyLock) { Triple(history.toList(), plan, toolOutcomes.toMap()) }
+        synchronized(historyLock) {
+            val repaired = repairedViewLocked()
+            Triple(repaired.history, plan, repaired.outcomes)
+        }
 
     private fun restoredModeOrDefault(restored: SessionRecord?): SessionModeId {
         val restoredMode = restored?.mode?.let { SessionModeId(it) }
@@ -291,7 +302,13 @@ internal class SessionState(
     }
 
     fun buildRecord(): SessionRecord {
-        val snapshot = historySnapshot
+        val snapshot: List<OpenAIMessage>
+        val outcomes: Map<String, String>
+        synchronized(historyLock) {
+            val repaired = repairedViewLocked()
+            snapshot = repaired.history
+            outcomes = repaired.outcomes
+        }
         val recordTitle = title
             ?: deriveTitle(snapshot)?.also { title = it }
             ?: ""
@@ -305,8 +322,32 @@ internal class SessionState(
             model = currentModel,
             reasoning = reasoningSelection,
             plan = planSnapshot,
-            toolOutcomes = synchronized(historyLock) { toolOutcomes.toMap() },
+            toolOutcomes = outcomes,
         )
+    }
+
+    /**
+     * One repaired view of the current history: dangling tool calls (a turn
+     * that died between appending a call and its result - cancelled turns,
+     * issue #38) are closed by the synthetic failed result and mapped to a
+     * FAILED outcome, so no consumer - LLM request, replay or record - ever
+     * sees the dangling state. Pure: the stored history is never mutated by
+     * the repair. Must hold [historyLock].
+     */
+    private fun repairedViewLocked(): RepairedView {
+        val repair = repairToolCallPairing(history)
+        repair.danglingIds.forEach { callId ->
+            if (warnedDanglingIds.add(callId)) {
+                logger.warn {
+                    "Session ${sessionId.value}: dangling tool call '$callId' closed with a " +
+                            "synthetic interrupted result (issue #38)"
+                }
+            }
+        }
+        val outcomes = repair.danglingIds.fold(toolOutcomes.toMap()) { acc, callId ->
+            acc + (callId to TOOL_OUTCOME_FAILED)
+        }
+        return RepairedView(repair.history, outcomes)
     }
 
     /**

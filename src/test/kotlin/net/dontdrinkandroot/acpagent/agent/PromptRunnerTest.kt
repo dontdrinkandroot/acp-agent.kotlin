@@ -1,9 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIStreamFunction
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIStreamToolCall
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAITool
+import ai.koog.prompt.executor.clients.openai.base.models.*
 import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
 import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamChoice
 import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamDelta
@@ -338,6 +335,30 @@ class PromptRunnerTest {
             assistants.map { it.content?.text() },
             "the dropped call must not appear in history"
         )
+    }
+
+    @Test
+    fun `a dangling tool call is closed in the chat request - strict providers never see it dangling`() = runBlocking {
+        val fake = FakeCompleter(listOf(chunk(content = "Understood.")))
+        val state = state()
+        // The in-memory state a cancelled turn leaves behind (issue #38): the
+        // call was appended to the history, its result never was.
+        state.appendToHistory(OpenAIMessage.User(Content.Text("Run the config")))
+        state.appendToHistory(
+            OpenAIMessage.Assistant(
+                content = Content.Text(""),
+                toolCalls = listOf(OpenAIToolCall("call_1", OpenAIFunction("run", "{\"config\":\"validate\"}"))),
+            ),
+        )
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val request = fake.requests.single()
+        val synthetic = request.filterIsInstance<OpenAIMessage.Tool>().single()
+        assertEquals("call_1", synthetic.toolCallId)
+        assertEquals(CANCELLED_TOOL_RESULT_TEXT, (synthetic.content as Content.Text).text())
     }
 
     @Test
