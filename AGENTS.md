@@ -197,6 +197,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # StreamingLineReader + the shared truncateLine line cap
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
+    tools/CalcExpression.kt          # safe arithmetic expression evaluator (closed grammar:
+                                     # numbers, + - * / % ^, parens, functions, constants pi/e;
+                                     # CalcException, length/nesting caps) + formatCalcResult
+    tools/CalcTool.kt                # calc tool (evaluate an expression, ToolKind.OTHER)
     tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
                                      # prompt; args = argv tokens at the [args] slot → "$@")
                                      # + run-config storage (load/create/update/delete, atomic write)
@@ -507,7 +511,17 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   semantics and the tools available in it, the same text the modal status messages
   carry — threaded through `ToolContext.modeStatusText` so the model can verify the
   governing mode instead of inferring it; non-mutating, no parameters, every mode,
-  prompt-free), registered in `Main.kt`,
+  prompt-free) + `calc` (`tools/CalcTool.kt`/`tools/CalcExpression.kt`, kind `other`,
+  every mode, prompt-free): evaluates a safe arithmetic expression - pure math, no
+  variables/assignment/I/O - numbers (decimal, scientific), `+ - * / % ^` with
+  standard precedence (`^` right-associative), unary sign, parentheses, the
+  functions `sqrt`/`abs`/`min`/`max`/`floor`/`ceil`/`round`/`sin`/`cos`/`tan`/`log`
+  (base 10)/`ln`/`exp` and the constants `pi`/`e`. The full language is advertised in
+  the tool description so the model knows exactly what it may write. Errors are
+  positional (`Unexpected token ')' at position 8`); safety caps: 1000-char
+  expressions, 64 nesting levels, division/modulo by zero and non-finite results (overflow, `ln(0)`) refused; `Double`
+  results,
+  integrals rendered without `.0`), registered in `Main.kt`,
   copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
   collision with a local tool is ignored with a warning - locals can never be shadowed. All
   path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
@@ -880,14 +894,17 @@ symlink refusal, dir/file type mismatches, diff payloads, local-disk-only), the
 whole-file diff convention and the fs-proxy diff skip, the strict JSON-null argument
 rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
 mapping, `title` annotation) are unit-tested in
-`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`.
+`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`. The calc expression
+language (operator precedence incl. right-associative `^`, functions/constants,
+positional error messages, length/nesting caps) is unit-tested in
+`CalcExpressionTest`/`CalcToolTest`.
 
 **Tool schema pins**: every registered local tool pins its `parameters` schema as an
 encoded string (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive —
 JsonObject equality is order-insensitive) in its own test class (`ToolSchemaTest` in
 `ToolsTest.kt` covers the path tools, the remaining tools in their dedicated classes:
 `BashToolTest`, `WebFetchToolTest`, `RunToolTest`, `RunConfigToolsTest`,
-`UpdatePlanToolTest`, `GetCurrentModeToolTest`). The registry-wide guard test
+`UpdatePlanToolTest`, `GetCurrentModeToolTest`, `CalcToolTest`). The registry-wide guard test
 (`ToolSchemaTest.every production tool advertises an object schema…`) iterates
 `localTools()` + `sessionTools(cwd)` from `tools/ToolCatalog.kt` — the same helpers
 `Main.kt` assembles the production registry from — asserting `type=object`, a

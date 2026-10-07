@@ -21,6 +21,7 @@ internal fun localTools(): List<AgentTool> = listOf(
     WebFetchTool(),
     UpdatePlanTool(),
     GetCurrentModeTool(),
+    CalcTool(),
 )
 
 /**
