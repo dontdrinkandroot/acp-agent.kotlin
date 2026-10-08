@@ -11,7 +11,7 @@ public class GrepTool : AgentTool {
     override val name = "grep"
     override val description =
         "Search file contents for a regex pattern under a root directory. " +
-                "Files matching an exclusion rule (currently .env*.local) are skipped."
+                "Files matching an exclusion rule are skipped."
     override val kind = ToolKind.SEARCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(

@@ -277,6 +277,11 @@ tests/bash/                             # shell test suite (launcher composition
                                         # + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
+.ai/run.json                            # run configurations (see Run configurations below)
+.ai/scripts/gradle-unstick              # Gradle lock-timeout diagnosis/wipe (run configs
+                                        # `gradleUnstick` / `gradleUnstickWipe`)
+.ai/scripts/show-test-failures.sh       # failure messages from the latest JUnit XML
+                                        # (run config `show_failures`)
 ```
 
 ### Configuration (OpenRouter + MCP)
@@ -435,7 +440,7 @@ Config comes from environment variables:
   `test` (full `test` suite), `test_class` (single class/method via `[args]`),
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
 report-only, Koog bumps additionally go through the Koog upgrade checklist),
-  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build/shell-test scripts),
+  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build, `.ai/scripts/*` and shell-test scripts),
   `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
   composition - also wired into Gradle `check` as the `testScripts` Exec task),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
@@ -446,8 +451,13 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   The gradle configs are
   wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
   a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
-  config (`git [args]`, arbitrary arguments, read-only inspection only) and a `gradleStop`
-  config (stop daemons and kill lingering processes holding cache locks). A
+  config (`git [args]`, arbitrary arguments, read-only inspection only), a `listLibs`
+  config (resolved dependency trees via `./gradlew dependencies`,
+  `--configuration runtimeClasspath` / `testRuntimeClasspath`) and two Gradle
+  lock-timeout configs backed by `.ai/scripts/gradle-unstick`: `gradleUnstick`
+  (diagnosis: stops container-local daemons, then classifies every lock file by real
+  flock contention) and `gradleUnstickWipe` (guarded delete of uncontended lock
+  records; see the "Gradle lock timeout" Pitfall). A
   `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
   leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
@@ -1083,15 +1093,26 @@ communicate that with the user so we can review them.
 - **Shutdown**: do not drive shutdown from the transport's `onClose`; `runAgent` polls
   `transport.state.value == Transport.State.CLOSED` and then calls `protocol.close()`
   (`Main.kt`).
-- **Gradle lock timeout**: `Timeout waiting to lock file hash cache ...` (or the journal
-  cache) means another build/daemon holds the lock (the error names the owning PID). First
-  aid is the shipped `gradleUnstick` run config - graceful daemon stop, hard-kill of
-  leftovers, then wiping stale user-cache AND project-local lock files only when no daemon
-  process remains (it is deliberately guarded; do not hand-kill or wipe while a daemon is
-  alive). Wait-and-retry is the gentler alternative when the owning build is expected to
-  finish soon. Known benign aftermath of a wipe: the next Gradle run may spew
-  `CorruptedCacheException ... file-access.bin` stderr lines (the journal cache was
-  truncated mid-write) while the build itself succeeds.
+- **Gradle lock timeout**: `Timeout waiting to lock ...` means an OS *flock* on a lock file is
+  held - the blocker is real contention, not the lock file's existence: idle daemons keep
+  `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),
+  and every lock file keeps the last owner's PID as a record after release, so neither
+  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. First aid is
+  `.ai/scripts/gradle-unstick [status|wipe]` (run configs `gradleUnstick` /
+  `gradleUnstickWipe`, safe to run any time): `status` stops container-local daemons (`./gradlew --stop`), then
+  classifies every `*.lock`/`*.lck` under
+  `$GRADLE_USER_HOME/{caches,daemon,wrapper,jdks,native}` and the project `.gradle/` by
+  flock contention + visible holders and ends with one parseable verdict:
+  `VERDICT: RETRY-OK` (nothing flocked - just retry), `VERDICT: BUSY` (flocked by visible
+  process (es), listed - wait or stop them), `VERDICT: INVISIBLE-HOLDER` (flocked but no
+  visible holder = a build on the shared **host** `GRADLE_USER_HOME` - escalate to the
+  user, never delete such locks). `wipe` deletes lock records ONLY when every one is
+  flock-proven uncontended AND no Gradle process is visible (`VERDICT: WIPED`, refused as
+  `VERDICT: REFUSED` otherwise) - for the rare stale-record case where Gradle times out
+  although nothing holds the lock; lock records are recreated on demand and nothing else
+  in the caches is ever touched. Exit code 2 = action required. Never hand-delete lock
+  files or kill processes the script has not classified; wait-and-retry is the gentler
+  alternative when the owning build is expected to finish soon.
 
 ## Recipes
 

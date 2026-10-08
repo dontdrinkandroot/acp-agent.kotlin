@@ -24,7 +24,7 @@
         "description": "Dependency update audit: stable-only candidates, report-only (not wired into check); Koog bumps additionally go through the AGENTS.md Koog upgrade checklist"
     },
     "lint_scripts": {
-        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash",
+        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh",
         "description": "Validate launcher, build, .ai helper and shell-test scripts"
     },
     "show_failures": {
@@ -36,16 +36,20 @@
         "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions"
     },
     "listLibs": {
-        "command": "./gradlew :app:dependencies [args] --console=plain -q 2>&1 | tail -60",
-        "description": "Print resolved dependency trees with exact versions; pass --configuration debugRuntimeClasspath or --configuration debugUnitTestRuntimeClasspath"
+        "command": "./gradlew dependencies [args] --console=plain -q 2>&1 | tail -60",
+        "description": "Print resolved dependency trees with exact versions; pass --configuration runtimeClasspath or --configuration testRuntimeClasspath"
     },
     "git": {
         "command": "git [args]",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
     },
     "gradleUnstick": {
-        "command": "./gradlew --stop; pkill -f '[G]radleDaemon'; sleep 2; if pgrep -f '[G]radleDaemon' > /dev/null; then echo \"Daemons still running - locks NOT wiped\"; else echo \"No daemons left - wiping stale cache locks\"; find ~/.gradle/caches .gradle -name '*.lock' -delete; fi",
-        "description": "First aid for stuck Gradle daemons/locks: graceful stop, hard-kill leftovers, then wipe stale user-cache AND project-local .gradle lock files only when no daemon process remains"
+        "command": "bash .ai/scripts/gradle-unstick status",
+        "description": "Diagnose Gradle 'Timeout waiting to lock ...' states (safe to run any time): stops container-local daemons, then classifies every Gradle lock file by real flock contention, visible holders and recorded owner PID. Ends with VERDICT: RETRY-OK (nothing flocked, just retry) | BUSY (visible holder, listed) | INVISIBLE-HOLDER (flocked but no visible process = host GUH build -> escalate to the user, never delete); exit 2 = action required"
+    },
+    "gradleUnstickWipe": {
+        "command": "bash .ai/scripts/gradle-unstick wipe",
+        "description": "Delete Gradle lock records (*.lock/*.lck) ONLY when each is flock-proven uncontended and no Gradle process is visible (VERDICT: WIPED); refuses otherwise (VERDICT: REFUSED). For the stale-record case where Gradle times out although nothing holds the lock. Lock records are recreated on demand; nothing else in caches/wrapper/jdks is ever touched - those are shared with the host GUH, so escalate instead of deleting anything beyond lock records"
     },
     "test_scripts": {
         "command": "timeout 300 tests/bash/run-all",

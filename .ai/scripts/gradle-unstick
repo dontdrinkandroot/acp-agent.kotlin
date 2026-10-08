@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# Diagnoses — and in `wipe` mode safely clears — Gradle "Timeout waiting to
+# lock ..." states, using only tools present in this container (no lsof).
+#
+# The blocker of such a timeout is the OS *flock* on a lock file, not the lock
+# file's existence: idle daemons keep `modules-2.lock` open without holding it
+# (`fuser` lists them although the lock is free), and every lock file keeps the
+# last owner's PID as a record after release. `flock -n <lock> true` is the
+# contention proof; `fuser` alone is not.
+#
+# Usage: .ai/scripts/gradle-unstick [status|wipe]    (default: status)
+#
+#   status  Stop container-local Gradle daemons, then classify every Gradle
+#           lock file under $GRADLE_USER_HOME/{caches,daemon,wrapper,jdks,native}
+#           and .gradle/ by real contention, visible holders and recorded
+#           owner. Ends with one parseable line:
+#             VERDICT: RETRY-OK          nothing is flocked - run the build
+#             VERDICT: BUSY              flocked by visible process(es), listed
+#                                        above - wait, or stop them
+#             VERDICT: INVISIBLE-HOLDER  flocked but no visible holder: a host
+#                                        GUH build holds it. Escalate to the
+#                                        user; never delete such locks.
+#   wipe    Delete *.lock/*.lck records, but only when every one is
+#           flock-proven uncontended AND no Gradle process is visible;
+#           refuse (VERDICT: REFUSED) otherwise. For the rare "times out
+#           although nothing holds it" stale-record case. Lock files are
+#           recreated on demand; nothing else in the caches is ever touched.
+#
+# Exit codes: 0 = retry-OK / wipe done or nothing to do; 2 = action required.
+set -euo pipefail
+
+# Repo root is two levels above this script (.ai/scripts/gradle-unstick); do not
+# trust the caller's cwd - the ./gradlew --stop call and the project-local
+# .gradle scan depend on landing in the repo root.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ ! -f "$ROOT/gradlew" ]; then
+	printf 'gradle-unstick: %s/gradlew not found - expected the repo root two levels above %s\n' "$ROOT" "$0" >&2
+	exit 64
+fi
+cd "$ROOT"
+
+MODE="${1:-status}"
+GUH="${GRADLE_USER_HOME:-$HOME/.gradle}"
+PROJECT_GRADLE="$PWD/.gradle"
+
+# Real Gradle JVMs only: match the fully qualified main classes / launcher-jar
+# names in the command line. Bare words like "GradleDaemon" would also match any
+# unrelated process that merely mentions them (e.g. an agent's test shell).
+gradle_processes() {
+	pgrep -af 'org\.gradle\.launcher\.daemon\.bootstrap\.GradleDaemon|org\.gradle\.wrapper\.GradleWrapperMain|gradle-daemon-main-[0-9]|gradle-launcher-[0-9]' 2>/dev/null || true
+}
+
+lock_roots() {
+	local d
+	for d in "$GUH/caches" "$GUH/daemon" "$GUH/wrapper" "$GUH/jdks" "$GUH/native" "$PROJECT_GRADLE"; do
+		if [ -d "$d" ]; then
+			printf '%s\n' "$d"
+		fi
+	done
+}
+
+lock_files() {
+	lock_roots | while IFS= read -r d; do
+		find "$d" \( -name '*.lock' -o -name '*.lck' \) -type f 2>/dev/null
+	done | sort
+}
+
+# 0 = uncontended, 1 = flocked (or unprobeable - treated as flocked on purpose,
+# so `wipe` never deletes a lock it cannot prove free).
+probe_lock() {
+	if flock -n "$1" true 2>/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
+holders_of() {
+	local f="$1" pids="" p
+	if command -v fuser >/dev/null 2>&1; then
+		pids=$(fuser "$f" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | tr '\n' ' ' || true)
+	else
+		for p in /proc/[0-9]*; do
+			for fd in "$p"/fd/*; do
+				[ "$(readlink "$fd" 2>/dev/null)" = "$f" ] || continue
+				pids="$pids ${p##*/}"
+				break
+			done
+		done
+	fi
+	pids="${pids#"${pids%%[! ]*}"}"
+	printf '%s' "${pids% }"
+}
+
+pid_info() {
+	local pid="$1" cmd
+	if [ -r "/proc/$pid/cmdline" ]; then
+		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline")
+		printf '%s (%s)' "$pid" "${cmd:0:70}"
+	else
+		printf '%s (gone)' "$pid"
+	fi
+}
+
+recorded_owner() {
+	tail -c 32 "$1" 2>/dev/null | tr -d '\0' | grep -aoE '[0-9]+$' | tail -1 || true
+}
+
+HELD=()
+LOCK_TOTAL=0
+LOCK_FREE=0
+
+scan_locks() {
+	HELD=()
+	LOCK_TOTAL=0
+	LOCK_FREE=0
+	local f holders owner
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		LOCK_TOTAL=$((LOCK_TOTAL + 1))
+		if probe_lock "$f"; then
+			LOCK_FREE=$((LOCK_FREE + 1))
+		else
+			holders=$(holders_of "$f")
+			owner=$(recorded_owner "$f")
+			HELD+=("$f|$holders|$owner")
+		fi
+	done < <(lock_files)
+}
+
+print_held() {
+	local line f holders owner h
+	for line in "${HELD[@]}"; do
+		IFS='|' read -r f holders owner <<< "$line"
+		printf 'flocked: %s\n' "$f"
+		printf '  recorded owner: %s\n' "${owner:-none}"
+		if [ -n "$holders" ]; then
+			for h in $holders; do
+				printf '  holder: %s\n' "$(pid_info "$h")"
+			done
+		else
+			printf '  holder: (none visible in this container)\n'
+		fi
+	done
+}
+
+# `--stop` is asynchronous; give stopping daemons up to ~5s to disappear before
+# snapshotting processes or checking the wipe precondition.
+settle_processes() {
+	local _
+	for _ in {1..10}; do
+		if [ -z "$(gradle_processes)" ]; then
+			return 0
+		fi
+		sleep 0.5
+	done
+	return 0
+}
+
+stop_daemons() {
+	printf '== container-local Gradle daemon stop ==\n'
+	local out rc
+	if out=$(./gradlew --stop 2>&1); then rc=0; else rc=$?; fi
+	printf '%s\n' "$out"
+	printf 'gradlew --stop exit code: %s\n\n' "$rc"
+	settle_processes
+	printf '== Gradle processes after stop ==\n'
+	local procs
+	procs=$(gradle_processes)
+	if [ -n "$procs" ]; then
+		printf '%s\n' "$procs"
+	else
+		printf '(none)\n'
+	fi
+}
+
+status_mode() {
+	stop_daemons
+	scan_locks
+	printf '\n== lock scan (%s lock files under %s and %s) ==\n' "$LOCK_TOTAL" "$GUH" "$PROJECT_GRADLE"
+	if [ ${#HELD[@]} -eq 0 ]; then
+		printf 'all %s lock files are free (none flocked)\n\n' "$LOCK_TOTAL"
+		printf 'VERDICT: RETRY-OK\n'
+		return 0
+	fi
+	printf '%s free, %s flocked:\n' "$LOCK_FREE" "${#HELD[@]}"
+	print_held
+	printf '\n'
+	local line f holders owner invisible=0 visible=0
+	for line in "${HELD[@]}"; do
+		IFS='|' read -r f holders owner <<< "$line"
+		if [ -n "$holders" ]; then
+			visible=$((visible + 1))
+		else
+			invisible=$((invisible + 1))
+		fi
+	done
+	if [ "$invisible" -gt 0 ]; then
+		printf 'VERDICT: INVISIBLE-HOLDER (%s flocked lock(s) without visible holder -> host GUH build; escalate to the user, never delete)\n' "$invisible"
+		return 2
+	fi
+	printf 'VERDICT: BUSY (%s flocked lock(s) held by the visible process(es) above; wait or stop them)\n' "$visible"
+	return 2
+}
+
+wipe_mode() {
+	stop_daemons
+	local procs line f holders owner h deleted shown
+	procs=$(gradle_processes)
+	if [ -n "$procs" ]; then
+		printf 'refusing to delete: Gradle process(es) still visible after --stop:\n%s\n\n' "$procs"
+		printf 'VERDICT: REFUSED (visible Gradle processes remain)\n'
+		return 2
+	fi
+	scan_locks
+	if [ ${#HELD[@]} -gt 0 ]; then
+		printf 'refusing to delete: %s lock file(s) are flocked:\n' "${#HELD[@]}"
+		print_held
+		printf '\n'
+		printf 'VERDICT: REFUSED (held lock(s) present; wait, stop the holder, or escalate if the holder is invisible)\n'
+		return 2
+	fi
+	if [ "$LOCK_TOTAL" -eq 0 ]; then
+		printf 'no lock files found\n\n'
+		printf 'VERDICT: NOTHING-TO-WIPE\n'
+		return 0
+	fi
+	printf '\n== deleting %s uncontended lock record(s) ==\n' "$LOCK_TOTAL"
+	deleted=0
+	shown=0
+	while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		# Re-verify contention immediately before deletion; a holder appearing
+		# in the tiny window in between is the residual race of this policy.
+		if probe_lock "$f"; then
+			rm -f -- "$f"
+			deleted=$((deleted + 1))
+			if [ "$shown" -lt 25 ]; then
+				printf 'deleted: %s\n' "$f"
+				shown=$((shown + 1))
+			fi
+		fi
+	done < <(lock_files)
+	if [ "$deleted" -gt 25 ]; then
+		printf '... and %s more\n' "$((deleted - 25))"
+	fi
+	printf '\nVERDICT: WIPED (%s lock record(s) deleted; recreated on demand)\n' "$deleted"
+	return 0
+}
+
+rc=0
+case "$MODE" in
+	status) status_mode || rc=$? ;;
+	wipe) wipe_mode || rc=$? ;;
+	*)
+		printf 'usage: .ai/scripts/gradle-unstick [status|wipe]\n' >&2
+		rc=64
+		;;
+esac
+exit "$rc"
