@@ -441,8 +441,10 @@ Config comes from environment variables:
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
 report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build, `.ai/scripts/*` and shell-test scripts),
-  `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the docker launcher
-  composition - also wired into Gradle `check` as the `testScripts` Exec task),
+  `test_fresh` (`test --rerun-tasks`, the cache-defeating full suite for the false-green
+  pitfall below), `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the
+  docker launcher composition - also wired into Gradle `check` as the `testScripts` Exec
+  task),
   `show_failures` (failure messages from the latest JUnit XML reports, backed by
   `.ai/scripts/show-test-failures.sh`) and `sources` (resolve + unpack the `-sources` jars of the
   main+test classpath into `build/library-sources-unpacked/<artifact>/` via the Gradle tasks
@@ -486,7 +488,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `write_file`/`delete_file` hard-error before any I/O - no client
   fs proxy round trip, no permission prompt, uniform incl. new-file writes) and hidden from
   listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
-  in the walk callback; `grep` folds them into the existing skip suffix). The default rule
+  in the walk callback; `grep` folds them into the existing skip suffix, while a single-file
+  grep `path` is refused like a direct target). The default rule
   set is the fixed `.env*.local` secret-file exclusion (bare name, matches at any depth;
   gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
   also checks the symlink-resolved target name, so an alias link to an excluded file cannot
@@ -570,17 +573,23 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   links, so a link could smuggle the recursive delete outside the approved project); the
   symlink scan and the recursive delete are depth-capped (64) like the search walker.
   The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
-  object files are binary noise for content searches) and symlinks.
-- **Search/list root validation** (`searchRootError` in `GlobTool.kt`): the three
+  object files are binary noise for content searches) and symlinks. The asymmetry is
+  deliberate: a **named** search root may resolve through a symlink (the permission layer
+  resolves it and decides whether the real location is approved - pinned by
+  `PermissionAndFileStoreTest`), while links **discovered inside** the walk are never
+  followed; a symlinked single-file `grep` path is refused outright instead.
+- **Search/list path validation** (`searchRootError` in `GlobTool.kt`): the three
   directory-consuming tools fail loudly on a wrong root instead of silently returning an
-  empty result (`No matches`/empty listing) — `Root not found` (missing), `Not a directory`
+  empty result (`No matches`/empty listing) — `Path not found` (missing), `Not a directory`
   (file as root; fixes the silent `No matches` of #31), `Not readable` (chmod-000 root,
   fixes #32's silent empty `list_dir` listing). `list_dir`'s missing-path message changed
-  from `Not a directory` to `Root not found`. Out-of-scope residuals (documented here so
-  they stay visible): an unlistable subdirectory mid-walk still silently prunes its whole
-  subtree (`File.list()` returns null on I/O error - the walk-time swallow is deliberate
-  for unreadable dirs, only the root is validated), so the skip-note counter undercounts;
-  and a file root is rejected rather than searched as a single file.
+  from `Not a directory` to `Path not found`. The parameter is `path` (renamed from `root`
+  in #41; a directory is not a root, and `list_dir`/`read_file` already used `path`).
+  Out-of-scope residual (documented here so it stays visible): an unlistable subdirectory
+  mid-walk still silently prunes its whole subtree (`File.list()` returns null on I/O
+  error - the walk-time swallow is deliberate for unreadable dirs, only the root is
+  validated), so the skip-note counter undercounts. `grep` additionally accepts a single
+  file as `path` (ripgrep model, see Tools), `glob` keeps the file refusal.
 - **Output caps**: tool results are bounded so a misbehaving command or huge file cannot
   explode the context. `bash`/`run` keep the last 30k chars of stdout and stderr each,
   prepending `...(truncated: N chars omitted from the beginning)...` (Locale.ROOT; bounded
@@ -1067,8 +1076,8 @@ communicate that with the user so we can review them.
   cache because an earlier run had stored the up-to-date-looking output). When a
   run reports no executed test task (`test FROM-CACHE` / `UP-TO-DATE` with no
   `:test` execution line), distrust it: rerun with `./gradlew clean test
-  --tests <Class>` or `--rerun-tasks` before believing a green. Conversely a
-  fresh-looking `test` line means it really ran.
+  --tests <Class>` or the `test_fresh` run config (`--rerun-tasks`) before
+  believing a green. Conversely a fresh-looking `test` line means it really ran.
 - **ktor client-side redirect plugin vs. the manual redirect loop**: any client
   used with `WebFetcher` (production `defaultClient` and every test client) must
   set `followRedirects = false`. The plugin is on by default, consumes 30x

@@ -4,31 +4,31 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
-import java.nio.file.Path as NioPath
 import java.nio.file.Files
+import java.nio.file.Path as NioPath
 
 public class GlobTool : AgentTool {
     override val name = "glob"
     override val description =
-        "Find files matching a glob pattern (e.g. src/**/*.kt) under a root directory. " +
+        "Find files matching a glob pattern (e.g. src/**/*.kt) under a directory. " +
                 "Files matching an exclusion rule (currently .env*.local) are omitted."
     override val kind = ToolKind.SEARCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
         required("pattern", PropType.STRING, "Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."),
         optional(
-            "root",
+            "path",
             PropType.STRING,
-            "Directory to search, absolute or relative; defaults to the working directory."
+            "Directory to search, absolute or relative to the working directory; defaults to the working directory."
         ),
     )
 
     override fun targetPath(arguments: JsonObject): String? =
-        arguments.stringArg("root")
+        arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        if (arguments.isNullArg("root")) return ToolResult(arguments.argError("root"), true)
-        val rawRoot = arguments.stringArg("root") ?: context.cwd
+        if (arguments.isNullArg("path")) return ToolResult(arguments.argError("path"), true)
+        val rawRoot = arguments.stringArg("path") ?: context.cwd
         val root = absoluteToolPath(context.cwd, rawRoot)
         val pattern = arguments.stringArg("pattern") ?: return ToolResult(arguments.argError("pattern"), true)
         return executeSafely("Glob failed") {
@@ -81,7 +81,7 @@ internal fun relativeToRoot(root: String, path: String): String {
  * silently producing "No matches": missing, a file, or OS-unreadable.
  */
 internal fun searchRootError(root: String): String? {
-    val meta = SystemFileSystem.metadataOrNull(Path(root)) ?: return "Root not found: $root"
+    val meta = SystemFileSystem.metadataOrNull(Path(root)) ?: return "Path not found: $root"
     if (!meta.isDirectory) return "Not a directory: $root"
     return if (!Files.isReadable(NioPath.of(root))) "Not readable: $root" else null
 }

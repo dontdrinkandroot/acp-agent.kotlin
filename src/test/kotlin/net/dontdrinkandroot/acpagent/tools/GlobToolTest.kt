@@ -25,7 +25,7 @@ class GlobToolTest {
             testContext(dir)
         )
 
-        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "**/*.kt") }, testContext(dir))
+        val glob = GlobTool().execute(buildJsonObject { put("path", dir); put("pattern", "**/*.kt") }, testContext(dir))
         assertFalse(glob.isError, glob.text)
         assertEquals(listOf("nested/b.kt"), glob.text.split("\n"))
     }
@@ -39,7 +39,7 @@ class GlobToolTest {
                 testContext(dir)
             )
         }
-        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "*.txt") }, testContext(dir))
+        val glob = GlobTool().execute(buildJsonObject { put("path", dir); put("pattern", "*.txt") }, testContext(dir))
         assertFalse(glob.isError, glob.text)
         assertEquals(501, glob.text.split("\n").size, "500 entries plus the omission marker")
         assertTrue(glob.text.endsWith("...(100 more entries omitted)"), glob.text)
@@ -48,11 +48,11 @@ class GlobToolTest {
     @Test
     fun `glob root not found errors`() = runBlocking {
         val result = GlobTool().execute(
-            buildJsonObject { put("root", "/nonexistent-root"); put("pattern", "*") },
+            buildJsonObject { put("path", "/nonexistent-root"); put("pattern", "*") },
             testContext("/tmp")
         )
         assertTrue(result.isError)
-        assertEquals("Root not found: /nonexistent-root", result.text)
+        assertEquals("Path not found: /nonexistent-root", result.text)
     }
 
     @Test
@@ -64,7 +64,7 @@ class GlobToolTest {
         )
 
         val glob =
-            GlobTool().execute(buildJsonObject { put("root", "$dir/a.txt"); put("pattern", "**/*") }, testContext(dir))
+            GlobTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("pattern", "**/*") }, testContext(dir))
         assertTrue(glob.isError, "glob with a file as root must fail loudly, was: ${glob.text}")
         assertEquals("Not a directory: $dir/a.txt", glob.text)
     }
@@ -83,7 +83,7 @@ class GlobToolTest {
         }
 
         val glob =
-            GlobTool().execute(buildJsonObject { put("root", "$dir/locked"); put("pattern", "**/*") }, testContext(dir))
+            GlobTool().execute(buildJsonObject { put("path", "$dir/locked"); put("pattern", "**/*") }, testContext(dir))
         assertTrue(glob.isError, "glob on an unreadable directory must fail loudly, was: ${glob.text}")
         assertEquals("Not readable: $dir/locked", glob.text)
     }
@@ -93,7 +93,7 @@ class GlobToolTest {
         val dir = tmpDir()
         WriteFileTool().execute(buildJsonObject { put("path", "sub/a.txt"); put("content", "x") }, testContext(dir))
         val glob =
-            GlobTool().execute(buildJsonObject { put("root", "."); put("pattern", "**/*.txt") }, testContext(dir))
+            GlobTool().execute(buildJsonObject { put("path", "."); put("pattern", "**/*.txt") }, testContext(dir))
         assertFalse(glob.isError, glob.text)
         assertTrue(glob.text.contains("sub/a.txt"), glob.text)
     }
@@ -111,7 +111,7 @@ class GlobToolTest {
             testContext(dir)
         )
 
-        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "**/*") }, testContext(dir))
+        val glob = GlobTool().execute(buildJsonObject { put("path", dir); put("pattern", "**/*") }, testContext(dir))
         assertFalse(glob.isError, glob.text)
         assertFalse(glob.text.contains(".git"), "glob must skip .git: ${glob.text}")
         assertTrue(glob.text.contains("a.txt"), glob.text)
@@ -142,7 +142,7 @@ class GlobToolTest {
         )
 
         val glob = GlobTool().execute(
-            buildJsonObject { put("root", project); put("pattern", "**/*") },
+            buildJsonObject { put("path", project); put("pattern", "**/*") },
             testContext(project),
         )
         assertFalse(glob.isError, glob.text)
@@ -156,16 +156,16 @@ class GlobToolTest {
         java.io.File(dir, ".env.local").writeText("SECRET=1")
         java.io.File(dir, "code.txt").writeText("SECRET=1")
 
-        val glob = GlobTool().execute(buildJsonObject { put("root", dir); put("pattern", "**/*") }, testContext(dir))
+        val glob = GlobTool().execute(buildJsonObject { put("path", dir); put("pattern", "**/*") }, testContext(dir))
         assertFalse(glob.isError, glob.text)
         assertTrue(glob.text.contains("code.txt"), glob.text)
         assertFalse(glob.text.contains(".env.local"), glob.text)
     }
 
     @Test
-    fun `schema pins pattern with optional root`() {
+    fun `schema pins pattern with optional path`() {
         assertEquals(
-            """{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."},"root":{"type":"string","description":"Directory to search, absolute or relative; defaults to the working directory."}},"required":["pattern"]}""",
+            """{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. src/**/*.kt); ** crosses directory boundaries."},"path":{"type":"string","description":"Directory to search, absolute or relative to the working directory; defaults to the working directory."}},"required":["pattern"]}""",
             llmWireJson.encodeToString(GlobTool().parameters),
         )
     }

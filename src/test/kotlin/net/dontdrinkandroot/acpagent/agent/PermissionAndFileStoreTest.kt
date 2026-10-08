@@ -89,7 +89,7 @@ class PermissionAndFileStoreTest {
             permissionNeeded(
                 dir.toString(),
                 GlobTool(),
-                buildJsonObject { put("pattern", "*.txt"); put("root", trusted.resolve("sub").toString()) },
+                buildJsonObject { put("pattern", "*.txt"); put("path", trusted.resolve("sub").toString()) },
                 trustedPaths,
             ),
         )
@@ -98,7 +98,7 @@ class PermissionAndFileStoreTest {
             permissionNeeded(
                 dir.toString(),
                 GrepTool(),
-                buildJsonObject { put("pattern", "x"); put("root", trusted.resolve("sub").toString()) },
+                buildJsonObject { put("pattern", "x"); put("path", trusted.resolve("sub").toString()) },
                 trustedPaths,
             ),
         )
@@ -143,6 +143,58 @@ class PermissionAndFileStoreTest {
     }
 
     @Test
+    fun `symlinked search root escaping the project still needs permission`() {
+        // The search tools deliberately follow a symlinked root named by the
+        // model; the permission layer is what decides whether the resolved
+        // target is approved, so an escaping root must prompt.
+        val dir = Files.createTempDirectory("acp-perm")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        val link = dir.resolve("outside-link")
+        Files.createSymbolicLink(link, outside)
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                GlobTool(),
+                buildJsonObject { put("pattern", "**/*"); put("path", link.toString()) }
+            )
+        )
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                GrepTool(),
+                buildJsonObject { put("pattern", "x"); put("path", link.toString()) }
+            )
+        )
+    }
+
+    @Test
+    fun `symlinked search root inside the project stays prompt-free`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val target = dir.resolve("sub")
+        Files.createDirectories(target)
+        val link = dir.resolve("sub-link")
+        Files.createSymbolicLink(link, target)
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GlobTool(),
+                buildJsonObject { put("pattern", "**/*"); put("path", link.toString()) }
+            )
+        )
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GrepTool(),
+                buildJsonObject { put("pattern", "x"); put("path", link.toString()) }
+            )
+        )
+    }
+
+    @Test
     fun `in project write needs no permission`() {
         val dir = Files.createTempDirectory("acp-perm")
         assertEquals(
@@ -170,7 +222,7 @@ class PermissionAndFileStoreTest {
             permissionNeeded(
                 dir.toString(),
                 GrepTool(),
-                buildJsonObject { put("root", outside.toString()); put("pattern", "x") }
+                buildJsonObject { put("path", outside.toString()); put("pattern", "x") }
             )
         )
         assertEquals(

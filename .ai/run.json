@@ -58,5 +58,9 @@
     "compile_test": {
         "command": "timeout 180 ./gradlew compileTestKotlin",
         "description": "Compile test sources (fastest loop for test-code errors)"
+    },
+    "test_fresh": {
+        "command": "timeout 300 ./gradlew test --rerun-tasks",
+        "description": "Run the full test suite with all task outputs discarded (--rerun-tasks), bypassing the build cache when a run looked suspiciously up-to-date"
     }
 }
