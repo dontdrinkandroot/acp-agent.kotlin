@@ -13,9 +13,9 @@ import kotlin.test.assertTrue
 /**
  * Black-box coverage of the per-prompt tool iteration cap and its wind-down
  * synthesis pass: with a low `ACP_MAX_TURN_REQUESTS` and a model that always
- * calls tools, the agent consumes exactly cap tool iterations (a repeated
- * identical call is refused by the immediate-repeat guard, #39), then streams
- * one final text-only summary and ends with `MAX_TURN_REQUESTS`.
+ * calls tools, the agent consumes exactly cap tool iterations (the third
+ * identical call with the same result is refused by the repeat guard, #39),
+ * then streams one final text-only summary and ends with `MAX_TURN_REQUESTS`.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eMaxTurnRequestsTest : E2eAgentTest() {
@@ -28,7 +28,7 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
                 alwaysToolCall = true,
             )
         }) {
-            val connection = connect(extraEnv = mapOf("ACP_MAX_TURN_REQUESTS" to "2"))
+            val connection = connect(extraEnv = mapOf("ACP_MAX_TURN_REQUESTS" to "3"))
             val operations = TestClientOperations()
             try {
                 connection.client.initialize(testClientInfo())
@@ -39,28 +39,28 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
                     listOf(ContentBlock.Text("Use the write_file tool repeatedly until told to stop.")),
                     timeoutMs = 120_000,
                 )
-                println("[ok] prompt completed (cap 2 -> wind-down)")
+                println("[ok] prompt completed (cap 3 -> wind-down)")
 
                 val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
                 val toolCalls = updates.filterIsInstance<SessionUpdate.ToolCall>()
-                // The mock emits the identical write_file call for both capped iterations;
-                // the second one is refused by the immediate-repeat guard (#39), so only
-                // the first call reaches a ToolCall creation + execution.
-                assertEquals(1, toolCalls.size, "the repeated identical call is refused before a ToolCall creation")
+                // The mock emits the identical write_file call for all capped iterations; the
+                // first two execute with the same result, the third is refused by the repeat
+                // guard (#39), so only two calls reach a ToolCall creation + execution.
+                assertEquals(2, toolCalls.size, "the third identical call is refused before a ToolCall creation")
 
                 val failedToolResults = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     .filter { it.status == ToolCallStatus.FAILED }
                 assertEquals(
                     1,
                     failedToolResults.size,
-                    "the repeated identical call must fail with the guard's refusal, got: $failedToolResults",
+                    "the third identical call must fail with the guard's refusal, got: $failedToolResults",
                 )
                 assertTrue(
                     (failedToolResults.single().content.orEmpty().filterIsInstance<ToolCallContent.Content>()
                         .single().content as ContentBlock.Text).text.contains("repeated tool call"),
                     "the refusal must name the repetition so the model can react, got: ${failedToolResults.single()}",
                 )
-                println("[ok] first capped tool call executed, the identical second was refused")
+                println("[ok] first two capped tool calls executed, the identical third was refused")
 
                 val textChunks = updates.filterIsInstance<SessionUpdate.AgentMessageChunk>()
                     .mapNotNull { (it.content as? ContentBlock.Text)?.text }
@@ -74,7 +74,7 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
                 )
                 println("[ok] final text-only wind-down pass streamed assistant text")
 
-                assertEquals(3, llmMock.requestCount.toInt(), "cap tool turns + 1 wind-down request")
+                assertEquals(4, llmMock.requestCount.toInt(), "cap tool turns + 1 wind-down request")
                 val windDownBody = llmMock.requestBodies.last()
                 assertTrue(
                     !windDownBody.contains("\"tools\""),

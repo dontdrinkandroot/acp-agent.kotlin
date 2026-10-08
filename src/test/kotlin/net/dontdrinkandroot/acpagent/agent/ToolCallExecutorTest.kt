@@ -312,41 +312,96 @@ class ToolCallExecutorTest {
     }
 
     @Test
-    fun `immediately repeated identical call is refused without execution`() = runBlocking {
+    fun `third identical call with the same result is refused without execution`() = runBlocking {
         val tool = RecordingTool("capture", false)
         val registry = ToolRegistry().apply { register(tool) }
         val state = state()
         val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
+        val args = """{"path": "a.txt", "limit": 115}"""
 
-        execute(executor, emitter, StreamToolCall("call_1", "capture", """{"path": "a.txt", "limit": 115}"""))
-        execute(executor, emitter, StreamToolCall("call_2", "capture", """{"path": "a.txt", "limit": 115}"""))
+        execute(executor, emitter, StreamToolCall("call_1", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_3", "capture", args))
 
-        assertEquals(1, tool.executedCount, "only the first call must execute")
+        assertEquals(2, tool.executedCount, "a single identical repeat may reveal new results and must execute")
         val update = toolCallUpdates(emitter).last()
         assertEquals(ToolCallStatus.FAILED, update.status)
         assertEquals("Repeated tool call", update.title)
         val message = (update.content.orEmpty().filterIsInstance<ToolCallContent.Content>().single().content
                 as ContentBlock.Text).text
         assertTrue(message.contains("capture"), "the refusal must name the tool")
-        assertTrue(message.contains("""{"path": "a.txt", "limit": 115}"""), "the refusal must carry the raw arguments")
+        assertTrue(message.contains(args), "the refusal must carry the raw arguments")
         assertEquals(
-            1, state.replaySnapshot().third.filterValues { it == TOOL_OUTCOME_COMPLETED }.size,
-            "the first call completed",
+            setOf("call_1", "call_2"),
+            state.replaySnapshot().third.filterValues { it == TOOL_OUTCOME_COMPLETED }.keys,
+            "the two executed identical calls completed with the same result",
         )
         assertEquals(
-            "call_2", state.replaySnapshot().third.filterValues { it == TOOL_OUTCOME_FAILED }.keys.single(),
+            TOOL_OUTCOME_FAILED,
+            state.replaySnapshot().third["call_3"],
+            "the refused third call must be recorded as failed",
         )
         val historyAfter = state.historySnapshot
-        assertEquals(2, historyAfter.size, "history: two tool results (completed + refused)")
+        assertEquals(3, historyAfter.size, "history: three tool results (two completed + refused)")
         assertTrue(historyAfter.last() is OpenAIMessage.Tool)
         val refusedResult = historyAfter.last() as OpenAIMessage.Tool
         val refusedContent = refusedResult.content as Content.Text
-        assertEquals("call_2", refusedResult.toolCallId)
+        assertEquals("call_3", refusedResult.toolCallId)
         assertTrue(
-            refusedContent.text().contains("""{"path": "a.txt", "limit": 115}"""),
+            refusedContent.text().contains(args),
             "the history error must carry the raw arguments so the model sees what repeated",
         )
+    }
+
+    @Test
+    fun `identical call whose result changed is not refused`() = runBlocking {
+        val tool = object : RecordingTool("capture", false) {
+            var results = 0
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
+                super.execute(arguments, context)
+                results++
+                return ToolResult("result-$results")
+            }
+        }
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+        val args = """{"path": "a.txt", "limit": 115}"""
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_3", "capture", args))
+
+        assertEquals(3, tool.executedCount, "a changed result breaks the repetition - the call may reveal new output")
+        assertTrue(toolCallUpdates(emitter).none { it.status == ToolCallStatus.FAILED })
+    }
+
+    @Test
+    fun `two identical results in a row re-arm the guard for the next identical call`() = runBlocking {
+        val tool = object : RecordingTool("capture", false) {
+            var results = 0
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
+                super.execute(arguments, context)
+                results++
+                // Changed once (r1 -> r2), then identical again (r2 -> r2).
+                return ToolResult(if (results == 1) "result-1" else "result-2")
+            }
+        }
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+        val args = """{"path": "a.txt", "limit": 115}"""
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_3", "capture", args))
+        execute(executor, emitter, StreamToolCall("call_4", "capture", args))
+
+        assertEquals(3, tool.executedCount, "the call after two identical results in a row must be refused")
+        val refused = toolCallUpdates(emitter).last()
+        assertEquals(ToolCallStatus.FAILED, refused.status)
+        assertEquals("Repeated tool call", refused.title)
     }
 
     @Test

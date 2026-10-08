@@ -34,22 +34,27 @@ internal class ToolCallExecutor(
 
     /**
      * The last *executed* call as raw wire data (tool name + the argument JSON
-     * string exactly as streamed), the signature the repeat guard compares
-     * against. Turn-scoped: cleared by [onTurnStart] at every prompt start, so
-     * repeating an identical call in a later turn is always allowed. Denial
-     * paths (disabled/unknown tool, permission denied, the repeat refusal
-     * itself) never set it - a denied call made no observable change a repeat
-     * could be blind to.
+     * string exactly as streamed) together with its model-visible outcome
+     * (error flag + result text; the client-side diff is deliberately excluded)
+     * and the streak of consecutive executions that produced that exact call
+     * with that exact outcome. Turn-scoped: cleared by [onTurnStart] at every
+     * prompt start, so repeating an identical call in a later turn is always
+     * allowed. Denial paths (disabled/unknown tool, permission denied, the
+     * repeat refusal itself) never set it - a denied call made no observable
+     * change a repeat could be blind to.
      *
-     * Intermediate degenerate-loop guard for issue #39: a weak model repeating
-     * the identical call gets an error result that names the repetition
-     * instead of a fresh copy of an identical output. Deliberately conservative:
-     * the raw string is compared verbatim, so a formatting variant of the same
-     * parsed arguments (spacing, key order) is NOT refused - and the alternating
-     * two-variant cycle from the #39 session stays unguarded (the full
-     * per-signature fix tracks that issue).
+     * Intermediate degenerate-loop guard for issue #39: a single identical
+     * repeat still executes (a retry can legitimately reveal a new result -
+     * flaky command, changed state), but once the identical call has produced
+     * the identical outcome twice in a row, the next identical call is refused
+     * with an error that names the repetition instead of running for a third
+     * copy of the same output. Deliberately conservative: the raw string is
+     * compared verbatim, so a formatting variant of the same parsed arguments
+     * (spacing, key order) is NOT refused - and the alternating two-variant
+     * cycle from the #39 session stays unguarded (the full per-signature fix
+     * tracks that issue).
      */
-    private var lastExecutedSignature: RepeatSignature? = null
+    private var lastExecution: RepeatExecution? = null
 
     /**
      * Discards the repeat guard's turn state. Called once per prompt turn
@@ -58,14 +63,14 @@ internal class ToolCallExecutor(
      * previous turn did (including a cancelled one) is discarded here.
      */
     fun onTurnStart() {
-        lastExecutedSignature = null
+        lastExecution = null
     }
 
     /**
      * Runs one tool call against the given mode and [toolContext] (whose
      * client drives the permission prompts). Turn-scoped: the repeat guard
      * compares each call against the previously *executed* call of this turn
-     * (see [lastExecutedSignature]); no other per-call state is held on the
+     * (see [lastExecution]); no other per-call state is held on the
      * instance, so the same executor can serve any session thread.
      */
     suspend fun execute(
@@ -101,7 +106,9 @@ internal class ToolCallExecutor(
 
         val arguments = parseArguments(call.arguments)
 
-        if (lastExecutedSignature == RepeatSignature(call.name, call.arguments)) {
+        val signature = RepeatSignature(call.name, call.arguments)
+        val last = lastExecution
+        if (last != null && last.signature == signature && last.identicalResultStreak >= 2) {
             emitDenied(
                 emitter = emitter,
                 toolCallId = toolCallId,
@@ -155,7 +162,12 @@ internal class ToolCallExecutor(
         )
         state.appendToolResult(call.id, Content.Text(result.text), result.isError)
         state.persist()
-        lastExecutedSignature = RepeatSignature(call.name, call.arguments)
+        val outcome = RepeatOutcome(result.isError, result.text)
+        lastExecution = if (last != null && last.signature == signature && last.outcome == outcome) {
+            last.copy(identicalResultStreak = last.identicalResultStreak + 1)
+        } else {
+            RepeatExecution(signature, outcome, identicalResultStreak = 1)
+        }
     }
 
     private suspend fun emitDenied(
@@ -252,10 +264,31 @@ internal class ToolCallExecutor(
      * model itself wrote, so no formatting is lost on the way back.
      */
     private fun repeatedCallMessage(toolName: String, rawArguments: String): String =
-        "Error: repeated tool call - the immediately preceding call was also \"$toolName\" with arguments " +
-                "$rawArguments, and the tool produced a result for it that is already in the conversation. " +
-                "Repeating an identical call cannot yield new information. Do not repeat this call; instead " +
+        "Error: repeated tool call - \"$toolName\" with arguments $rawArguments has already been executed twice " +
+                "in this turn and produced the same result both times; that result is already in the conversation. " +
+                "A third identical call cannot yield new information. Do not repeat this call; instead " +
                 "use different arguments (e.g. read a different range) or proceed with the task."
+
+    /**
+     * The repeat guard's state: the last executed call's [signature], its
+     * model-visible [outcome] and the number of consecutive executions that
+     * produced exactly this call with exactly this outcome. A streak of 2
+     * means the call already ran twice with identical results, so the next
+     * identical call is refused.
+     */
+    private data class RepeatExecution(
+        val signature: RepeatSignature,
+        val outcome: RepeatOutcome,
+        val identicalResultStreak: Int,
+    )
+
+    /**
+     * The model-visible result the repeat guard compares: the error flag plus
+     * the result text (what lands in the history). The client-facing diff is
+     * excluded - it varies with pre-existing file content even when the
+     * model-visible result is identical.
+     */
+    private data class RepeatOutcome(val isError: Boolean, val text: String)
 
     /**
      * The repeat guard's comparison key: the tool name plus the raw argument

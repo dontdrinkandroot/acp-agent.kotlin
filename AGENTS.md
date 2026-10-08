@@ -369,9 +369,15 @@ Config comes from environment variables:
   remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. **Immediate-repeat
   guard** (issue #39, intermediate): `ToolCallExecutor` refuses a tool call that is raw-identical (tool name +
   `function.arguments` string, compared verbatim, not parsed) to the immediately
-  preceding *executed* call of the same turn with a FAILED result naming the repetition and the
-  raw arguments ("Repeating an identical call cannot yield new information"); the refusal never
-  reaches permission/execution, records `failed` (replay/pairing-safe), and is cleared at every
+  preceding *executed* call of the same turn, but only once that identical call has already
+  produced the identical result twice in a row (result = error flag + result text, the
+  model-visible outcome; the client-facing diff is excluded) - so the error fires on the *third* identical call, with a
+  FAILED result naming the repetition and the
+  raw arguments ("A third identical call cannot yield new information"). A single identical
+  repeat always executes (a retry can legitimately reveal a new result - flaky command, changed
+  state), and a changed result resets the streak. The refusal never
+  reaches permission/execution, records `failed` (replay/pairing-safe), leaves the streak armed (4th+ identical calls
+  keep failing) and is cleared at every
   turn start (`onTurnStart` from `PromptRunner.run`) so a legitimate identical call in a later
   turn always runs. Conservative by design: a formatting variant of the same parsed arguments (spacing/key order) is NOT
   a repeat, and an alternating A/B cycle (the `limit=70/75` loop from
@@ -938,11 +944,12 @@ agent's **wire contract**:
   semantics, idempotence, duplicate ids count as answered) and
   `SessionStateRepairTest` (the three view consumers close dangling calls while
   the stored history is never mutated; a real outcome is never overridden),
-  `ToolCallExecutorTest` (outcome recording + immediate persistence, the immediate-repeat
-  guard: raw-identical refusal without execution/prompt, formatting variants pass, reset by an
-  intervening call, denied calls not tracked) and `PromptRunnerTest` (guard integration:
-  refused repeat fails the turn's second iteration and the turn continues; identical call in a
-  new turn executes again),
+  `ToolCallExecutorTest` (outcome recording + immediate persistence, the repeat
+  guard: third raw-identical call with the same result refused without execution/prompt,
+  a single identical repeat executes, a changed result resets the streak, formatting variants
+  pass, reset by an intervening call, denied calls not tracked) and `PromptRunnerTest` (guard
+  integration: the refused third repeat fails the turn's third iteration and the turn continues;
+  identical call in a new turn executes again),
   `SessionStoreTest` (outcome round-trip + legacy decode), `SessionStateProviderSelectionTest`
   (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
   `SessionConfigOptionsTest` (provider option

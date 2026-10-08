@@ -260,7 +260,7 @@ class PromptRunnerTest {
     }
 
     @Test
-    fun `repeating the identical tool call within a turn gets refused and the turn continues`() = runBlocking {
+    fun `third identical tool call within a turn gets refused and the turn continues`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
@@ -272,7 +272,7 @@ class PromptRunnerTest {
                     arguments = """{"path":"/project/a.txt"}"""
                 ),
             ),
-            // The model retries the identical call; the refusal is in the history now.
+            // A single identical retry is allowed - it may reveal a new result.
             listOf(
                 toolChunk(
                     index = 0,
@@ -281,7 +281,16 @@ class PromptRunnerTest {
                     arguments = """{"path":"/project/a.txt"}"""
                 ),
             ),
-            // Third iteration: the model gives up on tools and answers in text.
+            // Third identical call with the same result again: refused, the refusal is in the history now.
+            listOf(
+                toolChunk(
+                    index = 0,
+                    id = "call_3",
+                    functionName = "write_text",
+                    arguments = """{"path":"/project/a.txt"}"""
+                ),
+            ),
+            // Fourth iteration: the model gives up on tools and answers in text.
             listOf(chunk(content = "Done.")),
         )
         val state = state(registry)
@@ -297,14 +306,17 @@ class PromptRunnerTest {
             ),
             toolRegistry = registry,
             toolCallExecutor = ToolCallExecutor(registry, state),
-            maxTurnRequests = 3,
+            maxTurnRequests = 4,
             models = listOf(testModel),
         )
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
 
-        assertEquals(1, tool.executedCount, "the repeated call must be refused before execution")
+        assertEquals(
+            2, tool.executedCount,
+            "the first two identical calls execute (a repeat may reveal new results), the third is refused",
+        )
         assertEquals(
             StopReason.END_TURN,
             emitter.events.filterIsInstance<Event.PromptResponseEvent>().single().response.stopReason,
@@ -313,10 +325,10 @@ class PromptRunnerTest {
             .map { it.update }
             .filterIsInstance<SessionUpdate.ToolCallUpdate>()
         assertEquals(ToolCallStatus.FAILED, updates.last().status)
-        val outcome = state.replaySnapshot().third["call_2"]
+        val outcome = state.replaySnapshot().third["call_3"]
         assertEquals(TOOL_OUTCOME_FAILED, outcome, "the refused call must be recorded as failed")
         assertTrue(
-            state.historySnapshot.filterIsInstance<OpenAIMessage.Tool>().any { it.toolCallId == "call_2" },
+            state.historySnapshot.filterIsInstance<OpenAIMessage.Tool>().any { it.toolCallId == "call_3" },
             "the refusal must land in the history so the model sees it",
         )
     }
