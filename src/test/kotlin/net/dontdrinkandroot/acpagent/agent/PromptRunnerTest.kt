@@ -72,8 +72,10 @@ class PromptRunnerTest {
         override val parameters: JsonObject = buildJsonObject { }
         override val kind: ToolKind = ToolKind.OTHER
         var executed = false
+        var executedCount = 0
         override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
             executed = true
+            executedCount++
             return ToolResult("ran")
         }
     }
@@ -213,6 +215,93 @@ class PromptRunnerTest {
             emitter.events.filterIsInstance<Event.PromptResponseEvent>().single().response.stopReason,
         )
         assertEquals(2, fake.requests.size, "tool iteration plus final plain-text iteration")
+    }
+
+    @Test
+    fun `repeating the identical tool call within a turn gets refused and the turn continues`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(
+                toolChunk(
+                    index = 0,
+                    id = "call_1",
+                    functionName = "write_text",
+                    arguments = """{"path":"/project/a.txt"}"""
+                ),
+            ),
+            // The model retries the identical call; the refusal is in the history now.
+            listOf(
+                toolChunk(
+                    index = 0,
+                    id = "call_2",
+                    functionName = "write_text",
+                    arguments = """{"path":"/project/a.txt"}"""
+                ),
+            ),
+            // Third iteration: the model gives up on tools and answers in text.
+            listOf(chunk(content = "Done.")),
+        )
+        val state = state(registry)
+        val runner = PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
+                listOf(testModel),
+                state,
+            ),
+            toolRegistry = registry,
+            toolCallExecutor = ToolCallExecutor(registry, state),
+            maxTurnRequests = 3,
+            models = listOf(testModel),
+        )
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertEquals(1, tool.executedCount, "the repeated call must be refused before execution")
+        assertEquals(
+            StopReason.END_TURN,
+            emitter.events.filterIsInstance<Event.PromptResponseEvent>().single().response.stopReason,
+        )
+        val updates = emitter.events.filterIsInstance<Event.SessionUpdateEvent>()
+            .map { it.update }
+            .filterIsInstance<SessionUpdate.ToolCallUpdate>()
+        assertEquals(ToolCallStatus.FAILED, updates.last().status)
+        val outcome = state.replaySnapshot().third["call_2"]
+        assertEquals(TOOL_OUTCOME_FAILED, outcome, "the refused call must be recorded as failed")
+        assertTrue(
+            state.historySnapshot.filterIsInstance<OpenAIMessage.Tool>().any { it.toolCallId == "call_2" },
+            "the refusal must land in the history so the model sees it",
+        )
+    }
+
+    @Test
+    fun `an identical call in a new turn executes again`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(
+                toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "tool_calls"),
+            ),
+            listOf(chunk(content = "First turn done.")),
+            // Second turn: same call signature again - must be allowed.
+            listOf(
+                toolChunk(0, "call_3", "write_text", """{"path":"/project/a.txt"}""", finishReason = "tool_calls"),
+            ),
+            listOf(chunk(content = "Second turn done.")),
+        )
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertEquals(2, tool.executedCount, "the guard is turn-scoped: a new turn starts clean")
     }
 
     @Test

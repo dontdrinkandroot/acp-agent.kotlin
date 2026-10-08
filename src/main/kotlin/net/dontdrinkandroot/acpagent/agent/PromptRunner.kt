@@ -56,6 +56,7 @@ internal class PromptRunner(
         instructions: AgentsInstructions?,
         toolContext: ToolContext,
     ) {
+        toolCallExecutor.onTurnStart()
         var usage: OpenAIUsage? = null
         var iterations = 0
         var continuationUsed = false

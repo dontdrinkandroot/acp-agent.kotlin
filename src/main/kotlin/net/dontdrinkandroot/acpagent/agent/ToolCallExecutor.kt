@@ -33,9 +33,40 @@ internal class ToolCallExecutor(
 ) {
 
     /**
+     * The last *executed* call as raw wire data (tool name + the argument JSON
+     * string exactly as streamed), the signature the repeat guard compares
+     * against. Turn-scoped: cleared by [onTurnStart] at every prompt start, so
+     * repeating an identical call in a later turn is always allowed. Denial
+     * paths (disabled/unknown tool, permission denied, the repeat refusal
+     * itself) never set it - a denied call made no observable change a repeat
+     * could be blind to.
+     *
+     * Intermediate degenerate-loop guard for issue #39: a weak model repeating
+     * the identical call gets an error result that names the repetition
+     * instead of a fresh copy of an identical output. Deliberately conservative:
+     * the raw string is compared verbatim, so a formatting variant of the same
+     * parsed arguments (spacing, key order) is NOT refused - and the alternating
+     * two-variant cycle from the #39 session stays unguarded (the full
+     * per-signature fix tracks that issue).
+     */
+    private var lastExecutedSignature: RepeatSignature? = null
+
+    /**
+     * Discards the repeat guard's turn state. Called once per prompt turn
+     * before the loop, so state cannot leak between turns: the guard only
+     * ever compares calls within the turn it was armed for, whatever the
+     * previous turn did (including a cancelled one) is discarded here.
+     */
+    fun onTurnStart() {
+        lastExecutedSignature = null
+    }
+
+    /**
      * Runs one tool call against the given mode and [toolContext] (whose
-     * client drives the permission prompts). Stateless: no per-call state is
-     * held on the instance, so the same executor can serve any session thread.
+     * client drives the permission prompts). Turn-scoped: the repeat guard
+     * compares each call against the previously *executed* call of this turn
+     * (see [lastExecutedSignature]); no other per-call state is held on the
+     * instance, so the same executor can serve any session thread.
      */
     suspend fun execute(
         mode: SessionModeId,
@@ -69,6 +100,17 @@ internal class ToolCallExecutor(
         }
 
         val arguments = parseArguments(call.arguments)
+
+        if (lastExecutedSignature == RepeatSignature(call.name, call.arguments)) {
+            emitDenied(
+                emitter = emitter,
+                toolCallId = toolCallId,
+                title = "Repeated tool call",
+                message = repeatedCallMessage(call.name, call.arguments),
+            )
+            return
+        }
+
         val title = tool.title(arguments) ?: tool.name
         emitter.emit(
             Event.SessionUpdateEvent(
@@ -113,6 +155,7 @@ internal class ToolCallExecutor(
         )
         state.appendToolResult(call.id, Content.Text(result.text), result.isError)
         state.persist()
+        lastExecutedSignature = RepeatSignature(call.name, call.arguments)
     }
 
     private suspend fun emitDenied(
@@ -201,6 +244,25 @@ internal class ToolCallExecutor(
         add(ToolCallContent.Content(ContentBlock.Text(result.text)))
         result.diff?.let { add(ToolCallContent.Diff(it.path, it.newText, it.oldText)) }
     }
+
+    /**
+     * The model-facing refusal text: states the fact, identifies the repeated
+     * call verbatim (raw arguments, exactly as the model emitted them) and
+     * redirects to real progress. The verbatim arguments are the payload the
+     * model itself wrote, so no formatting is lost on the way back.
+     */
+    private fun repeatedCallMessage(toolName: String, rawArguments: String): String =
+        "Error: repeated tool call - the immediately preceding call was also \"$toolName\" with arguments " +
+                "$rawArguments, and the tool produced a result for it that is already in the conversation. " +
+                "Repeating an identical call cannot yield new information. Do not repeat this call; instead " +
+                "use different arguments (e.g. read a different range) or proceed with the task."
+
+    /**
+     * The repeat guard's comparison key: the tool name plus the raw argument
+     * string exactly as streamed. A data class so a call matches only when
+     * both parts are byte-identical.
+     */
+    private data class RepeatSignature(val toolName: String, val rawArguments: String)
 }
 
 /**

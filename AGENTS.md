@@ -168,8 +168,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                        # AGENTS.md instructions)
     agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning): option listing,
                                      # validation/assignment, effective reasoning effort
-    agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, permission
-                                     # (path-aware + permanent), execution, updates + history
+    agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, repeat guard,
+                                     # permission (path-aware + permanent), execution, updates + history
     agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
@@ -358,10 +358,21 @@ Config comes from environment variables:
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
   when the iteration budget is exhausted while the model kept calling tools, streams one final
   text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
-  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. The session is a thin
+  remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. **Immediate-repeat
+  guard** (issue #39, intermediate): `ToolCallExecutor` refuses a tool call that is raw-identical (tool name +
+  `function.arguments` string, compared verbatim, not parsed) to the immediately
+  preceding *executed* call of the same turn with a FAILED result naming the repetition and the
+  raw arguments ("Repeating an identical call cannot yield new information"); the refusal never
+  reaches permission/execution, records `failed` (replay/pairing-safe), and is cleared at every
+  turn start (`onTurnStart` from `PromptRunner.run`) so a legitimate identical call in a later
+  turn always runs. Conservative by design: a formatting variant of the same parsed arguments (spacing/key order) is NOT
+  a repeat, and an alternating A/B cycle (the `limit=70/75` loop from
+  the #39 session) stays unguarded - that needs the full per-signature fix still tracked by #39.
+  The session is a thin
   SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
   `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
-  (one tool-call lifecycle: mode gate -> permission -> execution -> updates) and `PromptRunner`
+  (one tool-call lifecycle: mode gate -> unknown tool -> repeat guard -> permission -> execution
+  -> updates) and `PromptRunner`
   (the loop + wind-down pass, over the `ChatCompleter` seam so the runner is unit-testable).
   New session code should extend a component, not the facade.
 - **Modes (plan/build/bash)**: read-only `plan` default; `build` adds write tools; `bash` adds
@@ -891,7 +902,11 @@ agent's **wire contract**:
   semantics, idempotence, duplicate ids count as answered) and
   `SessionStateRepairTest` (the three view consumers close dangling calls while
   the stored history is never mutated; a real outcome is never overridden),
-  `ToolCallExecutorTest` (outcome recording + immediate persistence),
+  `ToolCallExecutorTest` (outcome recording + immediate persistence, the immediate-repeat
+  guard: raw-identical refusal without execution/prompt, formatting variants pass, reset by an
+  intervening call, denied calls not tracked) and `PromptRunnerTest` (guard integration:
+  refused repeat fails the turn's second iteration and the turn continues; identical call in a
+  new turn executes again),
   `SessionStoreTest` (outcome round-trip + legacy decode).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
   provider routing (median cap, fail-open, disabled).

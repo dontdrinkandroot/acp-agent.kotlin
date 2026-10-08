@@ -13,8 +13,9 @@ import kotlin.test.assertTrue
 /**
  * Black-box coverage of the per-prompt tool iteration cap and its wind-down
  * synthesis pass: with a low `ACP_MAX_TURN_REQUESTS` and a model that always
- * calls tools, the agent executes exactly cap tool turns, then streams one final
- * text-only summary and ends with `MAX_TURN_REQUESTS`.
+ * calls tools, the agent consumes exactly cap tool iterations (a repeated
+ * identical call is refused by the immediate-repeat guard, #39), then streams
+ * one final text-only summary and ends with `MAX_TURN_REQUESTS`.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eMaxTurnRequestsTest : E2eAgentTest() {
@@ -42,16 +43,24 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
 
                 val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
                 val toolCalls = updates.filterIsInstance<SessionUpdate.ToolCall>()
-                assertEquals(2, toolCalls.size, "exactly the capped number of tool calls must run")
+                // The mock emits the identical write_file call for both capped iterations;
+                // the second one is refused by the immediate-repeat guard (#39), so only
+                // the first call reaches a ToolCall creation + execution.
+                assertEquals(1, toolCalls.size, "the repeated identical call is refused before a ToolCall creation")
 
                 val failedToolResults = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     .filter { it.status == ToolCallStatus.FAILED }
                 assertEquals(
-                    0,
+                    1,
                     failedToolResults.size,
-                    "both capped tool calls must succeed, got: $failedToolResults",
+                    "the repeated identical call must fail with the guard's refusal, got: $failedToolResults",
                 )
-                println("[ok] both capped tool-call turns executed and completed")
+                assertTrue(
+                    (failedToolResults.single().content.orEmpty().filterIsInstance<ToolCallContent.Content>()
+                        .single().content as ContentBlock.Text).text.contains("repeated tool call"),
+                    "the refusal must name the repetition so the model can react, got: ${failedToolResults.single()}",
+                )
+                println("[ok] first capped tool call executed, the identical second was refused")
 
                 val textChunks = updates.filterIsInstance<SessionUpdate.AgentMessageChunk>()
                     .mapNotNull { (it.content as? ContentBlock.Text)?.text }

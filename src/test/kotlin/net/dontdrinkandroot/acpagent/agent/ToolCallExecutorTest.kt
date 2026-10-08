@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
+import ai.koog.prompt.executor.clients.openai.base.models.Content
 import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
@@ -54,8 +55,10 @@ class ToolCallExecutorTest {
         override val parameters: JsonObject = buildJsonObject { }
         override val kind: ToolKind = ToolKind.OTHER
         var executed = false
+        var executedCount = 0
         override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
             executed = true
+            executedCount++
             return ToolResult("done")
         }
     }
@@ -306,5 +309,109 @@ class ToolCallExecutorTest {
         execute(executor, emitterBash, StreamToolCall("call_2", "gated", "{}"), SessionModeId("bash"))
         assertEquals(true, gated.executed, "second call must execute independently of the first mode")
         assertTrue(toolCallUpdates(emitterBash).any { it.status == ToolCallStatus.COMPLETED })
+    }
+
+    @Test
+    fun `immediately repeated identical call is refused without execution`() = runBlocking {
+        val tool = RecordingTool("capture", false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val state = state()
+        val executor = ToolCallExecutor(registry, state)
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", """{"path": "a.txt", "limit": 115}"""))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", """{"path": "a.txt", "limit": 115}"""))
+
+        assertEquals(1, tool.executedCount, "only the first call must execute")
+        val update = toolCallUpdates(emitter).last()
+        assertEquals(ToolCallStatus.FAILED, update.status)
+        assertEquals("Repeated tool call", update.title)
+        val message = (update.content.orEmpty().filterIsInstance<ToolCallContent.Content>().single().content
+                as ContentBlock.Text).text
+        assertTrue(message.contains("capture"), "the refusal must name the tool")
+        assertTrue(message.contains("""{"path": "a.txt", "limit": 115}"""), "the refusal must carry the raw arguments")
+        assertEquals(
+            1, state.replaySnapshot().third.filterValues { it == TOOL_OUTCOME_COMPLETED }.size,
+            "the first call completed",
+        )
+        assertEquals(
+            "call_2", state.replaySnapshot().third.filterValues { it == TOOL_OUTCOME_FAILED }.keys.single(),
+        )
+        val historyAfter = state.historySnapshot
+        assertEquals(2, historyAfter.size, "history: two tool results (completed + refused)")
+        assertTrue(historyAfter.last() is OpenAIMessage.Tool)
+        val refusedResult = historyAfter.last() as OpenAIMessage.Tool
+        val refusedContent = refusedResult.content as Content.Text
+        assertEquals("call_2", refusedResult.toolCallId)
+        assertTrue(
+            refusedContent.text().contains("""{"path": "a.txt", "limit": 115}"""),
+            "the history error must carry the raw arguments so the model sees what repeated",
+        )
+    }
+
+    @Test
+    fun `reformatted arguments of the same call are not refused`() = runBlocking {
+        val tool = RecordingTool("capture", false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", """{"path": "a.txt", "limit": 115}"""))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", """{"limit":115,"path":"a.txt"}"""))
+
+        assertEquals(2, tool.executedCount, "a formatting variant must never count as the same call")
+        assertTrue(toolCallUpdates(emitter).any { it.status == ToolCallStatus.COMPLETED })
+    }
+
+    @Test
+    fun `an intervening different call resets the repeat guard`() = runBlocking {
+        val tool = RecordingTool("capture", false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+
+        execute(executor, emitter, StreamToolCall("call_1", "capture", "{}"))
+        execute(executor, emitter, StreamToolCall("call_2", "capture", """{"k": 1}"""))
+        execute(executor, emitter, StreamToolCall("call_3", "capture", "{}"))
+
+        assertEquals(3, tool.executedCount, "the call in between must reset the guard")
+        assertTrue(toolCallUpdates(emitter).all { it.status == ToolCallStatus.COMPLETED })
+    }
+
+    @Test
+    fun `repeating a call that was denied does not refuse it`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+        val denyingClient = object : ClientSessionOperations {
+            val requests = mutableListOf<SessionUpdate.ToolCallUpdate>()
+            override suspend fun requestPermissions(
+                toolCall: SessionUpdate.ToolCallUpdate,
+                permissions: List<PermissionOption>,
+                _meta: JsonElement?,
+            ): RequestPermissionResponse {
+                requests += toolCall
+                return RequestPermissionResponse(RequestPermissionOutcome.Selected(PermissionOptionId("reject_once")))
+            }
+
+            override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
+        }
+
+        execute(
+            executor,
+            emitter,
+            StreamToolCall("call_1", "read", """{"path": "/etc/passwd"}"""),
+            client = denyingClient
+        )
+        execute(
+            executor,
+            emitter,
+            StreamToolCall("call_2", "read", """{"path": "/etc/passwd"}"""),
+            client = denyingClient
+        )
+
+        assertEquals(2, denyingClient.requests.size, "the repeated call must ask for permission again")
+        assertEquals(0, tool.executedCount, "both calls were denied, so neither executed")
     }
 }
