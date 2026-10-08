@@ -7,6 +7,7 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
@@ -68,6 +69,13 @@ class BashToolTest {
     fun `missing command errors`() = runBlocking {
         val result = BashTool().execute(buildJsonObject {}, context)
         assertTrue(result.isError)
+    }
+
+    @Test
+    fun `explicit json null command is rejected with a dedicated message`() = runBlocking {
+        val bash = BashTool().execute(buildJsonObject { put("command", JsonNull) }, context)
+        assertTrue(bash.isError)
+        assertEquals("'command' must not be null", bash.text)
     }
 
     @Test

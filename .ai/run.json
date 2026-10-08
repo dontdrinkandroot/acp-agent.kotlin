@@ -1,26 +1,26 @@
 {
     "compile": {
-        "command": "timeout 60 ./gradlew compileKotlin",
-        "description": "Compile main sources (fastest loop; 60s timeout to catch hangs)"
+        "command": "timeout 180 ./gradlew compileKotlin",
+        "description": "Compile main sources (fastest loop; 180s timeout to catch hangs)"
     },
     "build": {
-        "command": "timeout 120 ./gradlew build",
-        "description": "Compile + run all unit and black-box e2e tests (120s: full suite)"
+        "command": "timeout 300 ./gradlew build",
+        "description": "Compile + run all unit and black-box e2e tests (300s: full suite incl. a cold daemon)"
     },
     "test": {
-        "command": "timeout 120 ./gradlew test",
-        "description": "Run the full test suite (120s: full suite)"
+        "command": "timeout 300 ./gradlew test",
+        "description": "Run the full test suite (unit + black-box e2e; 300s to cover a cold daemon)"
     },
     "test_class": {
-        "command": "timeout 60 ./gradlew test --tests [args]",
-        "description": "Run a single test class (or Class.method), e.g. LlmRequestTest (re-links installDist first)"
+        "command": "timeout 180 ./gradlew test --tests [args]",
+        "description": "Run a single test class (or Class.method) via [args] (re-links installDist first; 180s timeout)"
     },
     "install_dist": {
-        "command": "timeout 60 ./gradlew installDist",
+        "command": "timeout 180 ./gradlew installDist",
         "description": "Produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
     },
     "dependency_updates": {
-        "command": "timeout 60 ./gradlew dependencyUpdates",
+        "command": "timeout 180 ./gradlew dependencyUpdates",
         "description": "Dependency update audit: stable-only candidates, report-only (not wired into check); Koog bumps additionally go through the AGENTS.md Koog upgrade checklist"
     },
     "lint_scripts": {
@@ -32,8 +32,8 @@
         "description": "Print failure messages from the latest JUnit XML reports"
     },
     "sources": {
-        "command": "timeout 120 ./gradlew unpackLibrarySources",
-        "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions"
+        "command": "timeout 180 ./gradlew unpackLibrarySources",
+        "description": "Resolve + unpack -sources jars of the main+test classpath into build/library-sources-unpacked/<artifact>/ for browsing library code at the exact resolved versions (180s timeout)"
     },
     "listLibs": {
         "command": "./gradlew dependencies [args] --console=plain -q 2>&1 | tail -60",
@@ -56,7 +56,7 @@
         "description": "Run the shell test suite (tests/bash) pinning the docker launcher composition"
     },
     "compile_test": {
-        "command": "timeout 60 ./gradlew compileTestKotlin",
+        "command": "timeout 180 ./gradlew compileTestKotlin",
         "description": "Compile test sources (fastest loop for test-code errors)"
     }
 }

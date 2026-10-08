@@ -449,7 +449,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `downloadLibrarySources` + `unpackLibrarySources` in `build.gradle.kts`, for browsing library
   code at the exact resolved versions - see Library-source investigation under Building / running).
   The gradle configs are
-  wrapped in `timeout` (60s for the fast loop, 120s for the full `build`/`test` suites) so
+  wrapped in `timeout` (180s for the fast loop and single test classes, 300s for the
+  full `build`/`test` suites incl. a cold daemon) so
   a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
   config (`git [args]`, arbitrary arguments, read-only inspection only), a `listLibs`
   config (resolved dependency trees via `./gradlew dependencies`,
@@ -899,22 +900,28 @@ The **output caps** (bash/run tail truncation + progressive capture through a dr
 timeout, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
 binary/oversized skips, the `.git` walker skip) are unit-tested in
-`BashToolTest`/`ToolsTest`; move/delete semantics (destination-exists refusal,
-symlink refusal, dir/file type mismatches, diff payloads, local-disk-only), the
-whole-file diff convention and the fs-proxy diff skip, the strict JSON-null argument
-rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
+`BashToolTest`/`ReadFileToolTest`/`ListDirToolTest`/`GrepToolTest`; move/delete
+semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
+payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip,
+the strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
 mapping, `title` annotation) are unit-tested in
-`ToolsTest`/`PermissionAndFileStoreTest`/`McpBridgeTest`. The calc expression
-language (operator precedence incl. right-associative `^`, functions/constants,
-positional error messages, length/nesting caps) is unit-tested in
+the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
+`EditFileToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`, `DeleteFileToolTest`,
+`DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
+per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`. The
+calc expression language (operator precedence incl. right-associative `^`,
+functions/constants, positional error messages, length/nesting caps) is unit-tested in
 `CalcExpressionTest`/`CalcToolTest`.
 
 **Tool schema pins**: every registered local tool pins its `parameters` schema as an
 encoded string (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive —
-JsonObject equality is order-insensitive) in its own test class (`ToolSchemaTest` in
-`ToolsTest.kt` covers the path tools, the remaining tools in their dedicated classes:
-`BashToolTest`, `WebFetchToolTest`, `RunToolTest`, `RunConfigToolsTest`,
-`UpdatePlanToolTest`, `GetCurrentModeToolTest`, `CalcToolTest`). The registry-wide guard test
+JsonObject equality is order-insensitive) in its own tool test class (`ReadFileToolTest`, `WriteFileToolTest`,
+`EditFileToolTest`, `ListDirToolTest`,
+`GlobToolTest`, `GrepToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`,
+`DeleteFileToolTest`, `DeleteDirectoryToolTest` cover the path tools; the remaining
+tools in their dedicated classes: `BashToolTest`, `WebFetchToolTest`, `RunToolTest`,
+`RunConfigToolsTest`, `UpdatePlanToolTest`, `GetCurrentModeToolTest`, `CalcToolTest`).
+The registry-wide guard test
 (`ToolSchemaTest.every production tool advertises an object schema…`) iterates
 `localTools()` + `sessionTools(cwd)` from `tools/ToolCatalog.kt` — the same helpers
 `Main.kt` assembles the production registry from — asserting `type=object`, a
@@ -922,7 +929,9 @@ JsonObject equality is order-insensitive) in its own test class (`ToolSchemaTest
 **structure only**: a tool newly added to `ToolCatalog.kt` will pass it until its
 schema pin is added, so treat touching the catalog list as the reminder to add the
 pin in the same change. The schema
-builder itself is pinned at the raw-string level by `ToolSchemaWireTest`.
+builder itself is pinned at the raw-string level by `ToolSchemaWireTest`
+(`ToolSchemaWireTest.kt` - the file name freed the `ToolSchemaTest` class name for the
+guard test).
 
 **e2e change policy**: e2e scenarios pin the agent's **wire contract** — protocol
 message flow, security boundaries (permission routing, mode restrictions,
