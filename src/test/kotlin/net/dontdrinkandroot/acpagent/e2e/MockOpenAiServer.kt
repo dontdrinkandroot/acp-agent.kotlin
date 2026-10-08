@@ -125,7 +125,9 @@ internal class MockOpenAiServer(
                 return@createContext
             }
             val body =
-                """{"data":{"endpoints":[{"name":"p1","pricing":{"completion":"0.00002"}},{"name":"p2","pricing":{"completion":"0.0001"}}]}}"""
+                """{"data":{"endpoints":[""" +
+                        """{"name":"Provider One | test-model","tag":"p1","provider_name":"Provider One","pricing":{"completion":"0.00002"}},""" +
+                        """{"name":"Provider Two | test-model","tag":"p2","provider_name":"Provider Two","pricing":{"completion":"0.0001"}}]}}"""
             exchange.responseHeaders.add("Content-Type", "application/json")
             exchange.sendResponseHeaders(200, body.toByteArray().size.toLong())
             exchange.responseBody.use { it.write(body.toByteArray()) }

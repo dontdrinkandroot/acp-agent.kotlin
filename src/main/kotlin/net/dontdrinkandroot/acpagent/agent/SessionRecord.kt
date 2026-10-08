@@ -26,6 +26,7 @@ internal data class SessionRecord(
     val history: List<OpenAIMessage> = emptyList(),
     val model: String = "",
     val reasoning: String = "",
+    val provider: String = "",
     val plan: List<PlanEntry> = emptyList(),
     val toolOutcomes: Map<String, String> = emptyMap(),
 )

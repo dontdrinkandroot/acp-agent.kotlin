@@ -3,10 +3,16 @@ package net.dontdrinkandroot.acpagent.agent
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.jsonRpcInvalidParams
+import io.github.oshai.kotlinlogging.KotlinLogging
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.forModel
+import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
+import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
+
+private val logger = KotlinLogging.logger {}
 
 private const val REASONING_OFF = "none"
+private const val PROVIDER_AUTO = "auto"
 private val DEFAULT_REASONING_LEVELS = listOf("max", "xhigh", "high", "medium", "low", "minimal")
 private val REASONING_NAMES = mapOf(
     "max" to "Max",
@@ -18,6 +24,13 @@ private val REASONING_NAMES = mapOf(
 )
 
 private fun reasoningEffortName(effort: String): String = REASONING_NAMES[effort] ?: effort
+
+/**
+ * A feed tag usable as a select value: non-blank and distinct from the
+ * [PROVIDER_AUTO] sentinel (a provider literally tagged "auto" could never be
+ * selected - "auto" always means OpenRouter routing).
+ */
+private fun ProviderOption.selectableTag(): Boolean = tag.isNotBlank() && tag != PROVIDER_AUTO
 
 private data class ReasoningOption(
     val value: String,
@@ -31,19 +44,67 @@ private data class ReasoningSelector(
 )
 
 /**
- * The per-session configuration surface: mode, model and reasoning options.
- * Owns the option listing, the validation/assignment logic and the effective
- * reasoning effort used on chat requests, so a new config option is a new
- * handler here instead of a widening switch in the session.
+ * The per-session configuration surface: mode, model, reasoning and provider
+ * options. Owns the option listing, the validation/assignment logic and the
+ * effective reasoning/provider choices used on chat requests, so a new config
+ * option is a new handler here instead of a widening switch in the session.
  */
 @OptIn(UnstableApi::class)
 internal class SessionConfigOptions(
     private val availableModes: List<SessionMode>,
     private val models: List<OpenRouterModel>,
     private val state: SessionState,
+    private val providerRouting: ProviderRouting? = null,
+    initialProviderOptions: List<ProviderOption>? = null,
 ) {
 
     private fun modelInfo(): OpenRouterModel? = models.forModel(state.currentModel)
+
+    /**
+     * The current model's selectable providers (null = option hidden), kept as
+     * a snapshot so `options()` stays synchronous. Seeded by the session
+     * assembly's prefetch and re-read from [providerRouting] on model switch.
+     */
+    private var providerOptions: List<ProviderOption>? = initialProviderOptions
+
+    init {
+        healStaleSlug(initialProviderOptions)
+    }
+
+    /**
+     * Re-reads the provider snapshot for the current model and self-heals a
+     * stale persisted slug (the model no longer lists it) back to auto.
+     * Fail-open: an unavailable feed hides the option without touching the
+     * selection.
+     */
+    suspend fun refreshProviderOptions() {
+        providerOptions = providerRouting?.providersFor(state.currentModel)
+        healStaleSlug(providerOptions)
+    }
+
+    /**
+     * The provider slug to send on chat requests: "" (auto) routes through the
+     * auto policy; a stored slug keeps applying even while the feed is
+     * unavailable - an explicit pick outlives the picker being hidden.
+     */
+    fun effectiveProviderSlug(): String = state.providerSelection
+
+    /**
+     * A persisted slug the current model no longer lists (a stale restore or a
+     * model change elsewhere) heals back to auto with a warn. Pure membership
+     * check against the given snapshot; an unavailable feed (null) never
+     * touches the selection - the pick outlives the picker being hidden.
+     */
+    private fun healStaleSlug(providers: List<ProviderOption>?) {
+        val slug = state.providerSelection
+        if (slug.isNotEmpty() && providers?.none { it.selectableTag() && it.tag == slug } == true) {
+            logger.warn {
+                "provider selection \"$slug\" is no longer listed for model \"${state.currentModel}\"; " +
+                        "resetting to auto"
+            }
+            state.providerSelection = ""
+        }
+    }
 
     fun options(): List<SessionConfigOption> {
         val options = mutableListOf<SessionConfigOption>(
@@ -101,6 +162,34 @@ internal class SessionConfigOptions(
                 category = SessionConfigOptionCategory.THOUGHT_LEVEL,
             )
         }
+        providerOptions?.let { providers ->
+            options += SessionConfigOption.select(
+                id = "provider",
+                name = "Provider",
+                currentValue = state.providerSelection.ifEmpty { PROVIDER_AUTO },
+                options = SessionConfigSelectOptions.Flat(
+                    buildList {
+                        add(
+                            SessionConfigSelectOption(
+                                value = SessionConfigValueId(PROVIDER_AUTO),
+                                name = "Auto",
+                                description = "OpenRouter routes the request (throughput-sorted, median price cap)",
+                            )
+                        )
+                        providers.filter { it.selectableTag() }.forEach { provider ->
+                            add(
+                                SessionConfigSelectOption(
+                                    value = SessionConfigValueId(provider.tag),
+                                    name = provider.name.ifBlank { provider.tag },
+                                )
+                            )
+                        }
+                    }
+                ),
+                description = "Provider used for the selected model (auto = OpenRouter routing)",
+                category = SessionConfigOptionCategory("provider"),
+            )
+        }
         return options
     }
 
@@ -130,6 +219,16 @@ internal class SessionConfigOptions(
                 state.reasoningSelection = effort
             }
 
+            "provider" -> {
+                val slug = value.stringValue("provider")
+                val providers = providerOptions
+                    ?: jsonRpcInvalidParams("model \"${state.currentModel}\" does not expose a provider option")
+                if (slug != PROVIDER_AUTO && providers.none { it.selectableTag() && it.tag == slug }) {
+                    jsonRpcInvalidParams("unknown provider \"$slug\"")
+                }
+                state.providerSelection = if (slug == PROVIDER_AUTO) "" else slug
+            }
+
             else -> jsonRpcInvalidParams("unknown config option \"${configId.value}\"")
         }
     }
@@ -138,6 +237,8 @@ internal class SessionConfigOptions(
         if (modelId.isBlank()) jsonRpcInvalidParams("model id must not be empty")
         state.currentModel = modelId
         state.reasoningSelection = ""
+        state.providerSelection = ""
+        providerOptions = null
     }
 
     private fun SessionConfigOptionValue.stringValue(optionId: String): String =

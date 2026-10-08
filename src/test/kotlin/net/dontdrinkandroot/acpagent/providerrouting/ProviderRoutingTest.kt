@@ -127,4 +127,144 @@ class ProviderRoutingTest {
             server.stop()
         }
     }
+
+    private fun endpointBody() =
+        """[
+            {"name":"Azure | a/m","tag":"azure","provider_name":"Azure","pricing":{"completion":"0.00002"}},
+            {"name":"DeepInfra | a/m","tag":"deepinfra","provider_name":"DeepInfra","pricing":{"completion":"0.0001"}}
+        ]"""
+
+    @Test
+    fun `provider lookup returns slug and display name from the endpoints feed`() = runBlocking {
+        val server = EndpointsServer(endpointBody())
+        server.start()
+        try {
+            val r = routing(true, server)
+            val providers = requireNotNull(r.providersFor("a/m"))
+            assertEquals(
+                listOf(ProviderOption("azure", "Azure"), ProviderOption("deepinfra", "DeepInfra")),
+                providers,
+            )
+            assertEquals(1, server.requestCount.get(), "lookups must hit the cache")
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `duplicate provider tags collapse to the first endpoint`() = runBlocking {
+        val server = EndpointsServer(
+            """[
+                {"name":"Azure EU | a/m","tag":"azure","provider_name":"Azure","pricing":{"completion":"0.00002"}},
+                {"name":"Azure US | a/m","tag":"azure","provider_name":"Azure","pricing":{"completion":"0.0001"}},
+                {"name":"DeepInfra | a/m","tag":"deepinfra","provider_name":"DeepInfra","pricing":{"completion":"0.00005"}}
+            ]"""
+        )
+        server.start()
+        try {
+            val r = routing(true, server)
+            assertEquals(
+                listOf(ProviderOption("azure", "Azure"), ProviderOption("deepinfra", "DeepInfra")),
+                requireNotNull(r.providersFor("a/m")),
+            )
+            // The median still sees every endpoint's price.
+            val median = requireNotNull(r.providerFor("a/m")?.maxPrice?.completion)
+            assertEquals(50.0, median, 1e-9)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `providersFor fails open when the feed is unavailable and is not cached`() = runBlocking {
+        val server = EndpointsServer(endpointBody(), failures = 1)
+        server.start()
+        try {
+            val r = routing(true, server)
+            assertNull(r.providersFor("a/m"), "an endpoints failure must hide the provider option")
+            assertEquals(1, server.requestCount.get(), "failures must not be cached")
+            val recovered = requireNotNull(r.providersFor("a/m"))
+            assertEquals(2, recovered.size, "a later successful fetch must recover")
+            assertEquals(2, server.requestCount.get())
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `providersFor works even when auto routing is disabled`() = runBlocking {
+        // The manual provider picker must stay visible with
+        // OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0: only `auto` degrades.
+        val server = EndpointsServer(endpointBody())
+        server.start()
+        try {
+            val r = routing(false, server)
+            assertEquals(
+                listOf(ProviderOption("azure", "Azure"), ProviderOption("deepinfra", "DeepInfra")),
+                requireNotNull(r.providersFor("a/m")),
+            )
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `disabled auto routing sends no preferences without extra fetches`() = runBlocking {
+        val server = EndpointsServer(endpointBody())
+        server.start()
+        try {
+            val r = routing(false, server)
+            assertNull(r.providerFor("a/m"))
+            assertEquals(0, server.requestCount.get(), "the disabled auto policy must not fetch")
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `unpriceable endpoints stay selectable but are excluded from the median`() = runBlocking {
+        val server = EndpointsServer(
+            """[
+                {"name":"A | a/m","tag":"azure","provider_name":"Azure","pricing":{"completion":"0.00002"}},
+                {"name":"B | a/m","tag":"free","provider_name":"Free","pricing":{"completion":"n/a"}},
+                {"name":"C | a/m","tag":"deepinfra","provider_name":"DeepInfra","pricing":{"completion":"0.0001"}}
+            ]"""
+        )
+        server.start()
+        try {
+            val r = routing(true, server)
+            assertEquals(
+                listOf(
+                    ProviderOption("azure", "Azure"),
+                    ProviderOption("free", "Free"),
+                    ProviderOption("deepinfra", "DeepInfra"),
+                ),
+                requireNotNull(r.providersFor("a/m")),
+                "an unpriceable endpoint must still be offered as a manual pick",
+            )
+            // The median sees only the two parseable prices: (0.00002 + 0.0001) / 2 = 60/m.
+            assertEquals(60.0, requireNotNull(r.providerFor("a/m")?.maxPrice?.completion), 1e-9)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `a feed without any parseable price fails open instead of capping at zero`() = runBlocking {
+        val server = EndpointsServer(
+            """[{"name":"B | a/m","tag":"free","provider_name":"Free","pricing":{"completion":"n/a"}}]"""
+        )
+        server.start()
+        try {
+            val r = routing(true, server)
+            assertNull(r.providerFor("a/m"), "no parseable price must not produce a $0 cap")
+            assertEquals(
+                listOf(ProviderOption("free", "Free")),
+                requireNotNull(r.providersFor("a/m")),
+                "the manual pick is unaffected by pricing",
+            )
+        } finally {
+            server.stop()
+        }
+    }
 }

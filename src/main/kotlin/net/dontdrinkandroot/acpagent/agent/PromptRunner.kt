@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonElement
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
+import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
 import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.ToolContext
@@ -224,12 +225,16 @@ internal class PromptRunner(
         var usage: OpenAIUsage? = null
         var finishReason: String? = null
         var nativeFinishReason: String? = null
+        val effectiveProvider = when (val slug = sessionConfigOptions.effectiveProviderSlug()) {
+            "" -> providerRouting?.providerFor(state.currentModel)
+            else -> ProviderPreferences(order = listOf(slug))
+        }
         chatCompleter.chatCompletion(
             messages = messages,
             tools = tools,
             reasoning = sessionConfigOptions.effectiveReasoning(),
             model = state.currentModel,
-            provider = providerRouting?.providerFor(state.currentModel),
+            provider = effectiveProvider,
         ).collect { chunk ->
             chunk.usage?.let { usage = it }
             chunk.choices.firstOrNull()?.let { choice ->

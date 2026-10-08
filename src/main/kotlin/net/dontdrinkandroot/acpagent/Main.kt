@@ -21,7 +21,9 @@ import net.dontdrinkandroot.acpagent.mcp.McpTool
 import net.dontdrinkandroot.acpagent.mcp.connectMcpServer
 import net.dontdrinkandroot.acpagent.mcp.createMcpClientInfo
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
-import net.dontdrinkandroot.acpagent.tools.*
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
+import net.dontdrinkandroot.acpagent.tools.localTools
+import net.dontdrinkandroot.acpagent.tools.sessionTools
 import java.time.LocalDate
 
 public fun main(args: Array<String>) {
@@ -91,13 +93,19 @@ public fun runAgent(args: Array<String>) {
             llm.close()
             throw e
         }
+        val providerRouting = ProviderRouting(config.autoThroughputSortingEnabled, llm)
+        // Best-effort seed for the provider option (cached; re-read on model
+        // switches). A failed feed only hides the option - unlike fetchModels,
+        // whose failure aborts session creation.
+        val initialProviderOptions = providerRouting.providersFor(initialModelId(restored, config))
         return AgentSessionImpl(
             sessionId = sessionId,
             cwd = restored?.cwd ?: parameters.cwd,
             toolRegistry = registry,
             config = config,
             llm = llm,
-            providerRouting = ProviderRouting(config.autoThroughputSortingEnabled, llm),
+            providerRouting = providerRouting,
+            initialProviderOptions = initialProviderOptions,
             todayProvider = ::isoDateToday,
             closeResources = {
                 connections.forEach { connection -> runCatching { connection.close() } }

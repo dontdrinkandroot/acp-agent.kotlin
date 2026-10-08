@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.dontdrinkandroot.acpagent.llm.LlmClient
+import net.dontdrinkandroot.acpagent.llm.OpenRouterEndpoint
 import net.dontdrinkandroot.acpagent.llm.ProviderMaxPrice
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
 
@@ -16,19 +17,34 @@ private val logger = KotlinLogging.logger {}
 private const val PER_MILLION_TOKEN = 1e6
 
 /**
+ * A provider endpoint of one model, offered as a manual `provider` config
+ * option: [tag] is the OpenRouter provider slug for the `provider.order`
+ * routing preferences, [name] the human-readable display name.
+ */
+internal data class ProviderOption(val tag: String, val name: String)
+
+/**
  * The automatic OpenRouter provider routing policy: sort providers by
  * throughput and cap the accepted completion price at the median completion
- * price of the selected model's endpoints. Results are cached per model so the
- * endpoints feed is fetched at most once per model. The feature is cleanly
- * separated behind a single toggle so it can be removed or disabled without
- * touching the agent's prompt logic.
+ * price of the selected model's endpoints. The same cached per-model feed
+ * also backs the manual `provider` config option (slug + display name); that
+ * option is independent of [enabled], which only gates the auto policy. The
+ * feature is cleanly separated behind a single toggle so it can be removed or
+ * disabled without touching the agent's prompt logic.
  */
-internal class ProviderRouting(
+internal class ProviderRouting private constructor(
     private val enabled: Boolean,
-    private val llm: LlmClient,
+    private val endpointsFetcher: EndpointsFetcher,
 ) {
     private val cacheMutex = Mutex()
-    private val medianByModel = mutableMapOf<String, Double>()
+    private val endpointsByModel = mutableMapOf<String, List<OpenRouterEndpoint>>()
+
+    constructor(enabled: Boolean, llm: LlmClient) : this(enabled, EndpointsFetcher(llm::fetchEndpoints))
+
+    /** The endpoints feed of one model, or null when the feed is unavailable. */
+    internal fun interface EndpointsFetcher {
+        suspend fun fetchEndpoints(modelId: String): List<OpenRouterEndpoint>
+    }
 
     /**
      * Returns the provider preferences for a model call, or null when the
@@ -38,26 +54,62 @@ internal class ProviderRouting(
      */
     suspend fun providerFor(model: String): ProviderPreferences? {
         if (!enabled) return null
-        val cached = cacheMutex.withLock { medianByModel[model] }
-        if (cached != null) return preferences(cached)
-        val endpoints = runCatching { llm.fetchEndpoints(model) }.getOrElse {
-            logger.warn(it) { "Auto throughput sorting: failed to fetch endpoints for $model" }
+        val endpoints = cachedEndpoints(model) ?: return null
+        // Unpriceable endpoints carry no median signal: skip them instead of
+        // failing, and fail open when none is priceable (a $0/m cap would
+        // exclude every provider and max_price is enforced fail-closed
+        // server-side).
+        val prices = endpoints.mapNotNull { it.pricing.completion.toDoubleOrNull() }
+        if (prices.isEmpty()) {
+            logger.warn { "Provider routing: no parseable completion prices for $model" }
+            return null
+        }
+        val median = medianCompletionPriceUsdPerMillion(prices)
+        return ProviderPreferences(sort = "throughput", maxPrice = ProviderMaxPrice(completion = median))
+    }
+
+    /**
+     * The selectable provider endpoints of a model, or null when the feed is
+     * unavailable. Independent of the auto routing toggle - a manual pick is
+     * not the auto policy. Fetched on demand and cached like the auto routing
+     * median. Duplicate tags (multiple endpoints of one provider) collapse to
+     * the first, so every select value stays unique.
+     */
+    suspend fun providersFor(model: String): List<ProviderOption>? {
+        val endpoints = cachedEndpoints(model) ?: return null
+        return endpoints.map { ProviderOption(it.tag, it.providerName) }.distinctBy { it.tag }
+    }
+
+    private suspend fun cachedEndpoints(model: String): List<OpenRouterEndpoint>? {
+        cacheMutex.withLock { endpointsByModel[model] }?.let { return it }
+        val endpoints = loadEndpoints(model) ?: return null
+        cacheMutex.withLock { endpointsByModel[model] = endpoints }
+        return endpoints
+    }
+
+    /**
+     * One uncached fetch, fail-open: errors and empty feeds return null
+     * instead of poisoning the cache (an empty feed would produce a $0/m
+     * completion cap and exclude every provider; since `max_price` is enforced
+     * fail-closed server-side, that would break every request).
+     */
+    private suspend fun loadEndpoints(model: String): List<OpenRouterEndpoint>? {
+        val endpoints = runCatching { endpointsFetcher.fetchEndpoints(model) }.getOrElse {
+            logger.warn(it) { "Provider routing: failed to fetch endpoints for $model" }
             return null
         }
         if (endpoints.isEmpty()) {
-            // An empty feed would produce a $0/m completion cap and exclude
-            // every provider. Since max_price is enforced fail-closed
-            // server-side, that would break every request; fail open instead.
-            logger.warn { "Auto throughput sorting: no provider endpoints listed for $model" }
+            logger.warn { "Provider routing: no provider endpoints listed for $model" }
             return null
         }
-        val median = medianCompletionPriceUsdPerMillion(endpoints)
-        cacheMutex.withLock { medianByModel[model] = median }
-        return preferences(median)
+        return endpoints
     }
 
-    private fun preferences(medianCompletion: Double): ProviderPreferences =
-        ProviderPreferences(sort = "throughput", maxPrice = ProviderMaxPrice(completion = medianCompletion))
+    internal companion object {
+        /** Test factory over a stub fetcher. */
+        internal fun createForTesting(enabled: Boolean, fetcher: EndpointsFetcher): ProviderRouting =
+            ProviderRouting(enabled, fetcher)
+    }
 }
 
 /**

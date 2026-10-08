@@ -106,13 +106,19 @@ internal class SessionState(
     @Volatile
     private var promptActive = false
 
-    var currentModel: String = restored?.model?.takeIf { it.isNotBlank() } ?: config.openRouterModel
+    var currentModel: String = initialModelId(restored, config)
 
     /**
      * The selected reasoning effort ("" = not yet chosen; the effective
      * effort falls back to the model's default, "none" = reasoning off).
      */
     var reasoningSelection: String = restored?.reasoning?.takeIf { it.isNotBlank() } ?: ""
+
+    /**
+     * The selected OpenRouter provider slug ("" = auto; the manual pick sends
+     * `provider.order` on chat requests). Persisted alongside model/reasoning.
+     */
+    var providerSelection: String = restored?.provider?.takeIf { it.isNotBlank() } ?: ""
 
     val historySnapshot: List<OpenAIMessage>
         get() = synchronized(historyLock) { repairedViewLocked().history }
@@ -321,6 +327,7 @@ internal class SessionState(
             history = snapshot,
             model = currentModel,
             reasoning = reasoningSelection,
+            provider = providerSelection,
             plan = planSnapshot,
             toolOutcomes = outcomes,
         )
@@ -393,3 +400,7 @@ internal class SessionState(
         if (title.codePointCount(0, title.length) <= MAX_TITLE_LENGTH) title
         else title.substring(0, title.offsetByCodePoints(0, MAX_TITLE_LENGTH)) + "…"
 }
+
+/** The session's initial model: the persisted pick or the configured OpenRouter default. */
+internal fun initialModelId(restored: SessionRecord?, config: Config): String =
+    restored?.model?.takeIf { it.isNotBlank() } ?: config.openRouterModel

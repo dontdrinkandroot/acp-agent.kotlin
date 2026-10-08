@@ -121,6 +121,7 @@ at 9.x — gradle/gradle#26365) and is deliberately not used.
   * **Proactively create issues for newly discovered bugs** — file them, don't just mention them.
   * GitHub issues are the sole issue tracker.
   * When adding an issue, make sure it is not duplicated.
+  * This is a public repo, so make sure no sensitive information is exposed.
 
 ## Layout
 
@@ -139,14 +140,17 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     llm/LlmWire.kt                   # the single shared `llmWireJson` (snake-case etc.) for all
                                      # wire-shaped LLM data (chat traffic + persisted history)
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
-                                     # provider endpoints feed)
+                                     # provider endpoints feed: tag/provider_name/pricing)
     llm/ModelLookup.kt               # List<OpenRouterModel>.forModel(id) - the single model lookup
-    providerrouting/ProviderRouting.kt  # auto provider routing: throughput sort + median completion cap
+    providerrouting/ProviderRouting.kt  # provider routing: auto (throughput sort + median
+                                     # completion cap) + the manual `provider` option's
+                                     # per-model endpoints cache (slug + display name)
     mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
                                      # mutating/kind/title), JsonObject->Any map
     mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE)
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
-                                     # toolOutcomes: toolCallId -> completed|failed)
+                                     # model, reasoning, provider, toolOutcomes:
+                                     # toolCallId -> completed|failed)
     agent/SessionCoroutines.kt       # clientOrNull() + Content?.textOrNull() shared by the
                                      # session facade, prompt runner and session state
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
@@ -166,8 +170,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
                                        # AGENTS.md instructions)
-    agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning): option listing,
-                                     # validation/assignment, effective reasoning effort
+    agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning/provider): option listing,
+                                     # validation/assignment, effective reasoning effort,
+                                     # effective provider slug
     agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, repeat guard,
                                      # permission (path-aware + permanent), execution, updates + history
     agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
@@ -251,6 +256,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
+        E2eProviderOptionTest.kt     # provider config option (issue #42): advertisement, request
+                                     # wire shape order, fail-open hidden, manual-beats-env,
+                                     # persistence across restart
         E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
                                      # unknown config fails loudly, args = literal argv tokens
@@ -480,13 +488,33 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
   `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
   `GIT_SHA` build-arg (no `.git` in the build context).
-- **Model + reasoning options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed (`llm/LlmModels.kt`:
+- **Model + reasoning + provider options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed
+  (`llm/LlmModels.kt`:
   tool-capable text-output models, sorted; failure fails session creation).
-  Per-session `model` (default `OPENROUTER_MODEL`) and `reasoning` effort (`category: thought_level`; empty
+  Per-session `model` (default `OPENROUTER_MODEL`), `reasoning` effort (`category: thought_level`; empty
   `supported_efforts` -> gateway levels max..minimal;
-  mandatory models drop `none`; `none` omits the request field). Model switches reset reasoning;
-  changes emit updates and persist. The chat request carries `reasoning: {effort}` (own wire
-  type in `LlmClient`, not Koog).
+  mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`, issue #42)
+  config options. Model switches reset reasoning and provider; changes emit updates and persist. The chat request
+  carries `reasoning: {effort}` (own wire type in `LlmClient`, not Koog).
+    - **Provider option** (issue #42): flat select with `auto` (real value, default, always re-selectable) +
+      the current model's provider slugs from the endpoints feed (value = endpoint `tag`, name = `provider_name`;
+      blank tags and a tag literally `auto` are skipped - `auto` always means OpenRouter routing);
+      description "Provider used for the selected model (auto = OpenRouter routing)". A manual pick sends
+      `provider: {order: ["<slug>"]}` only (no `max_price` cap, OpenRouter fallbacks kept); a slug not listed by
+      OpenRouter is harmless (the router just falls back). `auto` is env-aware: with auto routing enabled the request
+      carries the `sort: "throughput"` + median-cap preferences; with
+      `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0` no `provider` field at all - the toggle gates the auto policy
+      only, the option stays visible and a manual slug always wins over it. **Fail-open lifecycle**: the option is
+      backed by a snapshot of the current model's providers, seeded at session assembly (`assembleSession` calls
+      `providersFor` for the initial model and passes `initialProviderOptions` - failure/empty feed logs a warn and
+      hides the option, unlike `fetchModels`, whose failure aborts session creation) and re-read on model switches
+      (`refreshProviderOptions` in `AgentSessionImpl`); the option is hidden entirely whenever no feed is
+      available (mirroring how `reasoning` hides without a reasoning block). A **persisted manual pick keeps
+      applying on the wire** while the feed is down (an explicit decision outlives the picker being hidden); only
+      when the feed is *available* and no longer lists the stored slug does the selection self-heal to `auto` with a
+      warn (stale slug, checked at snapshot seed/refresh). Persisted as `SessionRecord.provider` alongside
+      `model`/`reasoning`, restored on load/resume; reset to auto on model switch (slugs are per-model). Pinned by
+      `SessionConfigOptionsTest`/`SessionStateProviderSelectionTest` (unit) and `E2eProviderOptionTest` (e2e).
 - **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
   `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
   `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough).
@@ -747,8 +775,16 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
 - **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
   disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
   median endpoint completion price}` (USD per million tokens,
-  `providerrouting/ProviderRouting.kt`, lazy per-model cache); fail-open: fetch/parse failure
-  or empty feed omits the `provider` field; disabled routing never fetches endpoints.
+  `providerrouting/ProviderRouting.kt`, lazy per-model cache over the shared endpoints
+  feed that also backs the manual `provider` config option - see the provider option under
+  Model + reasoning + provider options); fail-open: fetch/parse failure
+  or empty feed omits the `provider` field (and hides the option); the disabled auto policy never fetches for
+  itself, while the provider option reads the feed regardless (the picker stays visible). Unparseable completion
+  prices are excluded from the median instead of failing the feed (all-unparseable fails open - never a $0 cap);
+  such endpoints stay selectable as manual picks. `ProviderPreferences` is all-optional (`sort`/`order`/`max_price`), so
+  the
+  auto policy sends sort+cap and a manual pick sends `order` only; `llmWireJson`'s
+  `explicitNulls=false` keeps absent members off the wire.
 - **Prompt capabilities**: advertises `image` + `embeddedContext` (no `audio`). Image blocks
   become base64 data URIs (mime default `image/png`) only when the model's
   `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
@@ -907,9 +943,17 @@ agent's **wire contract**:
   intervening call, denied calls not tracked) and `PromptRunnerTest` (guard integration:
   refused repeat fails the turn's second iteration and the turn continues; identical call in a
   new turn executes again),
-  `SessionStoreTest` (outcome round-trip + legacy decode).
+  `SessionStoreTest` (outcome round-trip + legacy decode), `SessionStateProviderSelectionTest`
+  (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
+  `SessionConfigOptionsTest` (provider option
+  listing/validation/reset/self-heal, manual pick survives an outage, blank/`auto` tag exclusion),
+  `ProviderRoutingTest` (provider lookup + median price filtering), `LlmRequestTest`
+  (manual pick wire shape `order` without sort/max_price) and `PromptRunnerTest`
+  (request-level provider choice: manual order vs omitted auto).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
-  provider routing (median cap, fail-open, disabled).
+  provider routing (median cap, fail-open, disabled) and the manual provider option (`E2eProviderOptionTest`:
+  advertisement, request wire shape, fail-open hidden,
+  visible-with-toggle-off + manual-beats-env, persistence).
 - **Web fetch** — `web_fetch` over a loopback JDK `HttpServer` (`WebFetchToolTest`):
   HTML conversion, JSON pass-through, paging + footer, declared-binary refusal,
   NUL sniff, gzip, redirects, SSRF block/opt-out, scheme refusal, oversize,

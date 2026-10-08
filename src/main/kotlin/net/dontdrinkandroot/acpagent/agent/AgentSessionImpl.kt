@@ -16,6 +16,7 @@ import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.forModel
+import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
 
@@ -26,6 +27,7 @@ internal class AgentSessionImpl(
     private val config: Config,
     private val llm: LlmClient,
     private val providerRouting: ProviderRouting? = null,
+    private val initialProviderOptions: List<ProviderOption>? = null,
     private val todayProvider: () -> String,
     closeResources: suspend () -> Unit = {},
     private val sessionStore: SessionStore? = null,
@@ -60,7 +62,11 @@ internal class AgentSessionImpl(
         SessionMode(MODE_BASH, "Bash", "Build plus a bash tool; every command asks the user for permission"),
     )
 
-    private val sessionConfigOptions = SessionConfigOptions(availableModes, models, state)
+    private val sessionConfigOptions = SessionConfigOptions(
+        availableModes, models, state,
+        providerRouting = providerRouting,
+        initialProviderOptions = initialProviderOptions,
+    )
 
     private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, config.extraMounts)
 
@@ -112,6 +118,9 @@ internal class AgentSessionImpl(
         _meta: JsonElement?
     ): SetSessionConfigOptionResponse {
         sessionConfigOptions.apply(configId, value)
+        // A model switch via the "model" option re-reads the new model's
+        // provider feed; other options reuse the current snapshot.
+        if (configId.value == "model") sessionConfigOptions.refreshProviderOptions()
         notifyModeState()
         state.persist()
         return SetSessionConfigOptionResponse(configOptions)
@@ -120,6 +129,7 @@ internal class AgentSessionImpl(
     @OptIn(UnstableApi::class)
     override suspend fun setModel(modelId: ModelId, _meta: JsonElement?): SetSessionModelResponse {
         sessionConfigOptions.applyModel(modelId.value)
+        sessionConfigOptions.refreshProviderOptions()
         notifyModeState()
         state.persist()
         return SetSessionModelResponse()

@@ -58,11 +58,15 @@ internal data class ReasoningEffort(
 
 /**
  * Provider preferences steering OpenRouter's provider routing (the `provider`
- * object in the chat completion body).
+ * object in the chat completion body). Every member is optional; the two
+ * producers each set a coherent subset: the auto routing policy sends
+ * `sort` (+ `max_price`), a manual pick sends `order` only. `llmWireJson`
+ * drops absent members from the wire.
  */
 @Serializable
 public data class ProviderPreferences(
-    val sort: String,
+    val sort: String? = null,
+    val order: List<String>? = null,
     val maxPrice: ProviderMaxPrice? = null,
 )
 
@@ -183,10 +187,11 @@ public class LlmClient(
     }
 
     /**
-     * Fetches the provider endpoints of a model and returns their completion
-     * prices in USD per token. Model ids are expected as "author/slug".
+     * Fetches the provider endpoints of a model. Model ids are expected as
+     * "author/slug". Returned verbatim - price parsing is the provider routing
+     * policy's concern.
      */
-    internal suspend fun fetchEndpoints(modelId: String): List<Double> {
+    internal suspend fun fetchEndpoints(modelId: String): List<OpenRouterEndpoint> {
         val response = client.get("models/$modelId/endpoints")
         if (response.status.value != 200) {
             throw LlmException(
@@ -194,10 +199,7 @@ public class LlmClient(
             )
         }
         val payload: OpenRouterEndpointsResponse = json.decodeFromString(response.bodyAsText())
-        return payload.data.endpoints.map { endpoint ->
-            endpoint.pricing.completion.toDoubleOrNull()
-                ?: throw LlmException("fetch endpoints: invalid completion price \"${endpoint.pricing.completion}\"")
-        }
+        return payload.data.endpoints
     }
 
     private fun flushEvent(current: StringBuilder): OpenRouterChatCompletionStreamResponse? {

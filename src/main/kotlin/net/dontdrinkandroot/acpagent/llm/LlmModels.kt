@@ -42,7 +42,9 @@ internal data class ReasoningCapability(
 /**
  * Wire types for `GET /models/{author}/{slug}/endpoints`. Completion prices are
  * USD per token strings in the API; they are scaled to USD per million tokens
- * by the provider routing policy.
+ * by the provider routing policy. [OpenRouterEndpoint.tag] is the provider
+ * slug for the `provider.order` routing preferences,
+ * [OpenRouterEndpoint.providerName] the human-readable display name.
  */
 @Serializable
 internal data class OpenRouterEndpointsResponse(
@@ -56,6 +58,8 @@ internal data class OpenRouterEndpointsData(
 
 @Serializable
 internal data class OpenRouterEndpoint(
+    val tag: String = "",
+    val providerName: String = "",
     val pricing: OpenRouterEndpointPricing = OpenRouterEndpointPricing(),
 )
 

@@ -17,6 +17,7 @@ import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
+import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
@@ -40,6 +41,7 @@ private class FakeCompleter(
 ) : ChatCompleter {
     val requests = mutableListOf<List<OpenAIMessage>>()
     val toolRequests = mutableListOf<List<OpenAITool>>()
+    val providers = mutableListOf<ProviderPreferences?>()
     private var next = 0
 
     override fun chatCompletion(
@@ -51,6 +53,7 @@ private class FakeCompleter(
     ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
         requests += messages
         toolRequests += tools
+        providers += provider
         scripts[next++ % scripts.size].forEach { emit(it) }
     }
 }
@@ -166,6 +169,45 @@ class PromptRunnerTest {
             maxTurnRequests = 2,
             models = listOf(testModel),
         )
+
+    @Test
+    fun `a manual provider pick is sent as order preferences`() = runBlocking {
+        val fake = FakeCompleter(listOf(chunk(content = "Hello")))
+        val state = state()
+        val runner = PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(SessionMode(SessionModeId("plan"), "Plan", "desc")),
+                listOf(testModel),
+                state,
+                initialProviderOptions = listOf(ProviderOption("azure", "Azure")),
+            ).apply { state.providerSelection = "azure" },
+            toolRegistry = ToolRegistry(),
+            toolCallExecutor = ToolCallExecutor(ToolRegistry(), state),
+            maxTurnRequests = 2,
+            models = listOf(testModel),
+        )
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(listOf<ProviderPreferences?>(ProviderPreferences(order = listOf("azure"))), fake.providers)
+    }
+
+    @Test
+    fun `auto selection without routing omits provider preferences`() = runBlocking {
+        val fake = FakeCompleter(listOf(chunk(content = "Hello")))
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(listOf<ProviderPreferences?>(null), fake.providers)
+    }
 
     @Test
     fun `no tool call ends the turn with END_TURN and persists history`() = runBlocking {

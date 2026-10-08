@@ -76,7 +76,9 @@ class E2eProviderRoutingTest : E2eAgentTest() {
                 assertEndTurn(events)
                 val body = llmMock.parseChatBody(llmMock.lastRequestBody)
                 assertNull(body["provider"], "disabled routing must omit the provider preferences")
-                assertEquals(0, llmMock.endpointRequestCount.toInt(), "disabled routing must not fetch endpoints")
+                // The provider option fetches its feed even with routing off (the
+                // picker stays visible); only `auto` degrades (issue #42).
+                assertEquals(1, llmMock.endpointRequestCount.toInt(), "the provider option still reads the feed")
                 println("[ok] auto provider routing disabled via env")
             } finally {
                 connection.close()

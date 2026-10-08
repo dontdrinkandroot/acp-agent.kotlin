@@ -79,7 +79,7 @@ internal class LlmRequestTest {
             OpenRouterChatCompletionRequest(
                 model = "m/n",
                 messages = listOf(OpenAIMessage.User(Content.Text("hi"))),
-                provider = ProviderPreferences("throughput", ProviderMaxPrice(60.0)),
+                provider = ProviderPreferences(sort = "throughput", maxPrice = ProviderMaxPrice(60.0)),
             ),
         )
         val obj = json.parseToJsonElement(body).jsonObject
@@ -89,6 +89,23 @@ internal class LlmRequestTest {
             60.0,
             provider?.get("max_price")?.jsonObject?.get("completion")?.jsonPrimitive?.content?.toDouble()
         )
+        assertFalse(obj.containsKey("temperature"), "provider routing must not introduce a temperature")
+    }
+
+    @Test
+    fun `manual provider pick is serialized as order without sort or max_price`() {
+        val body = json.encodeToString(
+            OpenRouterChatCompletionRequest(
+                model = "m/n",
+                messages = listOf(OpenAIMessage.User(Content.Text("hi"))),
+                provider = ProviderPreferences(order = listOf("azure")),
+            ),
+        )
+        val obj = json.parseToJsonElement(body).jsonObject
+        val provider = obj["provider"]?.jsonObject
+        assertEquals(listOf("azure"), provider?.get("order")?.jsonArray?.map { it.jsonPrimitive.content })
+        assertFalse(provider!!.containsKey("sort"), "a manual pick must not carry the auto sort")
+        assertFalse(provider.containsKey("max_price"), "a manual pick must not carry the median price cap")
         assertFalse(obj.containsKey("temperature"), "provider routing must not introduce a temperature")
     }
 
