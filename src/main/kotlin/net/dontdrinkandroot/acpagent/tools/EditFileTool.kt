@@ -28,7 +28,8 @@ public class EditFileTool : AgentTool {
         val oldString =
             arguments.stringArg("old_string") ?: return ToolResult(arguments.argError("old_string"), true)
         if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)
-        val newString = arguments.stringArg("new_string") ?: ""
+        val newString =
+            arguments.stringArg("new_string") ?: return ToolResult(arguments.argError("new_string"), true)
 
         return executeSafely("Edit failed") {
             val content = context.fileStore.readRaw(path)

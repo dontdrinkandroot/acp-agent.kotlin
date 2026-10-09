@@ -5,6 +5,7 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
@@ -86,6 +87,46 @@ class EditFileToolTest {
         )
         assertTrue(edit.isError)
         assertTrue(edit.text.contains("not found"))
+    }
+
+    @Test
+    fun `argument validation follows the strict null conventions`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/e.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "hello world") }, testContext(dir))
+
+        val missing = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "world") },
+            testContext(dir),
+        )
+        assertTrue(missing.isError)
+        assertEquals("Missing 'new_string'", missing.text)
+
+        val explicitNull = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "world"); put("new_string", JsonNull) },
+            testContext(dir),
+        )
+        assertTrue(explicitNull.isError)
+        assertEquals("'new_string' must not be null", explicitNull.text)
+
+        // Neither failure may touch the file: the lenient coercion used to
+        // silently delete old_string instead of failing (issue #44).
+        val content = SystemFileSystem.source(Path(path)).buffered().use { it.readString() }
+        assertEquals("hello world", content)
+    }
+
+    @Test
+    fun `empty new_string still removes old_string`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/e.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "hello world") }, testContext(dir))
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", " world"); put("new_string", "") },
+            testContext(dir),
+        )
+        assertFalse(edit.isError, edit.text)
+        val content = SystemFileSystem.source(Path(path)).buffered().use { it.readString() }
+        assertEquals("hello", content)
     }
 
     @Test

@@ -83,6 +83,7 @@ internal class CreateRunConfigTool internal constructor(private val cwd: String)
         val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
         val command = arguments.stringArg("command")
         val description = arguments.stringArg("description")?.takeIf { it.isNotBlank() }
+        if (arguments.isNullArg("command")) return ToolResult(arguments.argError("command"), true)
         if (arguments.isNullArg("description")) return ToolResult(arguments.argError("description"), true)
         return runConfigResult("Could not create run configuration") {
             val config = createRunConfig(cwd, name, command, description)

@@ -4,6 +4,7 @@ import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.SessionModeId
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
@@ -248,5 +249,25 @@ class RunConfigToolsTest {
         val dir = tempDir()
         val result = ListRunConfigsTool(dir).execute(buildJsonObject {}, context(dir))
         assertTrue(result.text.contains("No run configurations"), result.text)
+    }
+
+    @Test
+    fun `explicit json null command is rejected by create and update`() = runBlocking {
+        val dir = tempDir()
+        val create = CreateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", "test"); put("command", JsonNull) },
+            context(dir),
+        )
+        assertTrue(create.isError)
+        assertEquals("'command' must not be null", create.text)
+        assertTrue(configs(dir).isEmpty(), "a null command must not write anything")
+
+        createRunConfig(dir, "test", "npm test", null)
+        val update = UpdateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", "test"); put("command", JsonNull) },
+            context(dir),
+        )
+        assertTrue(update.isError)
+        assertEquals("'command' must not be null", update.text)
     }
 }
