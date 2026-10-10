@@ -280,7 +280,8 @@ tests/bash/                             # shell test suite (launcher composition
                                         # `test_scripts` / Gradle `testScripts`): harness.sh
                                         # (assert lib), common.sh (launcher invocation +
                                         # sandbox under build/), stubs/fake-docker (DOCKER_BIN
-                                        # stub recording argv; pull/inspect exit switches),
+                                        # stub recording argv + staged-keyfile mode/content;
+                                        # pull/inspect exit switches),
                                         # test_extra_mounts/test_launcher_args/test_error_paths
                                         # + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
@@ -844,11 +845,23 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   composes all mounts shallowest-first into the OCI spec and runc mounts in that
   order, so CLI argv order is irrelevant - the launcher still emits them in argv
   order), pinned by the shell suite; non-root user matching host UID/GID,
-  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables) when the tool's env var (absolute; created if
-  missing) points at a custom dir or the host default dir already
-  exists (never created) - mounted at the tool's in-container default with the env var
-  pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` -> `~/.cache/uv`,
-  ...). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is *not*
+  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables the whole cache
+  composition - no mounts, no cache env, not even validation; issue #51). Two cases:
+  an explicitly configured cache (the tool's env var set, e.g. `UV_CACHE_DIR`) is **identity-bound at the identical
+  in-container path with the env value forwarded
+  verbatim** (the tool's own config already points there and host-created symlinks
+  into the cache keep resolving); set-but-unusable config - relative, `/`,
+  uncreatable - fails loudly before any `docker run`, and the env value is forwarded
+  even when the mount is skipped (inside the project dir, deduped dst).
+  `UV_LINK_MODE` is forwarded when set (hosts use `symlink` for cross-device cache
+  layouts). Without an env var, the first existing host default (e.g.
+  `$XDG_CACHE_HOME/uv`, never created) is mounted at the tool's in-container default
+  with the env var pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`,
+  `UV_CACHE_DIR` -> `~/.cache/uv`, ...) - relocation stays necessary there because
+  the container home differs from the host home. Known gap: pnpm's
+  `store-dir`/`cache-dir` come from `~/.config/pnpm/rc`, not env vars, so pnpm keeps
+  the default-candidate fallback (issue #51). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is
+  *not*
   shared (one daemon registry + logs across the host and container PID namespaces would
   let probing clients prune each other's daemons and `gradle --stop` kill both sides'
   daemons). Instead the GUH root is a container-private uid-mapped `.gradle` tmpfs
@@ -871,12 +884,16 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
   noexec default (nothing executes from there).
   `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
-  of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK is shared in (`ANDROID_HOME` first, else `ANDROID_SDK_ROOT`,
-  else an existing `$HOME/Android/Sdk` - never created; mounted at the in-container
-  default `$HOME/Android/Sdk` with `ANDROID_HOME`/`ANDROID_SDK_ROOT` pinned to it;
-  a set-but-unusable var - relative, `/`, missing dir - fails loudly before any
-  `docker run`; when the SDK lies inside the project dir the mount is skipped and
-  the pins keep the host path, since the project is mounted at the identical path),
+  of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK
+  follows the same split (issue #51): an explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT`
+  (first one set wins, `ANDROID_HOME` preferred) is identity-bound at the identical
+  in-container path and both variables carry the configured value (the companion
+  synthesized to the same path); a set-but-unusable var - relative, `/`, missing dir -
+  fails loudly before any `docker run`; inside the project dir the mount is skipped
+  and the variables keep the host path. The default candidate (an existing
+  `$HOME/Android/Sdk`, never created) keeps the relocation to the in-container
+  default `$HOME/Android/Sdk` with both variables pinned to it; inside the project
+  dir the candidate is skipped entirely (unchanged)),
   host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
@@ -1023,21 +1040,33 @@ assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestC
 the JVM suites cannot see which argv/env the `ddr-acp-agent-docker` launcher composes.
 The stub `tests/bash/stubs/fake-docker` is plugged in via the launcher's own
 `DOCKER_BIN` seam (record mode: every invocation appended to `$FAKE_DOCKER_LOG`,
-`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths);
-`tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in a `set -e`
-subshell, first failing assert aborts the test), `tests/bash/common.sh` provides the
+`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths; on
+`docker run` it records the staged API-key file's mode/content as a `keyfile <mode>
+<content>` line - the EXIT trap removes that file before the test can stat it);
+`tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in its own
+subshell and the first failing assert aborts it via `_fail`'s `exit` - bash ignores
+`set -e` in the runner's capture context, which had let tests false-green until
+issue #52), `tests/bash/common.sh` provides the
 launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
 assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS`/`ANDROID_HOME`/
-`ANDROID_SDK_ROOT` are always cleared).
+`ANDROID_SDK_ROOT`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`)
+are always cleared).
 Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
-identity, pull fallback, Android SDK sharing: mount + pinned `ANDROID_HOME`/
-`ANDROID_SDK_ROOT`, `ANDROID_SDK_ROOT` fallback, default-dir pickup, absent -> nothing,
-`ACP_DOCKER_MOUNT_CACHES=0` disables, in-project SDK keeps the host path in the pins),
+identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-mounted
+
++ env forwarded verbatim, forwarded without a mount when inside the project dir,
+  `UV_LINK_MODE` forwarding, `ACP_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
+  config ignored and not even validated), Android SDK sharing: explicit
+  `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both vars carrying the configured value (lone `ANDROID_SDK_ROOT`
+  synthesizes `ANDROID_HOME`, `ANDROID_HOME` wins on conflict),
+  default-dir pickup relocated + pinned, absent -> nothing, in-project SDK keeps the
+  host path),
 `test_error_paths.bash` (fail-loudly exits before any `docker run`, incl. the
-set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` refusals). Fixtures live under
+  set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`:
+  relative, `/`, uncreatable) refusals). Fixtures live under
 `build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs) and
 the API key is pinned to `sk-test` so a real key can never leak into logs.
 
@@ -1135,6 +1164,15 @@ communicate that with the user so we can review them.
 - **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
+- **Shell tests can pass for the wrong reason** (issue #52): `run_tests` captures each
+  test via `out=$(...) || status=$?`, where bash ignores `set -e` - asserts must abort
+  via `_fail`'s `exit`, not `return`. Until that was fixed, ten-plus `tests/bash` tests
+  were false-green (fixture missing `OPENROUTER_API_KEY` so the wrong error text was
+  asserted; `KEY=VALUE` env args after `--skip-pull` silently became container args;
+  a staged file asserted after the EXIT trap removed it; a lossy space-joined stub
+  log asserted against a value with spaces). When adding a shell test, verify it
+  fails when the behavior under test is removed, and remember the first FAIL line is
+  the real one.
 - **Gradle build cache can report a false green**: outputs are cacheable, so a
   `test`/`build` run that *just changed test sources or the classpath* may come
   back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (observed: a new

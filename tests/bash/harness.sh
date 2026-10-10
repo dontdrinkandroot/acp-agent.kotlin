@@ -1,19 +1,22 @@
 #!/bin/bash
 # Minimal assert library for the shell test suite (TAP-ish output).
 # A test file sources this (directly or via common.sh), defines test_<name>
-# functions and calls run_tests at the end. run_tests executes each test in a
-# set -e subshell, so the FIRST failing assertion aborts the test; its output
+# functions and calls run_tests at the end. run_tests executes each test in
+# its own subshell and _fail exits on the FIRST failing assertion; its output
 # (including the FAIL line with file:line) is printed below the not-ok line.
 # run-all and the Gradle wiring rely on the nonzero exit when any test fails.
 
 TESTS_PASSED=0
 TESTS_FAILED=0
 
-# Prints the failure with the caller's location and returns 1 (aborting the
-# set -e test subshell).
+# Prints the failure with the caller's location and aborts the test (each test
+# runs in its own subshell). `exit` is deliberate over `return` + errexit: bash
+# ignores `set -e` in the `$( ... ) || status=$?` context run_tests uses, so a
+# returning _fail let later assertions run and could false-green a test whose
+# last assertion happened to pass (issue #52).
 _fail() {
     printf 'FAIL: %s at %s\n' "$1" "$(caller 0)" >&2
-    return 1
+    exit 1
 }
 
 assert_eq() {

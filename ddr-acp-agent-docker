@@ -139,20 +139,48 @@ cache_env_overrides=()
 mounted_dsts=" "
 mounted_caches=
 
+# Shares one host tool cache with the container (issue #51). Two cases:
+# - Explicitly configured (the tool's env var is set): the host dir is
+#   identity-bound at the identical in-container path and the env value is
+#   forwarded verbatim - the tool's own configuration already points at the
+#   right path, and host-created symlinks into the cache keep resolving.
+#   Config that cannot be honored (relative path, /, uncreatable dir) fails
+#   loudly before any docker run instead of silently falling back.
+# - Default fallback (env var unset): the first existing candidate is mounted
+#   at the tool's in-container default and the env var is pinned to that dst
+#   (the container home differs from the host home, so relocation stays
+#   necessary there).
 add_tool_cache() {
     local label=$1 dst=$2 env_name=$3
     local -a candidates=("${@:4}")
-    local host_dir=
+    local host_dir='' explicit=false env_value=''
     if [ -n "$env_name" ]; then
-        host_dir=${!env_name:-}
-        case "$host_dir" in
-            /*) ;;
-            *) host_dir= ;;
-        esac
-        # An explicitly configured dir is created if missing (docker bind mounts
-        # need an existing source); on failure it is dropped like an unset var.
-        if [ -n "$host_dir" ] && [ ! -d "$host_dir" ]; then
-            mkdir -p "$host_dir" 2>/dev/null || host_dir=
+        env_value=${!env_name:-}
+        if [ -n "$env_value" ]; then
+            explicit=true
+            host_dir=$env_value
+            case "$host_dir" in
+                /*) ;;
+                *)
+                    printf '%s: %s is not an absolute host path.\n' "$env_name" "$host_dir" >&2
+                    exit 1
+                    ;;
+            esac
+            # Mount paths are slash-normalized (the env value stays verbatim).
+            while [ "${host_dir%/}" != "$host_dir" ]; do
+                host_dir=${host_dir%/}
+            done
+            if [ -z "$host_dir" ]; then
+                printf '%s: / cannot be used as a cache directory.\n' "$env_name" >&2
+                exit 1
+            fi
+            # An explicitly configured dir is created if missing (docker bind
+            # mounts need an existing source); a dir that cannot be created is
+            # config we cannot honor and fails loudly.
+            if [ ! -d "$host_dir" ] && ! mkdir -p "$host_dir" 2>/dev/null; then
+                printf '%s: %s could not be created on the host.\n' "$env_name" "$host_dir" >&2
+                exit 1
+            fi
         fi
     fi
     if [ -z "$host_dir" ]; then
@@ -168,55 +196,69 @@ add_tool_cache() {
     if [ -z "$host_dir" ] || [ "$host_dir" = / ]; then
         return 0
     fi
+    local mount_dst=$dst
+    if [ "$explicit" = true ]; then
+        mount_dst=$host_dir
+    fi
+    local do_mount=true
     case "$host_dir" in
-        "$project_dir"|"$project_dir"/*) return 0 ;;
+        "$project_dir"|"$project_dir"/*) do_mount=false ;;
     esac
     case "$mounted_dsts" in
-        *" $dst "*) return 0 ;;
+        *" $mount_dst "*) do_mount=false ;;
     esac
-    cache_mounts+=(--mount "type=bind,src=$host_dir,dst=$dst")
-    mounted_dsts="$mounted_dsts $dst "
-    mounted_caches="$mounted_caches $label($host_dir)"
-    if [ -n "$env_name" ]; then
+    if [ "$do_mount" = true ]; then
+        cache_mounts+=(--mount "type=bind,src=$host_dir,dst=$mount_dst")
+        mounted_dsts="$mounted_dsts $mount_dst "
+        mounted_caches="$mounted_caches $label($host_dir)"
+    fi
+    if [ "$explicit" = true ]; then
+        # The configured value is forwarded verbatim even when the mount is
+        # skipped: an in-project dir is covered by the project mount at the
+        # identical path, a deduped dst is already mounted - but the tool must
+        # still honor the configured path (issue #51).
+        cache_env_overrides+=(--env "$env_name=$env_value")
+    elif [ -n "$env_name" ] && [ "$do_mount" = true ]; then
         # Pin the tool to the mounted dir inside the container: the dst is the
         # tool's in-container default, so the value matches for existing tools.
-        cache_env_overrides+=(--env "$env_name=$dst")
+        cache_env_overrides+=(--env "$env_name=$mount_dst")
     fi
 }
 
-# The Android SDK is shared from the host (see the cache mounts below). A set
-# but unusable ANDROID_HOME/ANDROID_SDK_ROOT (relative path, missing directory,
-# /) would bind-mount a nonexistent source or resolve a relative path inside
-# the container - fail loudly before any docker run. The first one set wins;
-# ANDROID_HOME is the name Android tooling prefers.
-android_sdk_env=
-android_sdk_dir=
-if [ -n "${ANDROID_HOME:-}" ]; then
-    android_sdk_env=ANDROID_HOME
-    android_sdk_dir=$ANDROID_HOME
-elif [ -n "${ANDROID_SDK_ROOT:-}" ]; then
-    android_sdk_env=ANDROID_SDK_ROOT
-    android_sdk_dir=$ANDROID_SDK_ROOT
-fi
-if [ -n "$android_sdk_dir" ]; then
-    case $android_sdk_dir in
-        /*) ;;
-        *)
-            printf '%s\n' "$android_sdk_env: $android_sdk_dir is not an absolute host path." >&2
-            exit 1
-            ;;
-    esac
-    if [ "$android_sdk_dir" = / ]; then
-        printf '%s\n' "$android_sdk_env: / cannot be the Android SDK directory." >&2
-        exit 1
-    fi
-    if [ ! -d "$android_sdk_dir" ]; then
-        printf '%s\n' "$android_sdk_env: $android_sdk_dir is not a directory on the host." >&2
-        exit 1
-    fi
-fi
-
 if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
+    # The Android SDK is shared from the host (see the cache mounts below). A
+    # set but unusable ANDROID_HOME/ANDROID_SDK_ROOT (relative path, missing
+    # directory, /) would bind-mount a nonexistent source or resolve a
+    # relative path inside the container - fail loudly before any docker run.
+    # The first one set wins; ANDROID_HOME is the name Android tooling
+    # prefers. Under ACP_DOCKER_MOUNT_CACHES=0 the whole cache/SDK config is
+    # ignored wholesale - not even validated (issue #51).
+    android_sdk_env=
+    android_sdk_dir=
+    if [ -n "${ANDROID_HOME:-}" ]; then
+        android_sdk_env=ANDROID_HOME
+        android_sdk_dir=$ANDROID_HOME
+    elif [ -n "${ANDROID_SDK_ROOT:-}" ]; then
+        android_sdk_env=ANDROID_SDK_ROOT
+        android_sdk_dir=$ANDROID_SDK_ROOT
+    fi
+    if [ -n "$android_sdk_dir" ]; then
+        case $android_sdk_dir in
+            /*) ;;
+            *)
+                printf '%s\n' "$android_sdk_env: $android_sdk_dir is not an absolute host path." >&2
+                exit 1
+                ;;
+        esac
+        if [ "$android_sdk_dir" = / ]; then
+            printf '%s\n' "$android_sdk_env: / cannot be the Android SDK directory." >&2
+            exit 1
+        fi
+        if [ ! -d "$android_sdk_dir" ]; then
+            printf '%s\n' "$android_sdk_env: $android_sdk_dir is not a directory on the host." >&2
+            exit 1
+        fi
+    fi
     add_tool_cache uv "$container_cache_dir/uv" UV_CACHE_DIR "$host_cache_home/uv"
     add_tool_cache pip "$container_cache_dir/pip" PIP_CACHE_DIR "$host_cache_home/pip"
     add_tool_cache composer "$container_cache_dir/composer" COMPOSER_CACHE_DIR "$host_cache_home/composer"
@@ -287,32 +329,61 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
             mounted_caches="$mounted_caches gradle($leaf)"
         done
     fi
-    # The host Android SDK is mounted at the SDK's in-container default and
-    # ANDROID_HOME/ANDROID_SDK_ROOT are pinned to it (see the validation block
-    # above). Candidate: a validated ANDROID_HOME/ANDROID_SDK_ROOT, else an
-    # existing $HOME/Android/Sdk - never created. When the SDK lies inside the
-    # project dir the mount is skipped (the project is already mounted rw at
-    # the identical path) and the pins keep the original path instead of
-    # pointing at the skipped dst.
-    android_sdk_dst=$container_home/Android/Sdk
+    # The host Android SDK (validated above when explicitly configured): an
+    # explicit ANDROID_HOME/ANDROID_SDK_ROOT is identity-bound at the
+    # identical in-container path and both ANDROID_* variables carry the
+    # configured value (the set one is authoritative - ANDROID_HOME wins over
+    # ANDROID_SDK_ROOT - its companion is synthesized to the same value).
+    # The default candidate ($HOME/Android/Sdk, never created) keeps the
+    # relocation to the SDK's in-container default with both variables pinned
+    # to it. When the SDK lies inside the project dir the mount is skipped
+    # (the project is already mounted rw at the identical path) and the
+    # variables keep the configured path (issue #51).
     if [ -n "$android_sdk_dir" ]; then
-        android_sdk_candidate=$android_sdk_dir
-    else
-        android_sdk_candidate=$HOME/Android/Sdk
+        android_sdk_mount=${android_sdk_dir%/}
+        case "$android_sdk_mount" in
+            "$project_dir"|"$project_dir"/*) ;;
+            *)
+                case "$mounted_dsts" in
+                    *" $android_sdk_mount "*) ;;
+                    *)
+                        cache_mounts+=(--mount "type=bind,src=$android_sdk_mount,dst=$android_sdk_mount")
+                        mounted_dsts="$mounted_dsts $android_sdk_mount "
+                        mounted_caches="$mounted_caches android-sdk($android_sdk_mount)"
+                        ;;
+                esac
+                ;;
+        esac
+        cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dir")
+        cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dir")
+    elif [ -d "$HOME/Android/Sdk" ]; then
+        # A default-candidate SDK inside the project dir is covered by the
+        # project mount at the identical path - skip the relocation and keep
+        # the tool's own default (the unchanged tool-cache skip policy).
+        android_sdk_dst=$container_home/Android/Sdk
+        case "$HOME/Android/Sdk" in
+            "$project_dir"|"$project_dir"/*) ;;
+            *)
+                case "$mounted_dsts" in
+                    *" $android_sdk_dst "*) ;;
+                    *)
+                        cache_mounts+=(--mount "type=bind,src=$HOME/Android/Sdk,dst=$android_sdk_dst")
+                        mounted_dsts="$mounted_dsts $android_sdk_dst "
+                        mounted_caches="$mounted_caches android-sdk($HOME/Android/Sdk)"
+                        cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dst")
+                        cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dst")
+                        ;;
+                esac
+                ;;
+        esac
     fi
-    add_tool_cache android-sdk "$android_sdk_dst" ANDROID_HOME "$android_sdk_candidate"
-    case "$mounted_dsts" in
-        *" $android_sdk_dst "*)
-            cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dst")
-            cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dst")
-            ;;
-        *)
-            if [ -n "$android_sdk_dir" ]; then
-                cache_env_overrides+=(--env "ANDROID_HOME=$android_sdk_dir")
-                cache_env_overrides+=(--env "ANDROID_SDK_ROOT=$android_sdk_dir")
-            fi
-            ;;
-    esac
+    # Host uv link-mode config travels with the shared caches: hosts set
+    # UV_LINK_MODE=symlink for cross-device cache layouts (cache on a
+    # different filesystem than the venvs), which are identical in the
+    # container once the cache is identity-bound (issue #51).
+    if [ -n "${UV_LINK_MODE:-}" ]; then
+        cache_env_overrides+=(--env "UV_LINK_MODE=$UV_LINK_MODE")
+    fi
     if [ -n "$mounted_caches" ]; then
         printf 'Mounting host caches:%s\n' "$mounted_caches" >&2
     fi

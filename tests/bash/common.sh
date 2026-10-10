@@ -17,16 +17,16 @@ setup_git_identity() {
     export GIT_CONFIG_SYSTEM=/dev/null
     if [ "${GIT_IDENTITY_SET:-1}" = 1 ]; then
         export GIT_CONFIG_GLOBAL=$TEST_TMP/git-identity.config
-        printf '[user]\n\tname = Test User\n\temail = test@example.com\n' >"$GIT_CONFIG_GLOBAL"
+        printf '[user]\n\tname = TestUser\n\temail = test@example.com\n' >"$GIT_CONFIG_GLOBAL"
     else
         export GIT_CONFIG_GLOBAL=/dev/null
     fi
 }
 
 # The launcher invocation strips both API key variants (plus
-# ACP_DOCKER_EXTRA_MOUNTS and the Android SDK vars) so ambient values can
-# never leak into a test; tests opt into a fake key via leading KEY=VALUE
-# arguments.
+# ACP_DOCKER_EXTRA_MOUNTS, the Android SDK vars and the tool-cache env vars)
+# so ambient values can never leak into a test; tests opt into a fake key via
+# leading KEY=VALUE arguments.
 
 # Creates a fresh sandbox dir for one test file: $TEST_TMP/<name>/...
 # The sandbox lives under build/ (never /tmp or $HOME): the launcher skips
@@ -69,7 +69,10 @@ run_docker_launcher() {
     # shellcheck disable=SC2034  # OUT is asserted on by the tests
     OUT=$(cd "$project_dir" && env -u OPENROUTER_API_KEY -u OPENROUTER_API_KEY_FILE \
         -u ACP_DOCKER_EXTRA_MOUNTS -u ANDROID_HOME -u ANDROID_SDK_ROOT \
-        -u GRADLE_USER_HOME "${env_args[@]}" \
+        -u GRADLE_USER_HOME -u UV_CACHE_DIR -u PIP_CACHE_DIR \
+        -u COMPOSER_CACHE_DIR -u YARN_CACHE_FOLDER -u HF_HOME \
+        -u NPM_CONFIG_CACHE -u CARGO_HOME -u GOMODCACHE -u NUGET_PACKAGES \
+        -u PUB_CACHE -u KONAN_DATA_DIR -u UV_LINK_MODE "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.

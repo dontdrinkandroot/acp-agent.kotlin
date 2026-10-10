@@ -27,7 +27,24 @@ case "${1:-}" in
     run)
         # The agent would run inside the container; consume and drop stdin
         # (callers that want a protocol-shaped answer redirect it) so the
-        # stub always terminates.
+        # stub always terminates. The API-key mount source is inspected HERE,
+        # while the launcher is still running: the launcher's EXIT trap
+        # removes a staged key file before the test process resumes, so a
+        # `keyfile <mode> <content>` record is the only place its 0600
+        # staging is observable.
+        for arg in "$@"; do
+            case $arg in
+                type=bind,src=*,dst=/tmp/openrouter-api-key*)
+                    key_src=${arg#type=bind,src=}
+                    key_src=${key_src%%,dst=*}
+                    if [ -f "$key_src" ]; then
+                        printf 'keyfile %s %s\n' "$(stat -c '%a' "$key_src")" "$(cat "$key_src")" >>"$FAKE_DOCKER_LOG"
+                    else
+                        printf 'keyfile missing %s\n' "$key_src" >>"$FAKE_DOCKER_LOG"
+                    fi
+                    ;;
+            esac
+        done
         cat >/dev/null
         exit 0
         ;;
