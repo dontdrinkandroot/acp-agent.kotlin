@@ -228,7 +228,7 @@ test_api_key_file_is_mounted_directly_without_a_staged_copy() {
     assert_contains "$mount" "type=bind,src=$key_file,dst=/tmp/openrouter-api-key,ro"
     # The host file is mounted, not staged: it still exists afterwards, and
     # exactly one key mount exists with the host file as its source.
-    [ -f "$key_file" ]
+    [ -f "$key_file" ] || _fail "expected the host key file to survive the run (mounted, not staged)"
     local key_mounts
     key_mounts=$(mount_values "$line" | grep -c 'dst=/tmp/openrouter-api-key' || true)
     assert_eq "1" "$key_mounts"

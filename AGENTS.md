@@ -283,7 +283,7 @@ tests/bash/                             # shell test suite (launcher composition
                                         # stub recording argv + staged-keyfile mode/content;
                                         # pull/inspect exit switches),
                                         # test_extra_mounts/test_launcher_args/test_error_paths
-                                        # + run-all
+                                        # test_harness + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
 .ai/run.json                            # run configurations (see Run configurations below)
@@ -1066,7 +1066,11 @@ identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-
   host path),
 `test_error_paths.bash` (fail-loudly exits before any `docker run`, incl. the
   set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`:
-  relative, `/`, uncreatable) refusals). Fixtures live under
+  relative, `/`, uncreatable) refusals) and `test_harness.bash` (harness self-test -
+  the #52 regression pin: a failing assert must abort the test inside `run_tests`'
+  capture context and later code must never run; each test there ends in ONE
+  decisive all-properties assertion kept last, so it also fails under a
+  non-aborting `_fail`). Fixtures live under
 `build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs) and
 the API key is pinned to `sk-test` so a real key can never leak into logs.
 
@@ -1172,7 +1176,11 @@ communicate that with the user so we can review them.
   a staged file asserted after the EXIT trap removed it; a lossy space-joined stub
   log asserted against a value with spaces). When adding a shell test, verify it
   fails when the behavior under test is removed, and remember the first FAIL line is
-  the real one.
+  the real one. The harness self-test (`test_harness.bash`, the #52 regression pin) is
+  itself vulnerable to the same pitfall - it was green with `_fail` reverting to
+  `return 1` until its decisive all-properties assertion was moved to the END of each
+  test (the earlier granular asserts only improve failure messages, the last one alone
+  decides the status).
 - **Gradle build cache can report a false green**: outputs are cacheable, so a
   `test`/`build` run that *just changed test sources or the classpath* may come
   back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (observed: a new
