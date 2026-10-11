@@ -60,13 +60,16 @@ public class ReadFileTool : AgentTool {
      * leading indentation is preserved exactly after the '│'. CRLF carriage
      * returns and the phantom trailing empty line (a trailing newline is a
      * line terminator, not an extra empty line) are stripped so CRLF and
-     * trailing-newline files render by visual lines. When [footer] is set
+     * trailing-newline files render by visual lines. Empty content (an empty
+     * file or window) has zero visual lines and renders the explicit
+     * `(empty content)` message (web_fetch parity) instead of a phantom
+     * numbered line. When [footer] is set
      * appends a footer stating the shown range and how to continue, so a
      * truncated read is unambiguous and the model can page forward.
      */
     private fun formatRead(content: String, start: Int, total: Int?, footer: Boolean = false): String {
-        var lines = content.split('\n')
-        if (content.endsWith("\n") && lines.last().isEmpty()) lines = lines.dropLast(1)
+        val lines = visualLines(content)
+        if (lines.isEmpty()) return "(empty content)"
         val body = lines.mapIndexed { index, text ->
             val cleaned = if (text.endsWith("\r")) text.dropLast(1) else text
             "${(start + index).toString().padStart(4)}│$cleaned"

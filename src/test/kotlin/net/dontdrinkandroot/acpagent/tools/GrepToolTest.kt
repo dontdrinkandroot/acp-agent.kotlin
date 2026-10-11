@@ -31,6 +31,66 @@ class GrepToolTest {
     }
 
     @Test
+    fun `a trailing newline is a terminator not a phantom empty line`() = runBlocking {
+        // Issue #49: split('\n') yields a trailing empty element after a
+        // terminating newline; a pattern matching empty lines must not match
+        // a line past EOF.
+        val dir = tmpDir()
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/a.txt"); put("content", "hit\n") },
+            testContext(dir)
+        )
+        val grep = GrepTool().execute(buildJsonObject { put("path", dir); put("pattern", "^$") }, testContext(dir))
+        assertFalse(grep.isError, grep.text)
+        assertEquals("No matches", grep.text)
+    }
+
+    @Test
+    fun `a trailing newline is a terminator not a phantom empty line in a single file`() = runBlocking {
+        // Issue #49: the single-file path numbers lines from the same split;
+        // the phantom past-EOF line must not match there either.
+        val dir = tmpDir()
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/a.txt"); put("content", "hit\n") },
+            testContext(dir)
+        )
+        val grep = GrepTool().execute(
+            buildJsonObject { put("path", "$dir/a.txt"); put("pattern", "^$") },
+            testContext(dir)
+        )
+        assertFalse(grep.isError, grep.text)
+        assertEquals("No matches", grep.text)
+    }
+
+    @Test
+    fun `a real blank line still matches and empty files have no lines`() = runBlocking {
+        // Guard pins for the visual-line convention: a blank line between
+        // terminators is real (matches at its own number), while an empty
+        // file has zero lines - never a phantom line 1.
+        val dir = tmpDir()
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/blank.txt"); put("content", "a\n\nb\n") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$dir/empty.txt"); put("content", "") },
+            testContext(dir)
+        )
+        val blank = GrepTool().execute(
+            buildJsonObject { put("path", "$dir/blank.txt"); put("pattern", "^$") },
+            testContext(dir)
+        )
+        assertFalse(blank.isError, blank.text)
+        assertEquals("blank.txt:2:", blank.text.removePrefix("$dir/"))
+        val empty = GrepTool().execute(
+            buildJsonObject { put("path", "$dir/empty.txt"); put("pattern", "^$") },
+            testContext(dir)
+        )
+        assertFalse(empty.isError, empty.text)
+        assertEquals("No matches", empty.text)
+    }
+
+    @Test
     fun `grep truncates long matched lines`() = runBlocking {
         val dir = tmpDir()
         val longLine = "y".repeat(1000)

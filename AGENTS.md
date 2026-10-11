@@ -199,7 +199,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move), isSymbolicLink
     tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
     tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy),
-                                     # StreamingLineReader + the shared truncateLine line cap
+                                     # StreamingLineReader (SourceLine = text + terminator status) +
+                                     # the shared truncateLine line cap and visualLines (visual-line
+                                     # convention: trailing newline = terminator, "" = 0 lines)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/CalcExpression.kt          # safe arithmetic expression evaluator (closed grammar:
@@ -600,7 +602,14 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   matches raw content, so the model must strip the `number│` prefix; the client fs proxy returns no
   total, so the footer total comes from the local store, not the proxy; a proxy window of
   exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
-  line). Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
+  line). Line counting follows the shared visual-line convention (`visualLines` in
+  `tools/FileStore.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
+  zero lines, a blank line between terminators is real — an empty file/window renders the
+  explicit `(empty content)` (web_fetch parity) instead of a phantom `   1│`. `grep` match
+  numbers (both search paths) and `web_fetch`'s non-HTML pass-through share the convention so
+  all line numbers agree with `read_file`; `LocalFileStore` therefore keeps each line's own
+  terminator in the window text (the `ClientFileStore` passthrough shape), making a single
+  empty line `"\n"`, not `""`. Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
   `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
   `'x' must not be null` error (previously `null` was silently coerced to the string
   "null" - e.g. written into files or run as a shell command), an absent key stays

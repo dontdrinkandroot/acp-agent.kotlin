@@ -152,6 +152,43 @@ class ReadFileToolTest {
     }
 
     @Test
+    fun `an empty file renders an empty read not a phantom line`() = runBlocking {
+        // Issue #48: "".split("\n") is [""]; an empty file has zero visual
+        // lines (LocalFileStore reports total = 0), so it must render the
+        // explicit empty-read message (web_fetch parity), never `   1│`.
+        val dir = tmpDir()
+        val path = "$dir/empty.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "") }, testContext(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, testContext(dir))
+        assertFalse(read.isError, read.text)
+        assertEquals("(empty content)", read.text)
+    }
+
+    @Test
+    fun `an empty fs-proxy window renders an empty read not a phantom line`() = runBlocking {
+        // Issue #48: the #45 verification showed a zero-line window rendered
+        // as a phantom numbered line; an empty window is an empty read.
+        val dir = tmpDir()
+        val ctx = testContext(dir, fileStore = ClientFileStore(RecordingFsClient(readContent = "")))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", "$dir/empty.txt"); put("limit", 10) }, ctx)
+        assertFalse(read.isError, read.text)
+        assertEquals("(empty content)", read.text)
+    }
+
+    @Test
+    fun `a file of one empty line still renders line 1`() = runBlocking {
+        // Guard pin for the visual-line convention: "\n" is one empty line
+        // (the newline terminates it), so it renders as `   1│`, unlike an
+        // empty file which has zero lines.
+        val dir = tmpDir()
+        val path = "$dir/blank.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "\n") }, testContext(dir))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, testContext(dir))
+        assertFalse(read.isError, read.text)
+        assertEquals("   1│", read.text)
+    }
+
+    @Test
     fun `read of a large file honors growing limits without truncation`() = runBlocking {
         val dir = tmpDir()
         val path = "$dir/large.txt"

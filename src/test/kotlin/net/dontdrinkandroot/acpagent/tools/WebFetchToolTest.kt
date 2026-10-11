@@ -5,21 +5,15 @@ import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlinx.serialization.json.JsonNull
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import java.util.zip.GZIPOutputStream
-import kotlin.test.AfterTest
-import kotlin.test.BeforeTest
-import kotlin.test.Test
-import kotlin.test.assertContains
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class WebFetchToolTest {
 
@@ -91,6 +85,27 @@ class WebFetchToolTest {
         val result = fetch("$baseUrl/data.json")
         assertFalse(result.isError)
         assertContains(result.text, "│{\"a\":1}")
+    }
+
+    @Test
+    fun `a trailing newline is a terminator not a phantom line in pass-through text`() = runBlocking {
+        // Fold-in of #49: the non-HTML pass-through split kept a trailing
+        // empty element after a terminating newline and rendered it as a
+        // phantom numbered line past the content end.
+        serve("/trail.txt", "text/plain", "one\n")
+        val result = fetch("$baseUrl/trail.txt")
+        assertFalse(result.isError, result.text)
+        assertEquals("   1│one", result.text)
+    }
+
+    @Test
+    fun `an empty non-html body is an empty read not a phantom line`() = runBlocking {
+        // Fold-in of #48: "" must render the explicit empty-read message
+        // (same as the HTML path), never `   1│`.
+        serve("/empty.txt", "text/plain", "")
+        val result = fetch("$baseUrl/empty.txt")
+        assertFalse(result.isError, result.text)
+        assertEquals("(empty content)", result.text)
     }
 
     @Test

@@ -36,9 +36,10 @@ internal fun testContext(
 /**
  * A client fs proxy double that would fail loudly if the file tools
  * accidentally issued a pre-read through it (the diff skip must avoid the
- * round-trip, not just the payload).
+ * round-trip, not just the payload). [readContent] is what every
+ * `fsReadTextFile` call returns.
  */
-internal class RecordingFsClient : ClientSessionOperations {
+internal class RecordingFsClient(private val readContent: String = "proxy content") : ClientSessionOperations {
     val readCalls = mutableListOf<String>()
 
     override suspend fun requestPermissions(
@@ -56,7 +57,7 @@ internal class RecordingFsClient : ClientSessionOperations {
         _meta: JsonElement?,
     ): ReadTextFileResponse {
         readCalls += path
-        return ReadTextFileResponse("proxy content")
+        return ReadTextFileResponse(readContent)
     }
 
     override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =

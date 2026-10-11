@@ -84,7 +84,7 @@ public class GrepTool : AgentTool {
                     return@walk
                 }
                 val rel = relativeToRoot(root, f.toString())
-                fileContent.split('\n').forEachIndexed { idx, line ->
+                visualLines(fileContent).forEachIndexed { idx, line ->
                     if (regex.containsMatchIn(line)) matches += GrepMatch(rel, idx + 1, line)
                 }
             }
@@ -122,7 +122,7 @@ public class GrepTool : AgentTool {
             return ToolResult("No matches" + skipSuffix(1))
         }
         val rendered = mutableListOf<String>()
-        content.split('\n').forEachIndexed { idx, line ->
+        visualLines(content).forEachIndexed { idx, line ->
             if (regex.containsMatchIn(line) && rendered.size < MAX_MATCHES) {
                 rendered += "$rawPath:${idx + 1}:${truncateMatchLine(line)}"
             }

@@ -27,7 +27,8 @@ internal interface FileStore {
 
     /**
      * Reads the requested line window of the file at [path]. Returns the
-     * selected content, the raw number of lines it contains, whether the
+     * selected window's raw text (each line with its own terminator, the same
+     * representation the client fs proxy passes through), whether the
      * selection covers the whole file ([ReadResult.complete]) and the file's
      * full visual line count ([ReadResult.total]); the callers (ReadFileTool)
      * combine these to build the numbered, footer-anchored output and to
@@ -75,16 +76,20 @@ internal class LocalFileStore : FileStore {
                 // readLine() advances lineNumber past the line it returns, so
                 // the number of the line being read must be captured first.
                 val lineNumber = scanner.lineNumber
-                val text = scanner.readLine() ?: break
+                val line = scanner.readLine() ?: break
                 if (lineNumber < startLine || (limit != null && lineNumber >= startLine + limit)) continue
-                if (windowLineCount > 0) selected.append('\n')
-                if (text.length > MAX_LINE_CHARS) {
+                if (line.text.length > MAX_LINE_CHARS) {
                     // Per-line cap: see [truncateLine].
-                    selected.append(text, 0, MAX_LINE_CHARS)
+                    selected.append(line.text, 0, MAX_LINE_CHARS)
                     selected.append(TRUNCATED_LINE_SUFFIX)
                 } else {
-                    selected.append(text)
+                    selected.append(line.text)
                 }
+                // The window keeps each line's own terminator (the same
+                // representation the client fs proxy passes through), so a
+                // single empty line is "\n", not "" - visualLines can then
+                // count and render the window unambiguously.
+                if (line.terminated) selected.append('\n')
                 windowLineCount++
             }
         } finally {
@@ -127,6 +132,13 @@ internal class LocalFileStore : FileStore {
 }
 
 /**
+ * A source line as read by [StreamingLineReader]: the line text without its
+ * `\n`, plus whether it was terminated by one (the final line of a file
+ * without a trailing newline is not).
+ */
+internal data class SourceLine(val text: String, val terminated: Boolean)
+
+/**
  * Streams the file at [path] line by line without materializing it. Bytes are
  * split on `\n` (0x0A) at the byte level and each line is decoded separately,
  * so no JDK decoder state machine is involved (a chunked InputStreamReader
@@ -143,7 +155,7 @@ internal class StreamingLineReader(path: Path) {
     private var bufferPos = 0
     private var bufferLen = 0
     private var current = java.io.ByteArrayOutputStream()
-    private var currentChars: String? = null
+    private var currentChars: SourceLine? = null
     private var pendingPartial = false
 
     /** Number of the line [readLine] will return next (1-based). */
@@ -159,10 +171,12 @@ internal class StreamingLineReader(path: Path) {
         get() = lineNumber - 1 + if (pendingPartial) 1 else 0
 
     /**
-     * Returns the next line without its terminator, or null at EOF.
-     * `\r` before `\n` is kept (the display layer strips it).
+     * Returns the next line with its terminator status ([SourceLine.terminated]
+     * is false for the unterminated final line of a file without a trailing
+     * newline), or null at EOF. The line text excludes the `\n`, but `\r`
+     * before `\n` is kept (the display layer strips it).
      */
-    fun readLine(): String? {
+    fun readLine(): SourceLine? {
         currentChars?.let {
             currentChars = null
             return it
@@ -179,7 +193,7 @@ internal class StreamingLineReader(path: Path) {
                     current.reset()
                     pendingPartial = false
                     lineNumber++
-                    return text
+                    return SourceLine(text, terminated = false)
                 }
             }
             val newline = byteBuffer.indexOf(b = '\n'.code.toByte(), from = bufferPos, to = bufferLen)
@@ -195,7 +209,7 @@ internal class StreamingLineReader(path: Path) {
             current.reset()
             pendingPartial = false
             lineNumber++
-            return text
+            return SourceLine(text, terminated = true)
         }
     }
 
@@ -265,3 +279,18 @@ internal const val TRUNCATED_LINE_SUFFIX = "... [truncated]"
 
 internal fun truncateLine(line: String): String =
     if (line.length > MAX_LINE_CHARS) line.take(MAX_LINE_CHARS) + TRUNCATED_LINE_SUFFIX else line
+
+/**
+ * Splits [content] into visual lines by the [StreamingLineReader] convention:
+ * a trailing newline is a line *terminator*, not an extra empty line
+ * (`"a\n"` is one line), while an empty line between terminators is real
+ * (`"a\n\n"` is two lines) and an empty file has zero lines. Consumers that
+ * number lines (grep matches, read_file and web_fetch rendering) must use
+ * this so their numbers agree and no phantom line past EOF can match or
+ * render.
+ */
+internal fun visualLines(content: String): List<String> {
+    if (content.isEmpty()) return emptyList()
+    val lines = content.split('\n')
+    return if (lines.last().isEmpty()) lines.dropLast(1) else lines
+}

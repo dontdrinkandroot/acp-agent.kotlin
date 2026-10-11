@@ -4,7 +4,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
-import java.util.Locale
+import java.util.*
 
 /**
  * Converts fetched HTTP content into the agent's line-oriented text model.
@@ -19,7 +19,7 @@ import java.util.Locale
 internal object WebContentConverter {
 
     fun toLines(body: String, contentType: String): List<String> {
-        return if (isHtml(contentType)) renderLines(Jsoup.parse(body)) else body.split('\n')
+        return if (isHtml(contentType)) renderLines(Jsoup.parse(body)) else visualLines(body)
     }
 
     private val HTML_MIME_TYPES = setOf(
