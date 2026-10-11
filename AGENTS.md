@@ -975,7 +975,9 @@ agent's **wire contract**:
   a single identical repeat executes, a changed result resets the streak, formatting variants
   pass, reset by an intervening call, denied calls not tracked) and `PromptRunnerTest` (guard
   integration: the refused third repeat fails the turn's third iteration and the turn continues;
-  identical call in a new turn executes again),
+  identical call in a new turn executes again; abnormal-end note chunks: content_filter
+  and truncated/wind-down ends always emit their note to the client, streamed partial
+  text is never re-emitted - issue #30),
   `SessionStoreTest` (outcome round-trip + legacy decode), `SessionStateProviderSelectionTest`
   (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
   `SessionConfigOptionsTest` (provider option

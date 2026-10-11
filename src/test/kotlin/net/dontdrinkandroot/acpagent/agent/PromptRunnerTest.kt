@@ -35,6 +35,13 @@ private class PromptRecordingEmitter : FlowCollector<Event> {
     }
 }
 
+/** Texts of all agent message chunks emitted to the client, in order. */
+private fun emittedMessageTexts(emitter: PromptRecordingEmitter): List<String> =
+    emitter.events.filterIsInstance<Event.SessionUpdateEvent>()
+        .map { it.update }
+        .filterIsInstance<SessionUpdate.AgentMessageChunk>()
+        .mapNotNull { (it.content as? ContentBlock.Text)?.text }
+
 /** Fake stream that replays the given chunk scripts, one per request. */
 private class FakeCompleter(
     vararg val scripts: List<OpenRouterChatCompletionStreamResponse>,
@@ -403,6 +410,45 @@ class PromptRunnerTest {
     }
 
     @Test
+    fun `a truncated wind-down pass ends with the note instead of an empty turn`() = runBlocking {
+        // Issue #30 lockstep: every abnormal-end branch must tell the client.
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""")),
+            listOf(chunk(finishReason = "length")),
+        )
+        val state = state(registry)
+        val runner = PromptRunner(
+            state = state,
+            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
+            chatCompleter = fake,
+            providerRouting = null,
+            sessionConfigOptions = SessionConfigOptions(
+                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
+                listOf(testModel),
+                state,
+            ),
+            toolRegistry = registry,
+            toolCallExecutor = ToolCallExecutor(registry, state),
+            maxTurnRequests = 1,
+            models = listOf(testModel),
+        )
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertEquals(2, fake.requests.size, "one tool iteration plus one wind-down pass")
+        assertEquals(
+            listOf("The response was interrupted before completion; the task may need a new prompt."),
+            emittedMessageTexts(emitter),
+            "the note must reach the client even when the wind-down pass is truncated",
+        )
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.MAX_TURN_REQUESTS, response.response.stopReason)
+    }
+
+    @Test
     fun `empty completion with stop reason retries once with a continuation prompt`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
@@ -519,9 +565,40 @@ class PromptRunnerTest {
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
         assertEquals(2, fake.requests.size, "exactly one retry")
+        assertEquals(
+            listOf("The response was interrupted before completion; the task may need a new prompt."),
+            emittedMessageTexts(emitter),
+            "the note must reach the client even without partial text (issue #30 lockstep)",
+        )
         val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
         assertEquals(1, assistants.size)
         assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
+    }
+
+    @Test
+    fun `content filter without partial text still tells the client why the turn ended`() = runBlocking {
+        // Issue #30: with no partial text the note used to reach only the
+        // persisted history - the client saw an empty turn ending in END_TURN.
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "content_filter")),
+            listOf(chunk(content = "must not be requested")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(1, fake.requests.size, "content_filter must not be retried")
+        assertEquals(
+            listOf("The response was blocked by content filtering."),
+            emittedMessageTexts(emitter),
+            "the notice must reach the client even without partial text",
+        )
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(listOf("The response was blocked by content filtering."), assistants.map { it.content?.text() })
     }
 
     @Test
@@ -539,6 +616,11 @@ class PromptRunnerTest {
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
         assertEquals(1, fake.requests.size, "content_filter must not be retried")
+        assertEquals(
+            listOf("Some", "The response was blocked by content filtering."),
+            emittedMessageTexts(emitter),
+            "the streamed partial text is relayed live and must not be re-emitted; the notice exactly once",
+        )
         val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
         assertEquals(
             listOf("Some", "The response was blocked by content filtering."),
