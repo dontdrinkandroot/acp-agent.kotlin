@@ -936,8 +936,11 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   host `.env.local` masked, git identity forwarded. Optional extra host paths
   (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
   identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
-  `:rw`; dirs or single files; absolute, must exist, relative paths / `/` are
-  rejected loudly); the launcher injects the *effective* extras as
+  `:rw`; dirs or single files; absolute, relative paths / `/` are rejected
+  loudly, and host existence is required only for entries actually mounted -
+  entries under the covered roots (project dir/container home/`tmpfs`) are
+  shadowed by the covering mount at the identical path, so they are skipped
+  with a warning regardless of host existence); the launcher injects the *effective* extras as
   `ACP_EXTRA_MOUNTS` so the agent treats them as read-trusted (skipped entries -
   inside the project dir/home/tmpfs - are never trusted). Extras are emitted before every built-in mount and sorted
   shallowest-first, so built-ins and later, deeper mounts shadow shallower ones (mounting a CWD parent ro works; the
@@ -1112,7 +1115,9 @@ identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-
   capture context and later code must never run; each test there ends in ONE
   decisive all-properties assertion kept last, so it also fails under a
   non-aborting `_fail`). Fixtures live under
-`build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs) and
+`build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs;
+never `/home/dev` either - container-only and unwritable on a host, see the
+env-independence pitfall) and
 the API key is pinned to `sk-test` so a real key can never leak into logs.
 
 Manual validation (the run configurations cannot do this):
@@ -1222,6 +1227,21 @@ communicate that with the user so we can review them.
   `return 1` until its decisive all-properties assertion was moved to the END of each
   test (the earlier granular asserts only improve failure messages, the last one alone
   decides the status).
+- **The shell suite must be env-independent (host vs container)**: it runs inside
+  the agent container *and* on a bare host (`./gradlew build`, Gradle `check` wires
+  `testScripts`), whose environments differ. Two traps (2026-10, first host run after
+  the #51 shell tests): (a) the container env sets `XDG_STATE_HOME` (state bind lands
+  outside any fixture `HOME`), a host usually does not - the state bind then derives
+  from the test's overridden `HOME` and a bare `assert_not_contains ... "gradle"`
+  matched the *fixture name* (`gradle-home/.local/state/...`), not a GUH bind; assert
+  mount *shapes* (`/.gradle`, `dst=...`), never bare substrings a fixture path can
+  collide with. (b) `/home/dev` exists and is writable only inside the container -
+  never `mkdir` fixtures there; the extra-mount skip checks run *before* existence
+  validation precisely so a deliberately nonexistent `/home/dev/...` covered entry is
+  portable (see the extra-mount semantics under Features). And per #52, `set -e` is
+  inert in the capture context for every command, not just asserts - wrap fixture
+  setup in `mkdir ... || _fail`, or the test continues past a missing fixture and
+  dies with a confusing downstream cascade.
 - **Gradle build cache can report a false green**: outputs are cacheable, so a
   `test`/`build` run that *just changed test sources or the classpath* may come
   back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (observed: a new

@@ -102,7 +102,9 @@ test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
     # the .gradle root/caches/wrapper tmpfs mounts are still present so
     # daemon/process state stays container-private and every depth the binds
     # would otherwise leave root-owned stays writable.
-    assert_not_contains "$(mount_values "$line")" "gradle"
+    # "/.gradle" shape: matches any shared GUH bind (src or dst) but never the
+    # state bind under a fixture path that merely contains "gradle" in its name.
+    assert_not_contains "$(mount_values "$line")" "/.gradle"
     local gradle_tmpfs
     gradle_tmpfs=$(printf '%s\n' "$line" | tr ' ' '\n' | grep '^/home/dev/\.gradle' || true)
     assert_eq "3" "$(printf '%s\n' "$gradle_tmpfs" | grep -c . || true)"
@@ -475,7 +477,8 @@ mkdir -p "$GRADLE_HOME_FIXTURE/.gradle/caches/modules-2" \
     "$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0" \
     "$GRADLE_HOME_FIXTURE/.gradle/wrapper/dists" \
     "$GRADLE_HOME_FIXTURE/.gradle/jdks" \
-    "$GRADLE_HOME_FIXTURE/.gradle/daemon"
+    "$GRADLE_HOME_FIXTURE/.gradle/daemon" ||
+    _fail "could not create the gradle-home fixture"
 
 test_gradle_content_addressed_leaves_are_shared_rw() {
     # Only the content-addressed, machine-independent leaves of the Gradle
@@ -527,7 +530,9 @@ test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
     local line mounts
     line=$(last_run_line)
     mounts=$(mount_values "$line")
-    assert_not_contains "$mounts" "gradle"
+    # "/.gradle" shape: a bare "gradle" would also match the state bind under
+    # the gradle-home fixture (test-design smell, broke host runs).
+    assert_not_contains "$mounts" "/.gradle"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
@@ -547,7 +552,9 @@ test_gradle_no_mount_without_a_host_gradle_home() {
     local line mounts
     line=$(last_run_line)
     mounts=$(mount_values "$line")
-    assert_not_contains "$mounts" "gradle"
+    # "/.gradle" shape: a bare "gradle" would also match the state bind under
+    # the empty-gradle-home fixture (test-design smell, broke host runs).
+    assert_not_contains "$mounts" "/.gradle"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \

@@ -460,11 +460,9 @@ if [ -n "${ACP_DOCKER_EXTRA_MOUNTS:-}" ]; then
             extra_fail=true
             continue
         fi
-        if [ ! -e "$path" ]; then
-            printf 'ACP_DOCKER_EXTRA_MOUNTS: %s does not exist on the host.\n' "$path" >&2
-            extra_fail=true
-            continue
-        fi
+        # Covered entries are shadowed by the covering mount at the identical
+        # path - skipped with a warning regardless of host existence. Host
+        # existence is only validated for entries that actually get mounted.
         case $path in
             "$project_dir"|"$project_dir"/*)
                 printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - inside the project directory, which is always mounted rw.\n' "$path" >&2
@@ -479,6 +477,11 @@ if [ -n "${ACP_DOCKER_EXTRA_MOUNTS:-}" ]; then
                 continue
                 ;;
         esac
+        if [ ! -e "$path" ]; then
+            printf 'ACP_DOCKER_EXTRA_MOUNTS: %s does not exist on the host.\n' "$path" >&2
+            extra_fail=true
+            continue
+        fi
         case " ${extra_paths[*]} " in
             *" $path "*)
                 printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping duplicate %s.\n' "$path" >&2
