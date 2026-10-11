@@ -35,6 +35,9 @@ public class ReadFileTool : AgentTool {
         val line = arguments.longArg("line")
         val limit = arguments.longArg("limit")
         if (line != null && line < 1) return ToolResult("'line' must be a positive integer (1-based)", true)
+        // Issue #45: values outside the Int range would overflow at the
+        // toInt() narrowing below and defeat the window and past-EOF checks.
+        if (line != null && line > Int.MAX_VALUE) return ToolResult("'line' must be at most ${Int.MAX_VALUE}", true)
         if (limit == null) return ToolResult(arguments.argError("limit", "an integer"), true)
         if (limit < 1 || limit > MAX_READ_LIMIT) {
             return ToolResult("'limit' must be between 1 and $MAX_READ_LIMIT", true)

@@ -271,6 +271,26 @@ class WebFetchToolTest {
     }
 
     @Test
+    fun `startLine above the int range is rejected instead of overflowing to a negative start`() = runBlocking {
+        serve("/num", "text/plain", "one\ntwo")
+        // Issue #45: 3000000000 overflows Int to a negative start line, which
+        // used to defeat the past-end guard and made drop(negative) return the
+        // whole content numbered from a negative start. It must be a clean
+        // validation error instead.
+        val result = WebFetchTool().execute(
+            buildJsonObject {
+                put("url", "$baseUrl/num")
+                put("startLine", 3000000000L)
+            },
+            context(),
+        )
+        assertTrue(result.isError)
+        assertEquals("'startLine' must be at most 2147483647", result.text)
+        // No window output and no negative line numbers may leak.
+        assertFalse(result.text.contains("│"), result.text)
+    }
+
+    @Test
     fun `an empty body is a successful empty read, not an error`() = runBlocking {
         serve("/empty", "text/html; charset=utf-8", "<html><body></body></html>")
         val result = fetch("$baseUrl/empty")

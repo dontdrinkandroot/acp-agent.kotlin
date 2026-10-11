@@ -276,6 +276,40 @@ class ReadFileToolTest {
     }
 
     @Test
+    fun `line above the int range is rejected instead of overflowing to a negative start`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, testContext(dir))
+        // Issue #45: 3000000000 overflows Int to a negative start line, which
+        // used to defeat the window and past-EOF checks and rendered negative
+        // line numbers. It must be a clean validation error instead.
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", 3000000000L); put("limit", 2) },
+            testContext(dir)
+        )
+        assertTrue(read.isError, read.text)
+        assertEquals("'line' must be at most 2147483647", read.text)
+        // No window output and no negative line numbers may leak.
+        assertFalse(read.text.contains("│"), read.text)
+    }
+
+    @Test
+    fun `line at the int upper bound is a clean past-EOF error`() = runBlocking {
+        val dir = tmpDir()
+        val path = "$dir/f.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "a\nb\nc") }, testContext(dir))
+        // The largest valid `line` must not wrap around at the toInt()
+        // narrowing - it is simply past the end of the file.
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", Int.MAX_VALUE); put("limit", 1) },
+            testContext(dir)
+        )
+        assertTrue(read.isError, read.text)
+        assertTrue(read.text.contains("past the end"), read.text)
+        assertTrue(read.text.contains("3 lines"), read.text)
+    }
+
+    @Test
     fun `read requires limit and bounds it`() = runBlocking {
         val dir = tmpDir()
         val path = "$dir/f.txt"

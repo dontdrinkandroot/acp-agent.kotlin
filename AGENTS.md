@@ -658,7 +658,12 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   truncates lines over **2000 chars** with `... [truncated]`, and errors with
   `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
   streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
-  observed to spin forever on zero-char reads under JDK 25); `list_dir`/`glob` list at most
+  observed to spin forever on zero-char reads under JDK 25). `read_file`'s `line` and
+  `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE` (issue #45): a value outside
+  the Int range used to overflow at the `toInt()` narrowing to a negative start line,
+  defeating the window/past-EOF guards and rendering negative line numbers; it is now a
+  clean `'line'`/`'startLine' must be at most 2147483647` validation error before any I/O.
+  `list_dir`/`glob` list at most
   500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
   truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
   files over 1 MB and excluded files (see File-access exclusions), and reports skips as
@@ -1000,7 +1005,8 @@ agent's **wire contract**:
   `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
-timeout, `read_file` limit requirement, bounds, 20 MB size refusal, 2000-char-per-line
+timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` upper bound at
+`Int.MAX_VALUE` (issue #45), 20 MB size refusal, 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
 binary/oversized skips, the `.git` walker skip) are unit-tested in
 `BashToolTest`/`ReadFileToolTest`/`ListDirToolTest`/`GrepToolTest`; move/delete

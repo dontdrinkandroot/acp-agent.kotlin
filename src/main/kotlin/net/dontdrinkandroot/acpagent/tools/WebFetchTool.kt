@@ -39,6 +39,11 @@ public class WebFetchTool : AgentTool {
         val startLine = arguments.longArg("startLine")
         val maxLines = arguments.longArg("maxLines")
         if (startLine != null && startLine < 1) return ToolResult("'startLine' must be a positive integer (1-based)", true)
+        // Issue #45: values outside the Int range would overflow at the
+        // toInt() narrowing below and defeat the past-end guard.
+        if (startLine != null && startLine > Int.MAX_VALUE) {
+            return ToolResult("'startLine' must be at most ${Int.MAX_VALUE}", true)
+        }
         if (maxLines != null && (maxLines < 1 || maxLines > MAX_LINES)) {
             return ToolResult("'maxLines' must be between 1 and $MAX_LINES", true)
         }
