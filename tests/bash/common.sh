@@ -72,7 +72,9 @@ run_docker_launcher() {
         -u GRADLE_USER_HOME -u UV_CACHE_DIR -u PIP_CACHE_DIR \
         -u COMPOSER_CACHE_DIR -u YARN_CACHE_FOLDER -u HF_HOME \
         -u NPM_CONFIG_CACHE -u CARGO_HOME -u GOMODCACHE -u NUGET_PACKAGES \
-        -u PUB_CACHE -u KONAN_DATA_DIR -u UV_LINK_MODE "${env_args[@]}" \
+        -u PUB_CACHE -u KONAN_DATA_DIR -u UV_LINK_MODE \
+        -u PNPM_CONFIG_STORE_DIR -u PNPM_CONFIG_CACHE_DIR \
+        -u PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.

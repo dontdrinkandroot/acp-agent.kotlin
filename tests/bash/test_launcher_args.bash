@@ -153,13 +153,67 @@ test_uv_link_mode_is_forwarded_when_set() {
     assert_eq "symlink" "$(env_value_for "$(last_run_line)" UV_LINK_MODE)"
 }
 
+test_pnpm_store_and_cache_dirs_are_identity_mounted_and_forwarded() {
+    # Explicit PNPM_CONFIG_STORE_DIR/PNPM_CONFIG_CACHE_DIR config (pnpm reads
+    # pnpm_config_*/PNPM_CONFIG_* env vars, pnpm.io/configuring) gets the
+    # issue #51 explicit-config policy: identity-bound at the identical
+    # in-container path and forwarded verbatim - so host-created global-
+    # virtual-store symlinks into the shared store keep resolving.
+    local pnpm_store=$TEST_TMP/altdata/cache/pnpm/store
+    local pnpm_cache=$TEST_TMP/altdata/cache/pnpm/cache
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "PNPM_CONFIG_STORE_DIR=$pnpm_store" "PNPM_CONFIG_CACHE_DIR=$pnpm_cache" --skip-pull
+    assert_exit_status 0
+    [ -d "$pnpm_store" ] || _fail "expected $pnpm_store to be created"
+    [ -d "$pnpm_cache" ] || _fail "expected $pnpm_cache to be created"
+    local line
+    line=$(last_run_line)
+    assert_contains "$(mount_values "$line")" "type=bind,src=$pnpm_store,dst=$pnpm_store"
+    assert_contains "$(mount_values "$line")" "type=bind,src=$pnpm_cache,dst=$pnpm_cache"
+    assert_eq "$pnpm_store" "$(env_value_for "$line" PNPM_CONFIG_STORE_DIR)"
+    assert_eq "$pnpm_cache" "$(env_value_for "$line" PNPM_CONFIG_CACHE_DIR)"
+}
+
+test_pnpm_global_virtual_store_is_forwarded_when_set() {
+    # pnpm's enable-global-virtual-store makes node_modules symlink into the
+    # shared store - the setting must travel with the identity-bound store so
+    # host and container projects share one layout (like UV_LINK_MODE).
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=true --skip-pull
+    assert_exit_status 0
+    assert_eq "true" "$(env_value_for "$(last_run_line)" PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE)"
+}
+
+test_pnpm_default_candidates_are_mounted_at_the_container_defaults() {
+    # Without explicit config the existing pnpm default dirs are shared at the
+    # tool's in-container defaults and the env vars are pinned to those dsts -
+    # the shared fallback policy of add_tool_cache (pnpm's defaults follow
+    # $XDG_DATA_HOME/pnpm/store and $XDG_CACHE_HOME/pnpm).
+    local xdg_data=$TEST_TMP/xdg-data
+    local xdg_cache=$TEST_TMP/xdg-cache
+    mkdir -p "$xdg_data/pnpm/store" "$xdg_cache/pnpm" ||
+        _fail "could not create the pnpm default-candidate fixtures"
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "XDG_DATA_HOME=$xdg_data" "XDG_CACHE_HOME=$xdg_cache" --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$(mount_values "$line")" \
+        "type=bind,src=$xdg_data/pnpm/store,dst=/home/dev/.local/share/pnpm/store"
+    assert_contains "$(mount_values "$line")" \
+        "type=bind,src=$xdg_cache/pnpm,dst=/home/dev/.cache/pnpm"
+    assert_eq "/home/dev/.local/share/pnpm/store" "$(env_value_for "$line" PNPM_CONFIG_STORE_DIR)"
+    assert_eq "/home/dev/.cache/pnpm" "$(env_value_for "$line" PNPM_CONFIG_CACHE_DIR)"
+}
+
 test_mount_caches_zero_ignores_explicit_cache_config_entirely() {
     # Total opt-out: with no caches shared at all, explicit cache config is
     # ignored wholesale - no mounts, no env forwarding and no validation of
     # even unusable values (the tool keeps its in-container default; issue #51).
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
         ACP_DOCKER_MOUNT_CACHES=0 UV_CACHE_DIR=relative/cache ANDROID_HOME=relative/sdk \
-        UV_LINK_MODE=symlink --skip-pull
+        UV_LINK_MODE=symlink PNPM_CONFIG_STORE_DIR=relative/store \
+        PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=true --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -167,6 +221,8 @@ test_mount_caches_zero_ignores_explicit_cache_config_entirely() {
     assert_empty "$(env_value_for "$line" ANDROID_HOME)"
     assert_empty "$(env_value_for "$line" ANDROID_SDK_ROOT)"
     assert_empty "$(env_value_for "$line" UV_LINK_MODE)"
+    assert_empty "$(env_value_for "$line" PNPM_CONFIG_STORE_DIR)"
+    assert_empty "$(env_value_for "$line" PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE)"
     assert_not_contains "$(mount_values "$line")" "cache"
 }
 

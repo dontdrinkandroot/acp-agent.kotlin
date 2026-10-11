@@ -270,8 +270,11 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     add_tool_cache go "$container_home/go/pkg/mod" GOMODCACHE "$HOME/go/pkg/mod"
     add_tool_cache nuget "$container_home/.nuget/packages" NUGET_PACKAGES "$HOME/.nuget/packages"
     add_tool_cache pub "$container_home/.pub-cache" PUB_CACHE "$HOME/.pub-cache"
-    add_tool_cache pnpm-store "$container_data_dir/pnpm/store" "" "$host_data_home/pnpm/store"
-    add_tool_cache pnpm-cache "$container_cache_dir/pnpm" "" "$host_cache_home/pnpm"
+    # pnpm exposes its config as pnpm_config_*/PNPM_CONFIG_* env vars
+    # (pnpm.io/configuring), so the store/cache dirs go through the standard
+    # explicit-config policy like every other tool cache (issue #51 follow-up).
+    add_tool_cache pnpm-store "$container_data_dir/pnpm/store" PNPM_CONFIG_STORE_DIR "$host_data_home/pnpm/store"
+    add_tool_cache pnpm-cache "$container_cache_dir/pnpm" PNPM_CONFIG_CACHE_DIR "$host_cache_home/pnpm"
     add_tool_cache konan "$container_home/.konan" KONAN_DATA_DIR "$HOME/.konan"
     # The Gradle user home is NOT shared as a whole (that would merge the
     # daemon registry + logs across the host and container PID namespaces:
@@ -383,6 +386,14 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     # container once the cache is identity-bound (issue #51).
     if [ -n "${UV_LINK_MODE:-}" ]; then
         cache_env_overrides+=(--env "UV_LINK_MODE=$UV_LINK_MODE")
+    fi
+    # Same for pnpm's enable-global-virtual-store config: node_modules then
+    # symlinks into the shared store, so host and container projects only
+    # share one layout when the setting travels with the identity-bound
+    # store/cache dirs above (pnpm config via PNPM_CONFIG_* env vars).
+    if [ -n "${PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE:-}" ]; then
+        cache_env_overrides+=(
+            --env "PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=$PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE")
     fi
     if [ -n "$mounted_caches" ]; then
         printf 'Mounting host caches:%s\n' "$mounted_caches" >&2

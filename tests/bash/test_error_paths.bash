@@ -102,6 +102,15 @@ test_uncreatable_cache_dir_fails_loudly_without_composing_a_run() {
     assert_empty "$(last_run_line || true)"
 }
 
+test_relative_pnpm_cache_dir_fails_loudly_without_composing_a_run() {
+    # The pnpm config vars go through the same explicit-config validation as
+    # every other tool cache - never a silent fallback.
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test PNPM_CONFIG_STORE_DIR=relative/store --skip-pull
+    assert_exit_status 1
+    assert_contains "$OUT" "PNPM_CONFIG_STORE_DIR: relative/store is not an absolute host path"
+    assert_empty "$(last_run_line || true)"
+}
+
 test_relative_android_home_fails_loudly_without_composing_a_run() {
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ANDROID_HOME=relative/sdk --skip-pull
     assert_exit_status 1

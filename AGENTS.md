@@ -883,9 +883,15 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `$XDG_CACHE_HOME/uv`, never created) is mounted at the tool's in-container default
   with the env var pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`,
   `UV_CACHE_DIR` -> `~/.cache/uv`, ...) - relocation stays necessary there because
-  the container home differs from the host home. Known gap: pnpm's
-  `store-dir`/`cache-dir` come from `~/.config/pnpm/rc`, not env vars, so pnpm keeps
-  the default-candidate fallback (issue #51). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is
+  the container home differs from the host home. **pnpm** is a regular tool cache:
+  `PNPM_CONFIG_STORE_DIR`/`PNPM_CONFIG_CACHE_DIR` (pnpm reads `pnpm_config_*`/
+  `PNPM_CONFIG_*` env vars, pnpm.io/configuring - `npm_config_*` is gone since
+  pnpm 12) go through the same explicit/fallback policy as the other tool caches,
+  and `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` is forwarded when set (it makes
+  `node_modules` symlink into the shared store, so host and container projects only
+  share one layout when it travels with the identity-bound store). `PNPM_HOME` is
+  deliberately **not** forwarded (it points at the host's standalone pnpm install,
+  which the container does not have). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is
   *not*
   shared (one daemon registry + logs across the host and container PID namespaces would
   let probing clients prune each other's daemons and `gradle --stop` kill both sides'
@@ -1081,8 +1087,8 @@ subshell and the first failing assert aborts it via `_fail`'s `exit` - bash igno
 issue #52), `tests/bash/common.sh` provides the
 launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
 assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS`/`ANDROID_HOME`/
-`ANDROID_SDK_ROOT`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`)
-are always cleared).
+`ANDROID_SDK_ROOT`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`,
+the `PNPM_CONFIG_*` cache vars) are always cleared).
 Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
@@ -1090,7 +1096,10 @@ OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the 
 identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-mounted
 
 + env forwarded verbatim, forwarded without a mount when inside the project dir,
-  `UV_LINK_MODE` forwarding, `ACP_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
+  `UV_LINK_MODE` forwarding, pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
+  `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the
+  container defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
+  forwarding), `ACP_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
   config ignored and not even validated), Android SDK sharing: explicit
   `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both vars carrying the configured value (lone `ANDROID_SDK_ROOT`
   synthesizes `ANDROID_HOME`, `ANDROID_HOME` wins on conflict),
@@ -1098,7 +1107,7 @@ identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-
   host path),
 `test_error_paths.bash` (fail-loudly exits before any `docker run`, incl. the
   set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`:
-  relative, `/`, uncreatable) refusals) and `test_harness.bash` (harness self-test -
+  relative, `/`, uncreatable; `PNPM_CONFIG_STORE_DIR`: relative) refusals) and `test_harness.bash` (harness self-test -
   the #52 regression pin: a failing assert must abort the test inside `run_tests`'
   capture context and later code must never run; each test there ends in ONE
   decisive all-properties assertion kept last, so it also fails under a
