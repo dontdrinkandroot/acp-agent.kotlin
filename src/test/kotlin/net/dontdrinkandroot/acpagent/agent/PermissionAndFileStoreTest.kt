@@ -351,19 +351,64 @@ class PermissionAndFileStoreTest {
     @Test
     fun `client proxy read of an exact limit window ending in a newline is complete`() = runBlocking {
         // The proxy returns exactly `limit` lines where the last line ends with
-        // a newline: that terminator means the window reached EOF, so the
-        // phantom-footer re-read loop must not be triggered.
+        // a newline: that terminator means the window reached EOF, so no
+        // phantom footer may be emitted.
         val exactWindow = (1..5).joinToString("") { "line $it\n" }
         val store = ClientFileStore(ConfigurableFsClient(exactWindow))
         val read = store.readFile("/any", 1, 5)
         assertTrue(read.complete, "an exact-limit window ending in a newline has no more lines below")
         assertEquals(exactWindow, read.content)
 
-        // A window that fills the limit (`limit` newlines) but does not end in
-        // a newline is assumed truncated (the last line was cut off).
+        // A limit-ignoring client (whole file) delivering one line more than
+        // the window is sliced locally: the window keeps its `limit` lines and
+        // is truncated because line 6 exists (issue #6 semantics).
         val cutWindow = (1..5).joinToString("") { "line $it\n" } + "line 6"
         val truncated = ClientFileStore(ConfigurableFsClient(cutWindow)).readFile("/any", 1, 5)
         assertFalse(truncated.complete)
+        assertEquals(exactWindow, truncated.content, "the over-delivered line must not leak into the window")
+    }
+
+    @Test
+    fun `client proxy exact-full window is disambiguated by an eof probe`() = runBlocking {
+        // Issue #6: an exact-`limit` window's shape cannot say whether more
+        // lines follow (a trailing newline is a terminator, not EOF). The
+        // store must ask for the line right after the window: one real line
+        // below -> truncated, with the probe arguments pinned.
+        val client = SlicingFsClient("a\nb\nc\nd\ne")
+        val read = ClientFileStore(client).readFile("/any", 1, 2)
+        assertEquals("a\nb\n", read.content)
+        assertFalse(read.complete, "line 3 exists below the exact-full window")
+        assertEquals(
+            listOf<Pair<UInt?, UInt?>>(1u to 2u, 3u to 1u),
+            client.readCalls,
+            "the eof probe must ask for the single line right after the window",
+        )
+    }
+
+    @Test
+    fun `client proxy final window of a file without trailing newline is complete`() = runBlocking {
+        // Issue #6's exact scenario: the final window of a file not ending in
+        // a newline must be complete (no phantom footer past EOF).
+        val client = SlicingFsClient("a\nb\nc")
+        val read = ClientFileStore(client).readFile("/any", 3, 1)
+        assertEquals("c", read.content)
+        assertTrue(read.complete, "line 3 is the last line; nothing follows")
+        assertEquals(
+            listOf<Pair<UInt?, UInt?>>(3u to 1u, 4u to 1u),
+            client.readCalls,
+            "the eof probe must ask for the single line right after the window",
+        )
+    }
+
+    @Test
+    fun `a failing eof probe falls back to truncated instead of failing the read`() = runBlocking {
+        // Conservative (issue #6): when the probe cannot settle whether more
+        // lines follow, the read must still succeed but claim truncated - a
+        // phantom footer beats a silently missing one.
+        val client = FailingProbeFsClient("a\nb")
+        val read = ClientFileStore(client).readFile("/any", 1, 1)
+        assertEquals("a\n", read.content)
+        assertFalse(read.complete, "an unsettled window must render the continue footer")
     }
 
     @Test
@@ -373,6 +418,36 @@ class PermissionAndFileStoreTest {
         assertTrue(read.complete)
         assertNull(read.total)
     }
+}
+
+/**
+ * A strict line-slicing fs proxy double whose EOF probe fails: reads starting
+ * past line 1 (the probe's signature) throw, so tests can pin the conservative
+ * fallback.
+ */
+private class FailingProbeFsClient(private val content: String) : ClientSessionOperations {
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: JsonElement?,
+    ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+
+    override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
+
+    override suspend fun fsReadTextFile(
+        path: String,
+        line: UInt?,
+        limit: UInt?,
+        _meta: JsonElement?,
+    ): ReadTextFileResponse {
+        if (line != null && line > 1u) throw FileStoreException("client read failed")
+        val lines = rawVisualLines(content)
+        val to = limit?.let { it.toInt().coerceIn(0, lines.size) } ?: lines.size
+        return ReadTextFileResponse(lines.subList(0, to).joinToString(""))
+    }
+
+    override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =
+        WriteTextFileResponse()
 }
 
 private class ConfigurableFsClient(private val content: String) : ClientSessionOperations {
@@ -390,6 +465,39 @@ private class ConfigurableFsClient(private val content: String) : ClientSessionO
         limit: UInt?,
         _meta: JsonElement?,
     ): ReadTextFileResponse = ReadTextFileResponse(content)
+
+    override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =
+        WriteTextFileResponse()
+}
+
+/**
+ * A strict line-slicing fs proxy double: honors `line`/`limit` like a
+ * conforming ACP client and records every read's `(line, limit)` so tests can
+ * pin the EOF probe's arguments.
+ */
+private class SlicingFsClient(private val content: String) : ClientSessionOperations {
+    val readCalls = mutableListOf<Pair<UInt?, UInt?>>()
+
+    override suspend fun requestPermissions(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+        _meta: JsonElement?,
+    ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+
+    override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
+
+    override suspend fun fsReadTextFile(
+        path: String,
+        line: UInt?,
+        limit: UInt?,
+        _meta: JsonElement?,
+    ): ReadTextFileResponse {
+        readCalls += (line to limit)
+        val lines = rawVisualLines(content)
+        val from = ((line?.toInt() ?: 1) - 1).coerceIn(0, lines.size)
+        val to = limit?.let { (from + it.toInt()).coerceIn(0, lines.size) } ?: lines.size
+        return ReadTextFileResponse(lines.subList(from, to).joinToString(""))
+    }
 
     override suspend fun fsWriteTextFile(path: String, content: String, _meta: JsonElement?): WriteTextFileResponse =
         WriteTextFileResponse()

@@ -176,6 +176,32 @@ class ReadFileToolTest {
     }
 
     @Test
+    fun `a limit-ignoring fs proxy window is sliced locally and never gets a phantom footer`() = runBlocking {
+        // Issue #6: a client that ignores line/limit (the ACP TS reference
+        // returns the whole file) delivered "a\nb\nc" for every window; the
+        // shape heuristic mislabeled the final window as truncated and
+        // rendered a footer pointing past EOF ("Use line=4" on a 3-line file).
+        // The window must be sliced locally: final window complete, no footer;
+        // mid-file window with a real footer showing the true total.
+        val dir = tmpDir()
+        val ctx = testContext(dir, fileStore = ClientFileStore(RecordingFsClient(readContent = "a\nb\nc")))
+
+        val final = ReadFileTool().execute(
+            buildJsonObject { put("path", "$dir/f.txt"); put("line", 3); put("limit", 2) },
+            ctx,
+        )
+        assertFalse(final.isError, final.text)
+        assertEquals("   3│c", final.text)
+
+        val mid = ReadFileTool().execute(
+            buildJsonObject { put("path", "$dir/f.txt"); put("line", 1); put("limit", 2) },
+            ctx,
+        )
+        assertFalse(mid.isError, mid.text)
+        assertEquals("   1│a\n   2│b\n\n(Showing lines 1-2 of 3. Use line=3 and limit to continue.)", mid.text)
+    }
+
+    @Test
     fun `a file of one empty line still renders line 1`() = runBlocking {
         // Guard pin for the visual-line convention: "\n" is one empty line
         // (the newline terminates it), so it renders as `   1│`, unlike an

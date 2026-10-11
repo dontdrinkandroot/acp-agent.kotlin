@@ -241,18 +241,66 @@ internal class ClientFileStore(
             line = line?.toUInt(),
             limit = limit?.toUInt(),
         ).content
+        val startLine = line ?: 1
+        val windowLines = rawVisualLines(content).size
+        // Issue #6: a client that ignores `line`/`limit` (the ACP TypeScript
+        // reference returns the whole file) delivers more lines than the
+        // requested window - its response is not a window at all, so the
+        // requested window is sliced locally from the whole file.
+        if (limit != null && windowLines > limit) return wholeFileWindow(path, line, limit)
+        // The response shape alone cannot say whether the window is complete:
+        // an exact-`limit` window leaves EOF unknown, and a window starting
+        // past line 1 cannot prove its own numbering to a limit-ignoring
+        // client. Ambiguous windows are settled by asking for the single line
+        // right after the window (issue #6).
+        val ambiguous = startLine > 1 || (limit != null && windowLines == limit)
+        if (!ambiguous) return ReadResult(content = content, complete = true, total = null)
+        // The probe is best-effort: when it cannot settle the window, the read
+        // still succeeds but claims truncated (conservative, issue #6) - a
+        // phantom footer beats a silently missing one. Cancellation still
+        // propagates.
+        val probe = try {
+            client.fsReadTextFile(
+                path = path,
+                line = (startLine.toLong() + windowLines).toUInt(),
+                limit = 1u,
+            ).content
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return ReadResult(content = content, complete = false, total = null)
+        }
+        val probeLines = rawVisualLines(probe)
+        return when {
+            // Nothing after the window: it covers the rest of the file.
+            probeLines.isEmpty() -> ReadResult(content = content, complete = true, total = null)
+            // A conforming client returns at most one line for `limit = 1`;
+            // more - or the whole file again - means `limit` was ignored.
+            probe == content || probeLines.size > 1 -> wholeFileWindow(path, line, limit)
+            // Exactly one different line follows the window.
+            else -> ReadResult(content = content, complete = false, total = null)
+        }
+    }
+
+    /**
+     * The whole-file fallback for limit-ignoring clients: the full content is
+     * re-read and the requested window is sliced locally (each line with its
+     * own terminator), so `complete` and `total` are computed from the real
+     * line count instead of guessed from the response shape.
+     */
+    private suspend fun wholeFileWindow(path: String, line: Int?, limit: Int?): ReadResult {
+        val whole = rawVisualLines(client.fsReadTextFile(path = path, line = null, limit = null).content)
+        val startLine = line ?: 1
+        if (line != null && line > whole.size) {
+            throw FileStoreException(
+                "line $line is past the end of the file (${whole.size} line${if (whole.size == 1) "" else "s"})"
+            )
+        }
+        val window = whole.drop(startLine - 1).let { if (limit != null) it.take(limit) else it }
         return ReadResult(
-            content = content,
-            // The proxy returns only the window we asked for; a window that
-            // came back smaller than the limit is assumed truncated. A window
-            // of exactly `limit` lines that ends with a newline reaches EOF
-            // (the final newline is a terminator, not a phantom extra line).
-            complete = when {
-                limit == null -> true
-                content.count { it == '\n' } < limit -> true
-                else -> content.endsWith("\n")
-            },
-            total = null,
+            content = window.joinToString(""),
+            complete = startLine + window.size - 1 >= whole.size,
+            total = whole.size,
         )
     }
 
@@ -293,4 +341,26 @@ internal fun visualLines(content: String): List<String> {
     if (content.isEmpty()) return emptyList()
     val lines = content.split('\n')
     return if (lines.last().isEmpty()) lines.dropLast(1) else lines
+}
+
+/**
+ * The [visualLines] split keeping each line's own terminator (`"a\nb"` ->
+ * `["a\n", "b"]`, `"a\nb\n"` -> `["a\n", "b\n"]`). Window slices joined from
+ * these keep the exact terminator placement [ReadResult.content] promises, so
+ * an unterminated final line never grows a phantom newline.
+ */
+internal fun rawVisualLines(content: String): List<String> {
+    if (content.isEmpty()) return emptyList()
+    val lines = mutableListOf<String>()
+    var start = 0
+    while (start < content.length) {
+        val newline = content.indexOf('\n', start)
+        if (newline == -1) {
+            lines += content.substring(start)
+            break
+        }
+        lines += content.substring(start, newline + 1)
+        start = newline + 1
+    }
+    return lines
 }

@@ -198,9 +198,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move), isSymbolicLink
     tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
-    tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy),
+    tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy,
+                                     # windowing: whole-file fallback + EOF probe, fixes #6),
                                      # StreamingLineReader (SourceLine = text + terminator status) +
-                                     # the shared truncateLine line cap and visualLines (visual-line
+                                     # the shared truncateLine line cap and visualLines/rawVisualLines (visual-line
                                      # convention: trailing newline = terminator, "" = 0 lines)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
@@ -599,17 +600,27 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
   not cover the whole file, so a truncated read is
   unambiguous and the model can page forward (line numbers are display-only - `edit_file`
-  matches raw content, so the model must strip the `number│` prefix; the client fs proxy returns no
-  total, so the footer total comes from the local store, not the proxy; a proxy window of
-  exactly `limit` lines ending with a newline is complete - the terminator is not a phantom
-  line). Line counting follows the shared visual-line convention (`visualLines` in
+  matches raw content, so the model must strip the `number│` prefix; through the client fs
+  proxy the footer total is `?` unless the window was resolved via the whole-file fallback,
+  which knows the real line count). Line counting follows the shared visual-line convention (`visualLines` in
   `tools/FileStore.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
   zero lines, a blank line between terminators is real — an empty file/window renders the
   explicit `(empty content)` (web_fetch parity) instead of a phantom `   1│`. `grep` match
   numbers (both search paths) and `web_fetch`'s non-HTML pass-through share the convention so
   all line numbers agree with `read_file`; `LocalFileStore` therefore keeps each line's own
   terminator in the window text (the `ClientFileStore` passthrough shape), making a single
-  empty line `"\n"`, not `""`. Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
+  empty line `"\n"`, not `""`. **Client fs proxy windowing** (`ClientFileStore.readFile`,
+  fixes #6): the ACP spec does not define whether a `fs/read_text_file` window keeps the last
+  line's terminator (and the TS reference client ignores `line`/`limit` and returns the whole
+  file), so completeness is never inferred from the response shape: a response with more
+  lines than `limit` means a limit-ignoring client and is resolved by the whole-file fallback (`wholeFileWindow`: full
+  content re-read, the window sliced locally with `rawVisualLines`
+  (per-line terminators), `complete`/`total` computed from the real line count); every
+  ambiguous window (exact-`limit` lines, or `line > 1`) is settled by one EOF probe
+  (`fsReadTextFile(line = <line after window>, limit = 1)`): empty -> complete, >= 2 lines or
+  the whole file again -> whole-file fallback, exactly 1 line -> truncated. A failing probe
+  falls back to `complete = false` (a phantom footer beats a silently missing one) and
+  cancellation still propagates. Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
   `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
   `'x' must not be null` error (previously `null` was silently coerced to the string
   "null" - e.g. written into files or run as a shell command), an absent key stays
@@ -1018,6 +1029,10 @@ the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
 `EditFileToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`, `DeleteFileToolTest`,
 `DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
 per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`. The
+client fs-proxy windowing contract (issue #6: no phantom footer past EOF, whole-file
+fallback for limit-ignoring clients, EOF-probe arguments + conservative probe-failure
+fallback) is pinned in `PermissionAndFileStoreTest` (strict `SlicingFsClient` /
+`FailingProbeFsClient` doubles) and `ReadFileToolTest` (rendering). The
 calc expression language (operator precedence incl. right-associative `^`,
 functions/constants, positional error messages, length/nesting caps) is unit-tested in
 `CalcExpressionTest`/`CalcToolTest`.
