@@ -75,6 +75,7 @@ private suspend fun writeResultDiff(path: String, newText: String, context: Tool
     } catch (e: Exception) {
         return null
     }
+    if (newText.length > MAX_DIFF_CONTENT_LENGTH) return null
     if (oldText != null && oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
     return ToolResultDiff(path, newText, oldText)
 }

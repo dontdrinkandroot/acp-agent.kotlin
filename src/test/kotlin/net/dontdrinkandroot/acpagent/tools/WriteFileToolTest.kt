@@ -37,6 +37,20 @@ class WriteFileToolTest {
     }
 
     @Test
+    fun `write skips the diff for oversized new content`() = runBlocking {
+        // Issue #46: the new-content side must be capped like the old one (and
+        // like editResultDiff), or a large write pushes the whole content onto
+        // the wire in the diff block.
+        val dir = tmpDir()
+        val path = "$dir/big-new.txt"
+        val big = "x".repeat(100_001)
+        val write =
+            WriteFileTool().execute(buildJsonObject { put("path", path); put("content", big) }, testContext(dir))
+        assertFalse(write.isError, write.text)
+        assertEquals(null, write.diff, "oversized new content must not be pushed onto the wire")
+    }
+
+    @Test
     fun `write with a failing raw read still writes and skips the diff`() = runBlocking {
         val dir = tmpDir()
         val failingRawStore = object : FileStore {
