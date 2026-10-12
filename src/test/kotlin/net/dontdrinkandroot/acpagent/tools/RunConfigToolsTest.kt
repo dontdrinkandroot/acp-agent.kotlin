@@ -270,4 +270,48 @@ class RunConfigToolsTest {
         assertTrue(update.isError)
         assertEquals("'command' must not be null", update.text)
     }
+
+    @Test
+    fun `update rejects a blank name with the clean error result`() = runBlocking {
+        val dir = tempDir()
+        createRunConfig(dir, "test", "npm test", null)
+        val create = CreateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", " "); put("command", "x") },
+            context(dir),
+        )
+        val update = UpdateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", " "); put("command", "x") },
+            context(dir),
+        )
+        // #47: blank-name validation must map through runConfigResult like create
+        assertTrue(update.isError, update.text)
+        assertEquals("Run configuration name must not be blank", update.text)
+        assertEquals(create.text, update.text)
+        assertEquals(RunConfig("test", "npm test", null), configs(dir).single())
+    }
+
+    @Test
+    fun `delete rejects a blank name with the clean error result`() = runBlocking {
+        val dir = tempDir()
+        createRunConfig(dir, "test", "npm test", null)
+        val delete = DeleteRunConfigTool(dir).execute(
+            buildJsonObject { put("name", " ") },
+            context(dir),
+        )
+        // #47: blank-name validation must map through runConfigResult like create
+        assertTrue(delete.isError, delete.text)
+        assertEquals("Run configuration name must not be blank", delete.text)
+        assertEquals(RunConfig("test", "npm test", null), configs(dir).single())
+    }
+
+    @Test
+    fun `blank names are rejected as RunConfigException by all write helpers`() {
+        val dir = tempDir()
+        createRunConfig(dir, "test", "npm test", null)
+        // #47: the write helpers' name validation must use RunConfigException so
+        // runConfigResult maps it to the clean error result in all three tools
+        assertFailsWith<RunConfigException> { createRunConfig(dir, " ", "x", null) }
+        assertFailsWith<RunConfigException> { updateRunConfig(dir, " ", "x", null) }
+        assertFailsWith<RunConfigException> { deleteRunConfig(dir, " ") }
+    }
 }

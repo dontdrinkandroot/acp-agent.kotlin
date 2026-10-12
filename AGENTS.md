@@ -462,7 +462,10 @@ Config comes from environment variables:
   `update_run_config` / `delete_run_config` (mutating, build/bash only, so plan stays
   read-only). `update` is field-level - a blank `command` is always rejected (never cleared),
   an omitted field stays unchanged, an empty-string `description` clears it; create rejects
-  existing names and blank commands; delete/update reject unknown names. Writes are atomic (temp + move) and refuse to
+  existing names and blank commands; delete/update reject unknown names. All three write
+  tools reject a blank name with the same clean error result ("Run configuration name must
+  not be blank" via `RunConfigException` -> `runConfigResult`, never a raw
+  `IllegalArgumentException` escaping `execute()`; issue #47). Writes are atomic (temp + move) and refuse to
   touch a corrupt/unparseable file; unknown entry fields
   round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),

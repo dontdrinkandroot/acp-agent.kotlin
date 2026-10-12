@@ -108,7 +108,7 @@ internal fun updateRunConfig(
     description: String?,
 ): RunConfig {
     val trimmedName = name.trim()
-    if (trimmedName.isEmpty()) throw IllegalArgumentException("Run configuration name must not be blank")
+    if (trimmedName.isBlank()) throw RunConfigException("Run configuration name must not be blank")
     if (command == null && description == null) {
         throw RunConfigException("Nothing to update for run configuration \"$trimmedName\"")
     }
@@ -148,7 +148,7 @@ internal fun updateRunConfig(
 
 internal fun deleteRunConfig(cwd: String, name: String): RunConfig {
     val trimmedName = name.trim()
-    if (trimmedName.isEmpty()) throw IllegalArgumentException("Run configuration name must not be blank")
+    if (trimmedName.isBlank()) throw RunConfigException("Run configuration name must not be blank")
     val root = loadRunConfigRoot(cwd)
         ?: throw RunConfigException("Could not delete \"$trimmedName\": no run configs are defined")
     val removed = root[trimmedName] as? JsonObject
