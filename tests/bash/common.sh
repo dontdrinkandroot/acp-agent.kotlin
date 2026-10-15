@@ -68,7 +68,8 @@ run_docker_launcher() {
     # never leak into test output or the stub log; tests opt into a fake one.
     # shellcheck disable=SC2034  # OUT is asserted on by the tests
     OUT=$(cd "$project_dir" && env -u OPENROUTER_API_KEY -u OPENROUTER_API_KEY_FILE \
-        -u ACP_DOCKER_EXTRA_MOUNTS -u ANDROID_HOME -u ANDROID_SDK_ROOT \
+        -u ACP_DOCKER_EXTRA_MOUNTS -u ACP_DOCKER_NETWORK -u ACP_DOCKER_EXTRA_ARGS \
+        -u ANDROID_HOME -u ANDROID_SDK_ROOT \
         -u GRADLE_USER_HOME -u UV_CACHE_DIR -u PIP_CACHE_DIR \
         -u COMPOSER_CACHE_DIR -u YARN_CACHE_FOLDER -u HF_HOME \
         -u NPM_CONFIG_CACHE -u CARGO_HOME -u GOMODCACHE -u NUGET_PACKAGES \

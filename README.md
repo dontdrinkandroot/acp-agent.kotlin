@@ -81,6 +81,31 @@ builds, `sdkmanager`, `adb` and similar tools work without further setup. Notes:
 - No emulator/AVDs, KVM or USB devices: the container cannot run emulators;
   `connectedAndroidTest` and `adb devices` see no devices.
 
+### Reaching MCP servers on the host
+
+The launcher maps `host.docker.internal` to the host gateway (`--add-host=host.docker.internal:host-gateway`), so MCP
+servers running on the
+host are reachable from the container at that name — e.g. the PhpStorm MCP
+server:
+
+```json
+{
+  "mcpServers": {
+    "phpstorm": {
+      "type": "sse",
+      "url": "http://host.docker.internal:64442/sse",
+      "headers": {
+        "IJ_MCP_SERVER_PROJECT_PATH": "/srv/git/gitlab.com/sorst/philip/sdrnr.net"
+      }
+    }
+  }
+}
+```
+
+(Type and header shape above are as the IDE presents them; over ACP the agent
+receives this translated into the protocol's `{name, url, headers: [{name,
+value}]}` SSE form.)
+
 ### Direct
 
 ```bash

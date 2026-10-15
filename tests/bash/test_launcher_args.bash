@@ -39,6 +39,29 @@ test_rw_rootfs_opt_out_relaxes_read_only() {
     assert_not_contains "$(last_run_line)" "--read-only"
 }
 
+# The agent inside the container must be able to reach MCP servers on the host
+# (e.g. the PhpStorm MCP server at http://host.docker.internal:64442/sse). A
+# plain Linux docker daemon does not resolve host.docker.internal, so the
+# launcher always maps it to the host gateway.
+test_host_docker_internal_resolves_to_the_host_gateway() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    assert_exit_status 0
+    assert_contains "$(last_run_line)" "--add-host=host.docker.internal:host-gateway"
+}
+
+test_explicit_docker_network_is_honored() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ACP_DOCKER_NETWORK=default --skip-pull
+    assert_exit_status 0
+    assert_contains "$(last_run_line)" "--network default"
+}
+
+test_extra_args_are_appended() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "ACP_DOCKER_EXTRA_ARGS=--label foo=bar --label baz=qux" --skip-pull
+    assert_exit_status 0
+    assert_contains "$(last_run_line)" "--label foo=bar --label baz=qux"
+}
+
 test_home_local_directories_get_uid_mapped_tmpfs_mounts() {
     # runc creates missing bind-mount mountpoints root-owned inside the
     # container; the ~/.local tmpfs mounts keep the whole XDG state/data home

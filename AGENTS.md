@@ -864,7 +864,10 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   build inputs.
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
   `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
-  home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
+  `--add-host=host.docker.internal:host-gateway` (plain Linux daemons do not resolve
+  `host.docker.internal`; the mapping lets the container reach MCP servers running on the
+  host, e.g. the PhpStorm MCP server at `http://host.docker.internal:<port>/sse`),
+  tmpfs home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
   `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
   home tmpfs/named volume would shadow it anyway, so runc would create the deep
   bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
@@ -1099,7 +1102,10 @@ Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
-identity, pull fallback, cache sharing (issue #51): explicit cache dir identity-mounted
+identity, pull fallback, `--add-host=host.docker.internal:host-gateway` (always present)
+
++ `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, cache sharing (issue #51): explicit
+  cache dir identity-mounted
 
 + env forwarded verbatim, forwarded without a mount when inside the project dir,
   `UV_LINK_MODE` forwarding, pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/

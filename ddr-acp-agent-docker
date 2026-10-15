@@ -613,8 +613,13 @@ fi
 
 # Not exec'd: the EXIT trap must run after docker returns to remove the
 # staged API key file and the .env.local mask file.
+# --add-host=host.docker.internal:host-gateway: plain Linux docker daemons do
+# not resolve host.docker.internal, so the mapping lets the container reach MCP
+# servers running on the host (e.g. the PhpStorm MCP server at
+# http://host.docker.internal:<port>/sse).
 "$docker_bin" run --rm --init -i \
     --network "$network" \
+    --add-host=host.docker.internal:host-gateway \
     --user "$uid:$gid" \
     "${api_key_mounts[@]}" \
     "${extra_mount_args[@]}" \
