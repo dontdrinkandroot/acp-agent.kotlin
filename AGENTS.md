@@ -841,11 +841,14 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   generic catch. A swallowing tool turns `session/cancel` into a bogus failed
   `ToolResult`; the wrapper makes that structurally impossible for the tool bodies (the remaining manual rethrows are
   the inner best-effort pre-reads:
-  `writeResultDiff` in `WriteFileTool.kt`; #29 tracks `delete_file`'s `deleteResultDiff`,
-  which still swallows). Same contract for the fs-proxy file tools (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with
+  `writeResultDiff` in `WriteFileTool.kt` and `deleteResultDiff` in `DeleteFileTool.kt` - both also keep their
+  non-cancellation catch, so a failing pre-read drops only the diff and the write/delete still proceeds). Same
+  contract for the fs-proxy file tools (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with
   the client fs proxy their
   `FileStore` calls are suspending RPCs; #28, fixed 2026-09-24, incl. the inner
-  `writeResultDiff` pre-read catch). Testing this swallow needs an outcome-capture
+  `writeResultDiff` pre-read catch; #29, fixed 2026-10-18, added `delete_file`'s pre-read rethrow, which was the one
+  remaining swallow - note only `delete_file`'s *pre-read* goes through the `FileStore`, the delete itself is
+  local-disk-only). Testing this swallow needs an outcome-capture
   detector, not `Deferred.isCancelled` — a `cancelAndJoin`ed deferred is
   `isCancelled` even when the body swallowed and returned a value (`BashToolTest`/`RunToolTest` "cancelling the tool
   during a running command"

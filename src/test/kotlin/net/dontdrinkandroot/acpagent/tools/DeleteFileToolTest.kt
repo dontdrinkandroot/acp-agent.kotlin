@@ -75,12 +75,21 @@ class DeleteFileToolTest {
                 writes += path
                 throw RuntimeException("must not be used")
             }
+
+            // An unreadable target fails with a plain I/O error, not a
+            // FileStoreException - the case the broad catch exists for.
+            override suspend fun readRaw(path: String): String =
+                throw java.io.IOException("permission denied: $path")
         }
         val ctx = testContext(dir, fileStore = recordingStore)
         WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "x") }, testContext(dir))
         val delete = DeleteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt") }, ctx)
         assertFalse(delete.isError, delete.text)
         assertTrue(recordingStore.writes.isEmpty(), "delete must operate on the local disk")
+        // The diff pre-read is best-effort: a failing store read drops only the
+        // diff, the delete still succeeds (do not narrow the catch to
+        // FileStoreException - that would block deletes over a broken pre-read).
+        assertNull(delete.diff, "a failed diff pre-read must not fail the delete")
     }
 
     @Test

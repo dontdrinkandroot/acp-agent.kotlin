@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
@@ -54,12 +55,19 @@ public class DeleteFileTool : AgentTool {
  * Best-effort read of the deleted file so the result can carry a `Diff`
  * content block showing the removed content. Skipped when the client fs proxy
  * is active (the client renders the modification itself) and when the content
- * exceeds [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
+ * exceeds [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane. Any other
+ * read failure drops only the diff - the delete still proceeds, so an
+ * unreadable file stays deletable.
  */
 private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolResultDiff? {
     if (context.fileStore.rendersChange) return null
     val oldText = try {
         context.fileStore.readRaw(path)
+    } catch (e: CancellationException) {
+        // A cancelled turn must abort; the pre-read is best-effort but the
+        // cancellation is not: swallowing it here would defeat the tool's
+        // own rethrow.
+        throw e
     } catch (e: Exception) {
         return null
     }

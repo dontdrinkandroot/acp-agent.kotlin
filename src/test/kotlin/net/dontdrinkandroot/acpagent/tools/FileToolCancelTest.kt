@@ -54,8 +54,9 @@ private class SuspendingStore(val entered: CompletableDeferred<Unit>) : FileStor
  * calls are suspending RPCs with the client proxy, so a swallowed
  * CancellationException would surface as a bogus failed ToolResult instead
  * of ending the turn cancelled (issue #28). This covers the tool-level
- * catches — centralized in [executeSafely] — and the inner one on the write
- * path ([writeResultDiff]'s pre-read).
+ * catches — centralized in [executeSafely] — and the inner ones on the
+ * write/delete paths ([writeResultDiff]'s and [deleteResultDiff]'s pre-read,
+ * the latter pinned by #29).
  *
  * The captured outcome distinguishes swallow from propagate: a swallowing
  * body returns a ToolResult (no suspension point after the catch), a
@@ -172,5 +173,17 @@ class FileToolCancelTest {
                 context(dir, store),
             )
         }
+    }
+
+    @Test
+    fun `cancelling delete_file during the diff pre-read propagates instead of a failed result`() {
+        val dir = tmpDir()
+        val path = "$dir/d.txt"
+        java.io.File(path).writeText("bye")
+        val store = SuspendingStore(CompletableDeferred()).apply { suspendReadRaw = true }
+        runCancelled(store) {
+            DeleteFileTool().execute(buildJsonObject { put("path", path) }, context(dir, store))
+        }
+        assertTrue(SystemFileSystem.exists(Path(path)), "the cancelled call must not have deleted the file")
     }
 }
