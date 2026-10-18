@@ -69,6 +69,10 @@ banner-suppressing API.
   unless the user explicitly asks. The `git` run config is for read-only
   inspection (`status`, `diff`, `log`) unless the user requested a mutating
   git command.
+* **Commit messages are always a single line**: `<type>(<scope>): <summary>`,
+  optionally ending in `(closes #N)` / `(fixes #N)` — no body, no trailing
+  paragraphs (matches the existing history, e.g.
+  `fix(config): clamp ACP_BASH_TIMEOUT_SECONDS to 1..3600 (closes #25)`).
 
 ## Building / running
 
@@ -243,7 +247,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
                                      # restarts + update_plan persistence/replay
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
-                                     # cancel during a running bash command (no FAILED update)
+                                     # cancel during a running bash command (no FAILED update);
+                                     # currently accepts any CancellationException instead of
+                                     # pinning StopReason.CANCELLED (issue #62)
         E2eToolCallPairingRepairTest.kt # pairing invariant e2e (issue #38): cancelled call closed
                                      # in the next chat request; poisoned record heals at load
                                      # (terminal FAILED replay); mid-batch cancel record pin
@@ -255,7 +261,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
                                      # + trusted read paths (ACP_EXTRA_MOUNTS: read prompt-free, write
                                      # still prompts) + move/delete tools (in-project without prompt,
-                                     # out-of-project move destination prompts)
+                                     # out-of-project move destination prompts); no fs-capability
+                                     # negative scenario yet (issue #61), no allow_always case (#65)
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
@@ -361,7 +368,8 @@ Config comes from environment variables:
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
-  `postInitialize()` - after the load response (SDK hook limitation); the pure mapping is
+  `postInitialize()` - after the load response (SDK hook limitation; the spec requires the
+  replay *before* the response, tracked by issue #59); the pure mapping is
   `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`);
   `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
@@ -709,7 +717,9 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   In-project writes are further gated by mode (plan is read-only). The containment check (`tools/Containment.kt`) is
   symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
-  `reject_once` apply once. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call in
+  `reject_once` apply once. The permanent branches have **no test today** (issue #65); the
+  over-grant design flaw is #3. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call
+  in
   permission prompts and progress - it ignores the `rawInput` field that carries the actual
   arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with **Observed (JetBrains,
   2026-09)**: the permission dialog in practice showed the bare
@@ -757,13 +767,17 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   (the client renders the change itself; avoids a stale duplicate and a pre-read
   round-trip). Path-scoped tool calls carry `locations`
   (`tool_call`, `request_permission` and load replay) for the client's follow-along
-  surface. `rawOutput` keeps the plain result for wire compat. **Revert path**: when JetBrains renders
+  surface. `rawOutput` keeps the plain result for wire compat. The spec's optional
+  programmatic `tool_call.name` is **not** emitted: the pinned `acp` SDK 0.30.1 model (`SessionUpdate.ToolCall`) has no
+  such property - tracked by issue #64. **Revert path**: when JetBrains renders
   `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
   call sites (`tool_call` notification, `request_permission`, completed/denied updates,
   load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
-  `mcpCapabilities.http/sse`. The streamable-HTTP client (`McpConnector.connectHttp`)
+  `mcpCapabilities.http/sse`. Only **HTTP** is covered end-to-end (`E2eMcpToolPermissionTest`);
+  stdio (the one transport the spec makes mandatory, "all Agents MUST support the stdio
+  transport") and SSE have no e2e at all - tracked by issue #60. The streamable-HTTP client (`McpConnector.connectHttp`)
   installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
   a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
   MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
@@ -785,15 +799,21 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
   stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
   so a failed or truncated turn fails loudly instead of executing partial tool calls or
-  emitting an empty END_TURN. A `length` (or other non-`stop`/`tool_calls`/
-  `content_filter`) finish reason, or an iteration with no text and no tool calls, triggers
+  emitting an empty END_TURN. A `length`/`error` finish reason, an iteration with no text and
+  no tool calls, or an undocumented normalized finish reason whose `native_finish_reason`
+  names a token limit triggers
   exactly one continuation pass:the partial text (if any) is kept, ALL tool calls (including complete ones) are dropped
   and never executed - the model re-issues them
   after the continuation -, a synthetic user "continue" prompt is appended, and the retry
   runs even when the tool-iteration budget is exhausted. A second truncation/empty
   completion ends the turn with an honest "response interrupted" note (+ `end_turn`,
   no exception); `content_filter` ends immediately with a "blocked by content filtering"
-  note (never retried). Both cases log to stderr (`warn` on first, `error` when still
+  note (never retried). An undocumented finish reason (outside OpenRouter's normalized set,
+  issue #16) is classified by usable output: with text or complete tool calls it is a
+  natural completion (the tool calls execute, no continuation retry), with empty output it
+  fails over to the raw `native_finish_reason` (`length`/`max_tokens`/`max_output_tokens`
+  -> truncation) and otherwise retries conservatively as empty. Both abnormal cases log to stderr (`warn` on first,
+  `error` when still
   broken) so the problem stays visible. Replay renders the synthetic "continue" user
   message as a normal bubble (accepted).
   Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
@@ -1085,6 +1105,17 @@ call counts, mock filler text, delta chunk splits). A behavioral change
 failure without a behavioral change is a test-design smell: fix the test by
 asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
+
+**Known e2e gaps against the ACP spec** (reviewed 2026-10-18; file new issues for
+new findings, don't just note them): the `session/load` replay ordering deviation is
+#59; MCP **stdio** has no e2e at all (spec: all agents MUST support it) - #60; the
+missing cheap conformance assertions (stdout hygiene, version negotiation,
+capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
+contract) are #61; `E2eCancelTest` accepts any `CancellationException` as "cancelled"
+instead of pinning `StopReason.CANCELLED` - #62; the orchestration-level assertions
+that contradict the policy above are collected in #63; `tool_call.name` is never
+emitted and the pinned SDK 0.30.1 model cannot express it - #64; the
+`allow_always`/`reject_always` branches have no test - #65.
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —

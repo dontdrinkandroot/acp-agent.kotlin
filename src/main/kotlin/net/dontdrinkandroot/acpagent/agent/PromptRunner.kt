@@ -25,16 +25,21 @@ private val logger = KotlinLogging.logger {}
  * reply chunks are relayed immediately; tool-call deltas are accumulated and
  * executed sequentially by [ToolCallExecutor].
  *
- * Truncated or empty completions (a `length` finish reason, or an iteration
- * with no text and no tool calls) are recovered from once per turn: the partial
- * text (if any) is kept, all tool calls are dropped (never executed —the
- * model re-issues them after the continuation), a synthetic user "continue"
- * prompt is appended, and the loop runs one more iteration. A second
- * truncation ends the turn with an honest text note instead of an error dialog.
+ * Truncated or empty completions (a normalized `length`/`error` finish reason,
+ * a raw provider token-limit reason behind an undocumented normalized one, or
+ * an iteration with no text and no tool calls) are recovered from once per
+ * turn: the partial text (if any) is kept, all tool calls are dropped (never
+ * executed —the model re-issues them after the continuation), a synthetic user
+ * "continue" prompt is appended, and the loop runs one more iteration. A
+ * second truncation ends the turn with an honest text note instead of an error
+ * dialog.
 
 
  * A `content_filter` finish reason is not retried: the turn ends immediately
- * with the partial text and a notice. Both cases are logged to stderr
+ * with the partial text and a notice. An undocumented normalized finish reason
+ * with usable output (text or complete tool calls) is a natural completion and
+ * ends the turn normally (issue #16); with empty output it is still retried
+ * conservatively. Both abnormal cases are logged to stderr
  * (with the full unfiltered completion) so the problem stays visible.
  * Transport-level failures (a stream ending without
  * `[DONE]` / finish reason) remain loud `LlmException`s. */
@@ -352,18 +357,25 @@ internal data class StreamedIteration(
         get() = rawContent.orEmpty()
 
     /**
-     * The iteration produced no text and no tool calls, or ended with a truncation
-     * finish reason (`length`, or any reason that is neither a natural stop nor
-     * content filtering). Both cases mean the response is incomplete and the
-     * turn must not end normally on it.
+     * The iteration produced no text and no tool calls, or was cut short by
+     * the provider: the normalized `length`/`error` reasons, or - when the
+     * normalized reason is outside the documented set - a raw provider reason
+     * that names a token limit. An undocumented reason with usable output is a
+     * natural completion (issue #16: dropping its tool calls was the bug).
      */
     val truncated: Boolean
         get() = when {
             finishReason == "content_filter" -> false
-            finishReason == "length" -> true
-            finishReason != null && finishReason != "stop" && finishReason != "tool_calls" -> true
-            else -> text.isEmpty() && toolCalls.isEmpty()
+            finishReason == "length" || finishReason == "error" -> true
+            finishReason == "stop" || finishReason == "tool_calls" -> nothingUsable
+            else -> nativeIndicatesTokenLimit || nothingUsable
         }
+
+    private val nothingUsable: Boolean
+        get() = text.isEmpty() && toolCalls.isEmpty()
+
+    private val nativeIndicatesTokenLimit: Boolean
+        get() = nativeFinishReason?.lowercase() in TOKEN_LIMIT_REASONS
 
     /**
      * Dumps the full, unfiltered completion for diagnostics: the raw content
@@ -418,6 +430,15 @@ private const val CONTINUE_TRUNCATED_PROMPT =
 
 private const val CONTINUE_EMPTY_PROMPT =
     "Your previous response was empty. If the task is done, briefly say so; otherwise continue."
+
+/**
+ * Raw provider finish reasons (lower-cased) that mean the completion was cut
+ * off at a token limit. Consulted only when the normalized `finish_reason` is
+ * outside the documented set (issue #16): the raw reason lives in
+ * `native_finish_reason`, and an undocumented remainder must not be assumed
+ * truncated when it may simply be complete.
+ */
+private val TOKEN_LIMIT_REASONS = setOf("length", "max_tokens", "max_output_tokens")
 
 /**
  * Mints a fresh [`MessageId`] for one LLM iteration: the reasoning deltas and the

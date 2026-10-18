@@ -527,6 +527,101 @@ class PromptRunnerTest {
     }
 
     @Test
+    fun `an undocumented finish reason with a complete tool call executes it instead of dropping it`() = runBlocking {
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val fake = FakeCompleter(
+            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "pause_turn")),
+            listOf(chunk(content = "Done.")),
+        )
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertTrue(tool.executed, "a complete tool call behind an unknown finish reason must execute (issue #16)")
+        assertEquals(2, fake.requests.size, "the loop continues normally - no continuation retry")
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(0, users.size, "a completion with usable output must not get a synthetic continue prompt")
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+    }
+
+    @Test
+    fun `an undocumented finish reason with usable text ends the turn normally`() = runBlocking {
+        val fake = FakeCompleter(listOf(chunk(content = "All done.", finishReason = "pause_turn")))
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(1, fake.requests.size, "a complete completion must not trigger the continuation retry")
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(0, users.size)
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+    }
+
+    @Test
+    fun `an undocumented finish reason with empty output still retries once conservatively`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "pause_turn")),
+            listOf(chunk(content = "Recovered.")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(2, fake.requests.size, "nothing usable arrived - the empty-completion retry applies")
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(1, users.size)
+        assertTrue(users.single().content?.text()!!.contains("empty"), users.single().content?.text())
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+    }
+
+    @Test
+    fun `a native token-limit reason classifies an unknown finish reason as truncated`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(content = "Partial", finishReason = "provider_specific", nativeFinishReason = "max_tokens")),
+            listOf(chunk(content = " continued.")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(2, fake.requests.size, "native max_tokens means the completion was cut off")
+        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(1, users.size)
+        assertTrue(users.single().content?.text()!!.contains("cut off"), users.single().content?.text())
+        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        assertEquals(listOf("Partial", " continued."), assistants.map { it.content?.text() })
+    }
+
+    @Test
+    fun `an error finish reason without an error object is treated as truncation`() = runBlocking {
+        val fake = FakeCompleter(
+            listOf(chunk(finishReason = "error")),
+            listOf(chunk(content = "Recovered after error.")),
+        )
+        val state = state()
+        val runner = runner(fake, state)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("plan"), null, toolContext())
+
+        assertEquals(2, fake.requests.size, "a bare error finish reason retries once like a truncation")
+        val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
+        assertEquals(StopReason.END_TURN, response.response.stopReason)
+    }
+
+    @Test
     fun `a dangling tool call is closed in the chat request - strict providers never see it dangling`() = runBlocking {
         val fake = FakeCompleter(listOf(chunk(content = "Understood.")))
         val state = state()
