@@ -25,14 +25,22 @@ public data class Config(
         private const val DEFAULT_MODEL = "openrouter/auto"
         private const val DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
         private const val DEFAULT_BASH_TIMEOUT_SECONDS = 600
+
+        /**
+         * Upper bound for [bashTimeoutSeconds]: a configured value is clamped so
+         * a huge `ACP_BASH_TIMEOUT_SECONDS` cannot arm a decades-long process
+         * wait (issue #25). One hour still covers cold multi-minute builds.
+         */
+        private const val MAX_BASH_TIMEOUT_SECONDS = 3600
+
         private const val DEFAULT_MAX_TURN_REQUESTS = 100
 
         /** True unless the env var is set to exactly `0`. */
         private fun Map<String, String>.flag(name: String): Boolean = this[name] != "0"
 
-        /** The env var parsed as an int, or [default]; clamped to >= 1. */
-        private fun Map<String, String>.positiveInt(name: String, default: Int): Int =
-            (this[name]?.toIntOrNull() ?: default).coerceAtLeast(1)
+        /** The env var parsed as an int, or [default]; clamped to 1..[max]. */
+        private fun Map<String, String>.positiveInt(name: String, default: Int, max: Int = Int.MAX_VALUE): Int =
+            (this[name]?.toIntOrNull() ?: default).coerceIn(1, max)
 
         public fun fromEnv(env: Map<String, String> = platformEnv()): Config {
             return Config(
@@ -42,7 +50,11 @@ public data class Config(
                 autoThroughputSortingEnabled = env.flag("OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED"),
                 fsProxyEnabled = env.flag("FS_PROXY_ENABLED"),
                 mcpTrustAnnotations = env.flag("MCP_TRUST_ANNOTATIONS"),
-                bashTimeoutSeconds = env.positiveInt("ACP_BASH_TIMEOUT_SECONDS", DEFAULT_BASH_TIMEOUT_SECONDS),
+                bashTimeoutSeconds = env.positiveInt(
+                    "ACP_BASH_TIMEOUT_SECONDS",
+                    DEFAULT_BASH_TIMEOUT_SECONDS,
+                    max = MAX_BASH_TIMEOUT_SECONDS,
+                ),
                 maxTurnRequests = env.positiveInt("ACP_MAX_TURN_REQUESTS", DEFAULT_MAX_TURN_REQUESTS),
                 webFetchAllowPrivate = env["ACP_WEB_FETCH_ALLOW_PRIVATE"] == "1",
                 extraMounts = parseExtraMounts(env["ACP_EXTRA_MOUNTS"]),

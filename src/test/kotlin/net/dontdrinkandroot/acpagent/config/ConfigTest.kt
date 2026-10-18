@@ -168,6 +168,25 @@ class ConfigParseTest {
     }
 
     @Test
+    fun `bash timeout clamps to at most one hour`() {
+        assertEquals(
+            3600,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "999999999"))
+                .bashTimeoutSeconds,
+        )
+        assertEquals(
+            3600,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "3601"))
+                .bashTimeoutSeconds,
+        )
+        assertEquals(
+            3600,
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "3600"))
+                .bashTimeoutSeconds,
+        )
+    }
+
+    @Test
     fun `max turn requests defaults to 100`() {
         assertEquals(
             100,

@@ -313,8 +313,9 @@ Config comes from environment variables:
 - `MCP_TRUST_ANNOTATIONS` (default enabled; `0` ignores MCP tool behavior
   annotations, keeping the pessimistic always-prompt permission default, see
   Permissions)
-- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to >= 1; the bash tool terminates commands
-  after this many seconds, killing the whole process tree, see Features)
+- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to 1..3600; the bash tool terminates commands
+  after this many seconds, killing the whole process tree, see Features; the upper bound keeps a
+  huge value from arming a decades-long wait, issue #25)
 - `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
   budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
   before the turn ends with `MAX_TURN_REQUESTS`)
