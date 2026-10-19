@@ -53,10 +53,11 @@ public class WriteFileTool : AgentTool {
 /**
  * Best-effort pre-read of the target so the result can carry a `Diff` content
  * block for clients that render tool-call diffs without the client fs proxy.
- * A missing file yields a diff with `oldText = null`; any other read failure
- * skips the diff. The client fs proxy already renders the modification itself,
- * so the diff is skipped there; oversized content is skipped to keep the wire
- * payload sane.
+ * Only a genuinely absent file yields a diff with `oldText = null` (ACP's "this
+ * file is new"); a file that exists but cannot be read skips the diff instead
+ * of claiming newness (issue #55). The client fs proxy already renders the
+ * modification itself, so the diff is skipped there; oversized content is
+ * skipped to keep the wire payload sane.
  */
 private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
     if (context.fileStore.rendersChange) return null
@@ -67,12 +68,12 @@ private suspend fun writeResultDiff(path: String, newText: String, context: Tool
         // cancellation is not: swallowing it here would defeat the tool's
         // own rethrow.
         throw e
-    } catch (e: FileTooLargeException) {
-        return null
-    } catch (e: FileStoreException) {
+    } catch (e: FileAbsentException) {
         // A missing file is a new-file write: the diff shows oldText = null.
         null
     } catch (e: Exception) {
+        // Exists but is unreadable (or oversized): no baseline, so no diff -
+        // never a false "new file".
         return null
     }
     if (newText.length > MAX_DIFF_CONTENT_LENGTH) return null

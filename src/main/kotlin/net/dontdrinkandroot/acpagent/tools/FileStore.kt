@@ -44,10 +44,14 @@ internal interface FileStore {
 
     /**
      * Reads the whole file exactly (no per-line truncation) for edit_file and
-     * diff pre-reads. Throws [FileTooLargeException] when the file exceeds the
-     * size cap and [FileStoreException] when it cannot be read. The default is
-     * a loud unsupported error so stores that cannot serve raw bytes fail the
-     * call instead of silently returning wrong content.
+     * diff pre-reads. Throws [FileAbsentException] when there is no such file
+     * (the caller's "new file" signal), [FileTooLargeException] when it
+     * exceeds the size cap and [FileStoreException] when it exists but cannot
+     * be read - the two must stay distinguishable, because a diff's
+     * `oldText = null` claims the file is new (ACP) and must never be used
+     * for an unreadable existing file. The default is a loud unsupported error
+     * so stores that cannot serve raw bytes fail the call instead of silently
+     * returning wrong content.
      */
     suspend fun readRaw(path: String): String =
         throw FileStoreException("raw reads are unsupported by this file store")
@@ -65,7 +69,12 @@ internal class LocalFileStore : FileStore {
     override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult {
         val file = Path(path)
         if (!fs.exists(file)) throw FileStoreException("file not found: $path")
-        val size = fs.metadataOrNull(file)?.size ?: throw FileStoreException("not a regular file: $path")
+        val metadata = fs.metadataOrNull(file) ?: throw FileStoreException("not a regular file: $path")
+        // Only regular files are opened: a FIFO or device reports size -1,
+        // passes the size cap and then blocks on open(2) or streams without
+        // end, hanging the turn.
+        if (!metadata.isRegularFile) throw FileStoreException("not a regular file: $path")
+        val size = metadata.size
         if (size > MAX_FILE_SIZE_BYTES) throw FileStoreException(fileTooLargeMessage(size))
         val startLine = line ?: 1
         val scanner = StreamingLineReader(file)
@@ -116,8 +125,12 @@ internal class LocalFileStore : FileStore {
 
     override suspend fun readRaw(path: String): String {
         val file = Path(path)
-        if (!fs.exists(file)) throw FileStoreException("file not found: $path")
-        val size = fs.metadataOrNull(file)?.size ?: throw FileStoreException("not a regular file: $path")
+        if (!fs.exists(file)) throw FileAbsentException("file not found: $path")
+        val metadata = fs.metadataOrNull(file) ?: throw FileStoreException("not a regular file: $path")
+        // See readFile: never open a FIFO/device (it would block or stream
+        // forever - this guard also protects the edit/diff pre-reads).
+        if (!metadata.isRegularFile) throw FileStoreException("not a regular file: $path")
+        val size = metadata.size
         if (size > MAX_FILE_SIZE_BYTES) throw FileTooLargeException(fileTooLargeMessage(size))
         return fs.source(file).buffered().use { it.readString() }
     }
@@ -313,6 +326,13 @@ internal class ClientFileStore(
 }
 
 internal open class FileStoreException(message: String) : Exception(message)
+
+/**
+ * Raised by [FileStore.readRaw] when there is no file at the path. The
+ * dedicated type lets diff pre-reads tell genuine absence (a new file, so the
+ * diff's `oldText` is null) apart from a file that exists but cannot be read.
+ */
+internal class FileAbsentException(message: String) : FileStoreException(message)
 
 /** Raised by [FileStore.readRaw] when the file exceeds the size cap. */
 internal class FileTooLargeException(message: String) : FileStoreException(message)

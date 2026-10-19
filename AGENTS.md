@@ -202,7 +202,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
     tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move), isSymbolicLink
     tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
-    tools/FileStore.kt               # FileStore interface, LocalFileStore, ClientFileStore (fs proxy,
+    tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
+                                     # ClientFileStore (fs proxy,
                                      # windowing: whole-file fallback + EOF probe, fixes #6),
                                      # StreamingLineReader (SourceLine = text + terminator status) +
                                      # the shared truncateLine line cap and visualLines/rawVisualLines (visual-line
@@ -680,6 +681,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
   output. `read_file` requires `limit` (1..2000 lines; anything else is
   rejected before I/O), refuses files over **20 MB** (hardcoded, with a "use bash" hint),
+  refuses non-regular files (`not a regular file: <path>` - a FIFO/device would otherwise
+  block on `open(2)` or stream forever),
   truncates lines over **2000 chars** with `... [truncated]`, and errors with
   `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
   streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
@@ -695,7 +698,12 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `...(N binary, oversized or excluded files skipped)`.
   `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
   operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
-  be truncated, raw reads must not be. MCP tool results are intentionally uncapped.
+  be truncated, raw reads must not be. Its exception types are part of the contract (`FileAbsentException` = no such
+  file, the caller's "new file" signal;
+  `FileTooLargeException`; plain `FileStoreException` = exists but unreadable), because a
+  diff's `oldText = null` means "new file" in ACP. `LocalFileStore` opens **only regular
+  files** (`metadata.isRegularFile`): a FIFO/device reports size -1, passes the size cap and
+  then blocks on `open(2)` or streams without end. MCP tool results are intentionally uncapped.
 - **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
   `session/request_permission`. Exception: `ACP_EXTRA_MOUNTS` names absolute **read-trusted**
@@ -763,8 +771,9 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   file changes are visible without the client fs proxy - every diff describes the **whole file**: `edit_file` emits
   the full old/new content (was fragment-only, which
   Zed-style clients misrender), `write_file` best-effort pre-reads the old
-  content (`oldText = null` for new files; skipped on read failure or when either side
-  exceeds 100k chars), `delete_file` carries the removed content as
+  content (`oldText = null` **only** for a genuinely absent file - `FileAbsentException`, so an
+  existing-but-unreadable file never claims to be new, issue #55; skipped on any other read
+  failure or when either side exceeds 100k chars), `delete_file` carries the removed content as
   `newText = ""`. All diff blocks are **skipped when the client fs proxy is active**
   (the client renders the change itself; avoids a stale duplicate and a pre-read
   round-trip). Path-scoped tool calls carry `locations`
@@ -1070,7 +1079,9 @@ mapping, `title` annotation) are unit-tested in
 the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
 `EditFileToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`, `DeleteFileToolTest`,
 `DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
-per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`. The
+per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`; issue #55's
+absent-vs-unreadable split is pinned in `WriteFileToolTest`, the store's regular-files-only
+guard in `FileStoreTest`. The
 client fs-proxy windowing contract (issue #6: no phantom footer past EOF, whole-file
 fallback for limit-ignoring clients, EOF-probe arguments + conservative probe-failure
 fallback) is pinned in `PermissionAndFileStoreTest` (strict `SlicingFsClient` /

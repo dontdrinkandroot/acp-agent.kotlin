@@ -74,6 +74,34 @@ class WriteFileToolTest {
     }
 
     @Test
+    fun `write to an unreadable existing file emits no diff instead of claiming a new file`() = runBlocking {
+        // Issue #55: ACP defines oldText = null as "this file is new". An
+        // existing file that merely cannot be read must not be advertised as
+        // new - that breaks the client's diff and rollback baseline. Only a
+        // genuine absence may yield oldText = null.
+        val dir = tmpDir()
+        val unreadableStore = object : FileStore {
+            override suspend fun readFile(path: String, line: Int?, limit: Int?): ReadResult =
+                ReadResult("display content")
+
+            override suspend fun readRaw(path: String): String =
+                throw FileStoreException("file exists but cannot be read: $path")
+
+            override suspend fun writeFile(path: String, content: String) = Unit
+        }
+        val ctx = ToolContext(
+            cwd = dir,
+            client = null,
+            clientCapabilities = ClientCapabilities(),
+            sessionId = SessionId("sess_test"),
+            fileStore = unreadableStore,
+        )
+        val write = WriteFileTool().execute(buildJsonObject { put("path", "$dir/f.txt"); put("content", "x") }, ctx)
+        assertFalse(write.isError, write.text)
+        assertNull(write.diff, "an unreadable existing file must not be reported as a new file")
+    }
+
+    @Test
     fun `write skips the diff when the client fs proxy is active`() = runBlocking {
         val dir = tmpDir()
         // Proxy active: the client renders the change itself, so no diff and
