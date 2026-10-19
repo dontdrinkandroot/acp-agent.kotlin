@@ -3,12 +3,16 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -18,6 +22,8 @@ import kotlin.test.assertTrue
  * side (the SDK propagates $/cancel_request) and cancels the turn without a
  * spurious "Permission denied" tool result; cancelling while a bash command
  * runs cancels the turn without a spurious "Command failed" tool result.
+ * Both scenarios pin the spec MUST: the cancelled turn is answered with a
+ * PromptResponse carrying StopReason.CANCELLED (fixes #62).
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eCancelTest : E2eAgentTest() {
@@ -50,13 +56,9 @@ class E2eCancelTest : E2eAgentTest() {
                         withTimeout(60_000) { ops.permissionCancelled.await() },
                         "permission prompt must be cancelled",
                     )
-                    val outcome = promptJob.await()
-                    val stopReason =
-                        events.filterIsInstance<Event.PromptResponseEvent>().lastOrNull()?.response?.stopReason
-                    assertTrue(
-                        outcome.exceptionOrNull() is CancellationException || stopReason == StopReason.CANCELLED,
-                        "prompt must end cancelled, outcome=$outcome stopReason=$stopReason",
-                    )
+                    // Stronger than the former "CancellationException || CANCELLED" escape hatch: only
+                    // an answered cancelled PromptResponse satisfies the spec MUST (fixes #62).
+                    assertCancelledPromptOutcome(promptJob.await(), events)
                     val failedUpdates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
                         .filterIsInstance<SessionUpdate.ToolCallUpdate>()
                         .filter { it.status == ToolCallStatus.FAILED }
@@ -101,13 +103,9 @@ class E2eCancelTest : E2eAgentTest() {
                     }
                     awaitUntil(30_000) { File(sleepMarker).exists() }
                     session.cancel()
-                    val outcome = promptJob.await()
-                    val stopReason =
-                        events.filterIsInstance<Event.PromptResponseEvent>().lastOrNull()?.response?.stopReason
-                    assertTrue(
-                        outcome.exceptionOrNull() is CancellationException || stopReason == StopReason.CANCELLED,
-                        "prompt must end cancelled, outcome=$outcome stopReason=$stopReason",
-                    )
+                    // Same pin as the permission scenario: a cancelled turn must answer with
+                    // StopReason.CANCELLED instead of throwing (fixes #62).
+                    assertCancelledPromptOutcome(promptJob.await(), events)
                     val failedUpdates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
                         .filterIsInstance<SessionUpdate.ToolCallUpdate>()
                         .filter { it.status == ToolCallStatus.FAILED }
@@ -123,5 +121,18 @@ class E2eCancelTest : E2eAgentTest() {
         } finally {
             projectDir.deleteRecursively()
         }
+    }
+
+    /**
+     * Pins the cancellation MUST of the prompt-turn spec: the cancelled turn is answered with a
+     * PromptResponse carrying [StopReason.CANCELLED]. A thrown exception means the agent produced
+     * no response at all and fails the test (fixes #62).
+     */
+    private fun assertCancelledPromptOutcome(outcome: Result<Unit>, events: List<Event>) {
+        val failure = outcome.exceptionOrNull()
+        assertTrue(failure == null, "prompt must answer with a cancelled response, not throw: $failure")
+        val response = events.filterIsInstance<Event.PromptResponseEvent>().lastOrNull()
+        assertNotNull(response, "prompt must emit a PromptResponseEvent")
+        assertEquals(StopReason.CANCELLED, response.response.stopReason, "prompt must end cancelled")
     }
 }

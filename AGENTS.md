@@ -19,21 +19,21 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 version catalog `gradle/libs.versions.toml` (single source of truth; declared versions match
 what actually resolves).
 
-| Layer                  | Dependency                                                                            | Version                           |
-|------------------------|---------------------------------------------------------------------------------------|-----------------------------------|
-| Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.6) | 2.4.10                            |
-| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)       | 0.61.0                            |
-| ACP                    | `com.agentclientprotocol:acp`                                                         | 0.30.1                            |
-| MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                            |
-| HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                             |
-|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.5.1                             |
-| HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                            |
-| Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved)      |
-| IO                     | kotlinx-io-core                                                                       | 0.9.1                             |
-| JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (declared + resolved)      |
-| OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.2.0                             |
-| UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)        | 6.1.1                             |
-| Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.17                    |
+| Layer                  | Dependency                                                                            | Version                      |
+|------------------------|---------------------------------------------------------------------------------------|------------------------------|
+| Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.6) | 2.4.10                       |
+| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.61.0                       |
+| ACP                    | `com.agentclientprotocol:acp`                                                         | 0.33.0                       |
+| MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                       |
+| HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                        |
+|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.5.1                        |
+| HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                       |
+| Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
+| IO                     | kotlinx-io-core                                                                       | 0.9.1                        |
+| JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (declared + resolved) |
+| OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.3.0                        |
+| UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
+| Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.17               |
 
 Gradle conflict resolution picks the Koog-forced kotlinx versions; the catalog declares them
 at the values that actually resolve (1.11.0), so there is no declared-vs-resolved drift. Koog
@@ -248,8 +248,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # restarts + update_plan persistence/replay
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
                                      # cancel during a running bash command (no FAILED update);
-                                     # currently accepts any CancellationException instead of
-                                     # pinning StopReason.CANCELLED (issue #62)
+                                     # pins the cancelled PromptResponse + StopReason.CANCELLED
+                                     # (fixes #62)
         E2eToolCallPairingRepairTest.kt # pairing invariant e2e (issue #38): cancelled call closed
                                      # in the next chat request; poisoned record heals at load
                                      # (terminal FAILED replay); mid-batch cancel record pin
@@ -372,7 +372,9 @@ Config comes from environment variables:
   replay *before* the response, tracked by issue #59); the pure mapping is
   `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`);
   `session/resume` restores without replay. `session/list`
-  filters by cwd, sorts by recency, skips corrupt records. Cwd mismatch, unknown/invalid ids and
+  filters by cwd, sorts by recency, skips corrupt records; the SDK pages the result (10 entries per page + `nextCursor`
+  over our `Sequence` override since `acp` 0.33.0).
+  Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
 - **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
   `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
@@ -768,8 +770,9 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   round-trip). Path-scoped tool calls carry `locations`
   (`tool_call`, `request_permission` and load replay) for the client's follow-along
   surface. `rawOutput` keeps the plain result for wire compat. The spec's optional
-  programmatic `tool_call.name` is **not** emitted: the pinned `acp` SDK 0.30.1 model (`SessionUpdate.ToolCall`) has no
-  such property - tracked by issue #64. **Revert path**: when JetBrains renders
+  programmatic `tool_call.name` is **not** emitted: no `acp` SDK release up to 0.33.0 carries
+  it (`SessionUpdate.ToolCall` still has no `name` property) - tracked by issue #64. **Revert path**: when JetBrains
+  renders
   `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
   call sites (`tool_call` notification, `request_permission`, completed/denied updates,
   load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
@@ -1111,11 +1114,12 @@ new findings, don't just note them): the `session/load` replay ordering deviatio
 #59; MCP **stdio** has no e2e at all (spec: all agents MUST support it) - #60; the
 missing cheap conformance assertions (stdout hygiene, version negotiation,
 capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
-contract) are #61; `E2eCancelTest` accepts any `CancellationException` as "cancelled"
-instead of pinning `StopReason.CANCELLED` - #62; the orchestration-level assertions
+contract) are #61; the orchestration-level assertions
 that contradict the policy above are collected in #63; `tool_call.name` is never
-emitted and the pinned SDK 0.30.1 model cannot express it - #64; the
-`allow_always`/`reject_always` branches have no test - #65.
+emitted and no SDK release up to 0.33.0 can express it - #64; the
+`allow_always`/`reject_always` branches have no test - #65. (#62 left the gap list with
+the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
+`PromptResponse`/`StopReason.CANCELLED`.)
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —
@@ -1181,8 +1185,29 @@ update this file: (1) `GET /models` wire types - still `internal`? still without
 `reasoning {effort}` now? (3) `agents-features-acp` - still batch-emits events, no
 permission flow/modes/usage indicator/replay? The moment any of these closes, port that
 surface to Koog. Run config `sources` (e.g.
-`build/library-sources-unpacked/prompt-executor-openrouter-client-jvm-1.2.0/`) is the
+`build/library-sources-unpacked/prompt-executor-openrouter-client-jvm-1.3.0/`) is the
 mechanism to check these against the exact resolved Koog sources.
+
+**ACP SDK upgrade checklist**: on every `com.agentclientprotocol:acp` bump, read the
+release notes (github.com/agentclientprotocol/kotlin-sdk/releases) and re-verify against
+the exact resolved sources (`sources` unpacks `acp-jvm-<version>/` + `acp-model-jvm-<version>/`):
+(1) `model/SessionUpdate.kt` - does `SessionUpdate.ToolCall` carry the programmatic `name`
+property yet? If so, emit it (`tool.name` in `ToolCallExecutor`, the persisted
+`call.function.name` in `ReplayUpdates`) and close issue #64; (2) cancellation semantics (`agent/Agent.kt`
+`SessionWrapper.prompt`) - a cancelled turn
+must still be answered with `PromptResponse(StopReason.CANCELLED)`, which `E2eCancelTest`
+pins; watch `protocol/Exceptions.kt` for new error types in the permission path (`AcpRequestCancelledException` since
+0.33.0 is deliberately *not* a
+`CancellationException`); (3) `AgentSupport` contracts - `deleteSession` must keep succeeding for unknown/already
+deleted ids (pinned by `AgentSupportImplTest`), and `session/list` pagination over our
+`Sequence` override (10 per page + `nextCursor` since 0.33.0); (4) symbol stability - the JSON-RPC error helpers
+(`AcpExpectedError`, `JsonRpcException`,
+`acpFail`, `jsonRpcInvalidParams`, `ACPJson`) moved from `Protocol.kt`/
+`Protocol.extensions.kt` into `Exceptions.kt` between 0.30.1 and 0.33.0 with packages
+unchanged; expect file moves, watch for renames.
+Upgrade history: 0.30.1 -> 0.33.0 (2026-10-19): all four verified, no source changes
+needed beyond the `E2eCancelTest` pin (fixes #62); `SessionUpdate.ToolCall.name` still
+absent (#64 stays open).
 
 **Definition of done**: a change is done when the `build` run configuration passes
 (compile + all tests incl. the black-box e2e).
@@ -1224,7 +1249,9 @@ communicate that with the user so we can review them.
     for `delta.reasoning`, `usage` and finish
     reasons without Koog's StreamFrame conversion.
   - **No more Koog - for now (recheck periodically)**: hand-rolled surfaces beyond the
-    wire types were re-evaluated against Koog 1.2.0 and stay hand-rolled:
+    wire types were re-evaluated against Koog 1.3.0 and stay hand-rolled (1.3.0 only added
+    ready-made `LLModel` definitions + Google/Langfuse fixes; `OpenAIDataModels.kt` and
+    `OpenRouterChatCompletion.kt` are byte-identical to 1.2.0, so the wire contract did not move):
     - `GET /models`: Koog's `OpenRouterModelsResponse`/`OpenRouterModel` are `internal`
       (module-private) and lack the `reasoning` block (`supported_efforts`,
       `default_effort`, `mandatory`) our thought-level config option needs - our
