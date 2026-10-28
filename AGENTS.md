@@ -937,22 +937,36 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   *not*
   shared (one daemon registry + logs across the host and container PID namespaces would
   let probing clients prune each other's daemons and `gradle --stop` kill both sides'
-  daemons). Instead the GUH root is a container-private uid-mapped `.gradle` tmpfs
-  (holding `daemon/`, `.tmp`, `kotlin/`, `native/` and the per-version
-  `caches/<ver>/` state incl. `journal-1`/`file-access.bin` - always ephemeral per
-  session), and only the content-addressed, machine-independent leaves are shared rw at
-  their identical in-container path: `caches/modules-2`, `caches/jars-*`, `wrapper/dists`
-  and `jdks` (dependencies + wrapper dists persist on the host and are shared with host
-  builds). The `caches/` and `wrapper/` intermediate depths get their own per-depth
+  daemons). Instead the GUH root is a container-private uid-mapped `.gradle` tmpfs (holding `daemon/`, `.tmp`,
+  `kotlin/`, `native/`), and everything Gradle documents
+  as a *cache* (docs: `directory_layout`, "Shared caches" / "Version-specific caches")
+  is shared rw at its in-container path: `caches/modules-2`, `caches/jars-*`,
+  `caches/build-cache-*`, legacy `caches/transforms-*`, the version-bound
+  `caches/<ver>/transforms` + `caches/<ver>/generated-gradle-jars`, `wrapper/dists`
+  and `jdks` (dependencies, transform output and wrapper dists persist on the host and
+  are shared with host builds; fixes #67 - AGP transform output alone filled the 1 GB
+  caches tmpfs). Everything else stays on the private tmpfs: absolute-path-keyed
+  execution state (`journal-1`/`file-access.bin`, `caches/<ver>/fileHashes`, `jvms`),
+  JVM-sensitive compiled scripts (`kotlin-dsl`, `scripts`) and `caches/<ver>/cc-keystore`
+  - the configuration-cache **encryption key**, which must never leave the container (sharing it would let the sandbox
+    decrypt the host's configuration-cache entries).
+    Each version dir gets its own per-version uid tmpfs (so its private siblings stay
+    writable and private) with the two shared children bound on top; version names are
+    discovered from the digit-named `caches/<ver>` dirs **and** from the shared wrapper
+    dists (`gradle-<version>-<bin|all>`), so a version right after a wrapper upgrade is
+    shared from the first session instead of re-deriving `generated-gradle-jars` +
+    transforms into the tmpfs every time. The `caches/` and `wrapper/` intermediate depths get their own per-depth
   uid tmpfs (same treatment as the `~/.local` depths): runc creates the missing parents
   of the leaf bind-mountpoints root-owned inside the root tmpfs, which would otherwise
   make the versioned `caches/<ver>/` metadata (incl. `jvms/`) and new wrapper state
   unwritable (observed as `Could not open cache directory ... caches/<ver>/jvms`).
-  All home-side tmpfs mounts (`/home/dev` and the three `.gradle` depths) are
+    All home-side tmpfs mounts (`/home/dev` and the `.gradle` depths incl. the
+    per-version `caches/<ver>` tmpfs) are
   **exec-allowed** (`exec` appended, overriding docker's `noexec` tmpfs default; moby
   keeps the seeded `nosuid,nodev` when merging): toolchains execute native binaries
-  extracted into those caches - AGP's AAPT2 from Maven (transform output dir under
-  `caches/<ver>/`) and Kotlin/Native under `~/.konan` - which the former host
+    extracted into those caches - AGP's AAPT2 from Maven, the compiled Kotlin DSL
+    scripts under `caches/<ver>/kotlin-dsl` and Kotlin/Native under `~/.konan` (when the
+    konan cache is not mounted from the host) - which the former host
   bind-mount home never restricted (noexec surfaced as
   `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
   noexec default (nothing executes from there).
@@ -1154,7 +1168,10 @@ OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the 
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
 identity, pull fallback, `--add-host=host.docker.internal:host-gateway` (always present)
 
-+ `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, cache sharing (issue #51): explicit
++ `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, Gradle
+  GUH sharing (content-addressed leaves incl. `build-cache-*`/`transforms-*`,
+  version-bound `transforms`/`generated-gradle-jars` incl. wrapper-dist-derived
+  versions, per-version tmpfs, #67), cache sharing (issue #51): explicit
   cache dir identity-mounted
 
 + env forwarded verbatim, forwarded without a mount when inside the project dir,
@@ -1370,7 +1387,11 @@ communicate that with the user so we can review them.
   held - the blocker is real contention, not the lock file's existence: idle daemons keep
   `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),
   and every lock file keeps the last owner's PID as a record after release, so neither
-  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. First aid is
+  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. The shared
+  cache leaves form one lock domain across the host and all agent containers (issue #68),
+  so a concurrent host/other-container build surfaces here as `INVISIBLE-HOLDER` /
+  `Timeout waiting to lock` - Gradle documents cross-container concurrent cache access as
+  unsupported; a retry is safe, and the work share is the reason the cache is shared at all. First aid is
   `.ai/scripts/gradle-unstick [status|wipe]` (run configs `gradleUnstick` /
   `gradleUnstickWipe`, safe to run any time): `status` stops container-local daemons (`./gradlew --stop`), then
   classifies every `*.lock`/`*.lck` under

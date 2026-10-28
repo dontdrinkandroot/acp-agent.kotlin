@@ -497,6 +497,8 @@ GRADLE_HOME_FIXTURE=$TEST_TMP/gradle-home
 mkdir -p "$GRADLE_HOME_FIXTURE/.gradle/caches/modules-2" \
     "$GRADLE_HOME_FIXTURE/.gradle/caches/jars-9" \
     "$GRADLE_HOME_FIXTURE/.gradle/caches/jars-8" \
+    "$GRADLE_HOME_FIXTURE/.gradle/caches/build-cache-1" \
+    "$GRADLE_HOME_FIXTURE/.gradle/caches/transforms-3" \
     "$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0" \
     "$GRADLE_HOME_FIXTURE/.gradle/wrapper/dists" \
     "$GRADLE_HOME_FIXTURE/.gradle/jdks" \
@@ -522,6 +524,10 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
     assert_contains "$mounts" \
         "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/jars-8,dst=/home/dev/.gradle/caches/jars-8"
     assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/build-cache-1,dst=/home/dev/.gradle/caches/build-cache-1"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/transforms-3,dst=/home/dev/.gradle/caches/transforms-3"
+    assert_contains "$mounts" \
         "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/wrapper/dists,dst=/home/dev/.gradle/wrapper/dists"
     assert_contains "$mounts" \
         "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/jdks,dst=/home/dev/.gradle/jdks"
@@ -536,8 +542,28 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
         "--tmpfs /home/dev/.gradle/caches:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
+    # Version-bound content-addressed caches are shared too (issue #67):
+    # transforms (AGP dex/resource transform output) and generated-gradle-jars
+    # (deterministic per distribution). The version dir itself gets a uid
+    # tmpfs so its private siblings (fileHashes, kotlin-dsl, cc-keystore)
+    # stay writable and private; the two shared children land on top as binds.
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches/9.6.0:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0/transforms,dst=/home/dev/.gradle/caches/9.6.0/transforms"
+    assert_contains "$mounts" \
+        "type=bind,src=$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0/generated-gradle-jars,dst=/home/dev/.gradle/caches/9.6.0/generated-gradle-jars"
+    # Missing host-side leaf dirs are created like the shared leaves above.
+    [ -d "$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0/transforms" ] ||
+        _fail "expected the launcher to create the version-bound transforms leaf on the host"
+    [ -d "$GRADLE_HOME_FIXTURE/.gradle/caches/9.6.0/generated-gradle-jars" ] ||
+        _fail "expected the launcher to create the version-bound generated-gradle-jars leaf on the host"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle/daemon"
-    assert_not_contains "$mounts" "dst=/home/dev/.gradle/caches/9.6.0"
+    # The version dir itself is never shared wholesale - its private state
+    # (absolute-path-keyed fileHashes, JVM-sensitive kotlin-dsl, the
+    # configuration-cache keystore) must stay on the tmpfs. Exact-match: the
+    # shared children carry the version dir as a path prefix.
+    assert_eq "0" "$(printf '%s\n' "$mounts" | grep -c 'dst=/home/dev/.gradle/caches/9.6.0$' || true)"
     assert_not_contains "$mounts" "dst=/home/dev/.gradle,"
     # GRADLE_USER_HOME is pinned to the container-private root.
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
@@ -585,6 +611,39 @@ test_gradle_no_mount_without_a_host_gradle_home() {
     assert_contains "$line" \
         "--tmpfs /home/dev/.gradle/wrapper:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
     assert_eq "/home/dev/.gradle" "$(env_value_for "$line" GRADLE_USER_HOME)"
+}
+
+test_gradle_version_dirs_derived_from_wrapper_dists_are_shared() {
+    # A Gradle version whose distribution is shared (wrapper/dists) but whose
+    # caches/<ver> dir the host has not created yet (e.g. right after a
+    # wrapper upgrade) must still get its version-bound leaves, or every
+    # session re-derives 100s of MB (generated-gradle-jars, transforms) into
+    # the tmpfs. Versions are derived from the wrapper dist names.
+    local guh=$TEST_TMP/dists-home/.gradle
+    mkdir -p "$guh/caches/modules-2" "$guh/wrapper/dists/gradle-9.7.0-bin" \
+        "$guh/wrapper/dists/gradle-8.14-all" ||
+        _fail "could not create the dists-home fixture"
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+        "HOME=$TEST_TMP/dists-home" --skip-pull
+    assert_exit_status 0
+    local line mounts
+    line=$(last_run_line)
+    mounts=$(mount_values "$line")
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches/9.7.0:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
+    assert_contains "$line" \
+        "--tmpfs /home/dev/.gradle/caches/8.14:uid=$(id -u),gid=$(id -g),mode=700,size=1g,exec"
+    assert_contains "$mounts" \
+        "type=bind,src=$guh/caches/9.7.0/transforms,dst=/home/dev/.gradle/caches/9.7.0/transforms"
+    assert_contains "$mounts" \
+        "type=bind,src=$guh/caches/9.7.0/generated-gradle-jars,dst=/home/dev/.gradle/caches/9.7.0/generated-gradle-jars"
+    assert_contains "$mounts" \
+        "type=bind,src=$guh/caches/8.14/generated-gradle-jars,dst=/home/dev/.gradle/caches/8.14/generated-gradle-jars"
+    # The host-side leaf dirs are created so the binds always have a source.
+    [ -d "$guh/caches/9.7.0/transforms" ] ||
+        _fail "expected the launcher to create the version-bound transforms leaf for a dist-derived version"
+    [ -d "$guh/caches/8.14/generated-gradle-jars" ] ||
+        _fail "expected the launcher to create the version-bound generated-gradle-jars leaf for a dist-derived version"
 }
 
 test_gradle_user_home_env_overrides_home() {

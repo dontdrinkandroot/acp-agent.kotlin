@@ -136,6 +136,7 @@ fi
 
 cache_mounts=()
 cache_env_overrides=()
+gradle_version_args=()
 mounted_dsts=" "
 mounted_caches=
 
@@ -280,20 +281,32 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     # daemon registry + logs across the host and container PID namespaces:
     # probing clients remove unreachable entries and gradle --stop kills
     # daemons of both environments). The GUH root stays container-private
-    # (uid-mapped .gradle tmpfs, see gradle_args below) for daemon/, .tmp and
-    # the per-version caches/<ver>/ state (fileHashes, journal-1/file-access.bin,
-    # transforms ...). Only the content-addressed, machine-independent leaves
-    # are shared rw at their identical in-container path, so dependencies and
-    # wrapper dists persist on the host and are shared with host builds:
-    #   caches/modules-2   downloaded dependencies (relative-path encoded, copyable)
-    #   caches/jars-*      instrumented classpath jars
-    #   wrapper/dists      wrapper distributions
-    #   jdks               provisioned toolchain JDKs
+    # (uid-mapped .gradle tmpfs, see gradle_args below) for daemon/, .tmp,
+    # kotlin/ and native/.
+    # Everything Gradle documents as a *cache* (docs: directory_layout,
+    # "Shared caches" / "Version-specific caches") is content-addressed or
+    # deterministic per distribution and is shared rw at its in-container
+    # path, so downloads and transform output persist on the host and are
+    # shared with host builds (issue #67):
+    #   caches/modules-2                downloaded dependencies (relative-path encoded, copyable)
+    #   caches/jars-*                   instrumented classpath jars
+    #   caches/build-cache-*            local build cache (task outputs keyed by input hashes)
+    #   caches/transforms-*             legacy cross-version transform output (Gradle < 8.9)
+    #   caches/<ver>/transforms         version-bound transform output (AGP dex/resources)
+    #   caches/<ver>/generated-gradle-jars  deterministic per distribution
+    #   wrapper/dists                   wrapper distributions
+    #   jdks                            provisioned toolchain JDKs
+    # Everything else stays on the private tmpfs: execution state keyed by
+    # absolute paths (journal-1/file-access.bin, caches/<ver>/fileHashes,
+    # jvms), JVM-sensitive compiled scripts (kotlin-dsl, scripts) and
+    # caches/<ver>/cc-keystore - the configuration-cache encryption key,
+    # which must never leave the container (sharing it would let the sandbox
+    # decrypt the host's configuration-cache entries).
     # The env pin below makes GRADLE_USER_HOME explicit (and the mount sources
     # are resolved against the host GUH), independent of the base image's
     # default. Sources are created on first run like every other tool cache;
-    # the ./gradle or ./caches siblings (native/, kotlin/, build-cache-1,
-    # journal-1, caches/<ver>/) stay on the private tmpfs.
+    # the ./gradle or ./caches siblings (native/, kotlin/, journal-1) stay on
+    # the private tmpfs.
     gradle_guh=${GRADLE_USER_HOME:-}
     case "$gradle_guh" in
         /*) ;;
@@ -310,17 +323,21 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     if [ -n "$gradle_guh" ]; then
         mkdir -p "$gradle_guh/caches/modules-2" \
             "$gradle_guh/caches/jars-9" \
+            "$gradle_guh/caches/build-cache-1" \
             "$gradle_guh/wrapper/dists" \
             "$gradle_guh/jdks" 2>/dev/null || true
-        # Content-addressed leaves; matches GUH layout across Gradle 6-9
-        # (shared caches live directly under caches/: modules-2, jars-N; the
+        # Content-addressed leaves; matches Gradle's own cache taxonomy
+        # (docs: directory_layout, "Shared caches"): modules-2, jars-N,
+        # build-cache-N and the legacy cross-version transforms-N. The
         # trailing format number varies per Gradle generation - mount the
-        # jars-* glob via a loop over the existing host dirs).
-        local_jars_dirs=()
-        for jars in "$gradle_guh"/caches/jars-*; do
-            [ -d "$jars" ] && local_jars_dirs+=("$jars")
+        # globs via loops over the existing host dirs (mkdir creates the
+        # current-format names so the globs always have a match).
+        local_cache_dirs=()
+        for dir in "$gradle_guh"/caches/jars-* "$gradle_guh"/caches/build-cache-* \
+                    "$gradle_guh"/caches/transforms-*; do
+            [ -d "$dir" ] && local_cache_dirs+=("$dir")
         done
-        for leaf in "$gradle_guh/caches/modules-2" "${local_jars_dirs[@]}" \
+        for leaf in "$gradle_guh/caches/modules-2" "${local_cache_dirs[@]}" \
                     "$gradle_guh/wrapper/dists" "$gradle_guh/jdks"; do
             [ -d "$leaf" ] || continue
             gradle_dst=$container_home/.gradle/${leaf#"$gradle_guh"/}
@@ -330,6 +347,51 @@ if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
             cache_mounts+=(--mount "type=bind,src=$leaf,dst=$gradle_dst")
             mounted_dsts="$mounted_dsts $gradle_dst "
             mounted_caches="$mounted_caches gradle($leaf)"
+        done
+        # Version-bound caches (caches/<ver>/): each version dir gets its own
+        # uid-mapped tmpfs for the private siblings (fileHashes, kotlin-dsl,
+        # cc-keystore) and binds for the two shared children on top. Version
+        # names come from the digit-named caches dirs (9.6.0,
+        # 8.0-milestone-1, ...) plus the shared wrapper dists
+        # (gradle-<version>-<bin|all>) - the latter covers a wrapper upgrade
+        # whose caches/<ver> dir the host has not created yet, which would
+        # otherwise re-derive generated-gradle-jars + transforms into the
+        # tmpfs every session.
+        gradle_version_dirs=()
+        gradle_version_seen=" "
+        add_gradle_version() {
+            case "$gradle_version_seen" in
+                *" $1 "*) return 0 ;;
+            esac
+            gradle_version_seen="$gradle_version_seen$1 "
+            gradle_version_dirs+=("$1")
+        }
+        for vdir in "$gradle_guh"/caches/[0-9]*; do
+            [ -d "$vdir" ] || continue
+            add_gradle_version "${vdir##*/}"
+        done
+        for dist in "$gradle_guh"/wrapper/dists/gradle-[0-9]*; do
+            [ -d "$dist" ] || continue
+            name=${dist##*/}
+            name=${name#gradle-}
+            name=${name%-bin}
+            name=${name%-all}
+            [ -n "$name" ] && add_gradle_version "$name"
+        done
+        for ver in "${gradle_version_dirs[@]}"; do
+            vdir=$gradle_guh/caches/$ver
+            mkdir -p "$vdir/transforms" "$vdir/generated-gradle-jars" 2>/dev/null || true
+            for leaf in "$vdir/transforms" "$vdir/generated-gradle-jars"; do
+                [ -d "$leaf" ] || continue
+                gradle_dst=$container_home/.gradle/caches/$ver/${leaf##*/}
+                case "$mounted_dsts" in
+                    *" $gradle_dst "*) continue ;;
+                esac
+                cache_mounts+=(--mount "type=bind,src=$leaf,dst=$gradle_dst")
+                mounted_dsts="$mounted_dsts $gradle_dst "
+                mounted_caches="$mounted_caches gradle($leaf)"
+            done
+            gradle_version_args+=(--tmpfs "$container_home/.gradle/caches/$ver:uid=$uid,gid=$gid,mode=700,size=1g,exec")
         done
     fi
     # The host Android SDK (validated above when explicitly configured): an
@@ -628,6 +690,7 @@ fi
     "${env_local_mounts[@]}" \
     "${home_args[@]}" \
     "${gradle_args[@]}" \
+    "${gradle_version_args[@]}" \
     "${cache_args[@]}" \
     "${local_args[@]}" \
     "${cache_mounts[@]}" \
