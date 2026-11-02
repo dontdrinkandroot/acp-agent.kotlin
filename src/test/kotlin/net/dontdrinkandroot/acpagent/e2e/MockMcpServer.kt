@@ -13,23 +13,16 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Minimal in-process MCP server over the streamable-HTTP transport, standing in
  * for a real MCP server in the black-box e2e scenarios (same pattern as
- * [MockOpenAiServer] for OpenRouter).
+ * [MockOpenAiServer] for OpenRouter). The tool payloads live in [MockMcpTools],
+ * shared with the stdio mock ([StdioMcpMockServer]).
  *
- * Wire contract implemented (verified against kotlin-sdk 0.15.0):
+ * Wire contract implemented (verified against kotlin-sdk 0.16.0):
  *  - POST /mcp accepts JSON-RPC messages and answers with `application/json`
  *    (the transport accepts a plain JSON body instead of inline SSE);
  *  - `notifications/initialized` expects 202 Accepted;
  *  - the optional GET SSE stream is refused with 405, which the client treats
  *    as "stream disabled" (non-retryable), and DELETE termination likewise
  *    tolerates 405.
- *
- * Exposes three tools with distinct annotation profiles:
- *  - `mcp_read`        -> `readOnlyHint: true` + `title` (prompt-free when trusted)
- *  - `mcp_write`       -> no annotations (pessimistic default: always prompts)
- *  - `mcp_destructive` -> `readOnlyHint: false` + `destructiveHint: true` + `title`
- *
- * The mutating tools append a line to [markerFile] (side-effect evidence); the
- * read-only tool only returns text.
  */
 internal class MockMcpServer(private val markerFile: Path) {
 
@@ -79,19 +72,11 @@ internal class MockMcpServer(private val markerFile: Path) {
         val method = (json["method"] as? JsonPrimitive)?.content ?: return ""
         val params = json["params"] as? JsonObject ?: buildJsonObject { }
         val result = when (method) {
-            "initialize" -> buildJsonObject {
-                put("protocolVersion", "2025-03-26")
-                put("capabilities", buildJsonObject { put("tools", buildJsonObject { }) })
-                put("serverInfo", buildJsonObject {
-                    put("name", "mock-mcp")
-                    put("version", "0.0.1")
-                })
-            }
-
-            "tools/list" -> buildJsonObject { put("tools", toolsJson()) }
+            "initialize" -> MockMcpTools.initializeResult()
+            "tools/list" -> buildJsonObject { put("tools", MockMcpTools.toolsJson()) }
             "tools/call" -> {
                 val name = (params["name"] as? JsonPrimitive)?.content ?: ""
-                callTool(name, params["arguments"] as? JsonObject ?: buildJsonObject { })
+                MockMcpTools.callTool(name, params["arguments"] as? JsonObject ?: buildJsonObject { }, ::appendMarker)
             }
 
             else -> buildJsonObject { }
@@ -102,86 +87,6 @@ internal class MockMcpServer(private val markerFile: Path) {
             put("result", result)
         }.toString()
     }
-
-    private fun toolsJson() = buildJsonArray {
-        add(buildJsonObject {
-            put("name", "mcp_read")
-            put("description", "Annotated read-only tool returning a fixed text")
-            put("inputSchema", inputSchemaJson())
-            put("annotations", buildJsonObject {
-                put("title", "Read notes")
-                put("readOnlyHint", true)
-            })
-        })
-        add(buildJsonObject {
-            put("name", "mcp_write")
-            put("description", "Unannotated tool appending to the marker file")
-            put("inputSchema", inputSchemaJson())
-        })
-        add(buildJsonObject {
-            put("name", "mcp_destructive")
-            put("description", "Annotated destructive tool appending to the marker file")
-            put("inputSchema", inputSchemaJson())
-            put("annotations", buildJsonObject {
-                put("title", "Nuke it")
-                put("readOnlyHint", false)
-                put("destructiveHint", true)
-            })
-        })
-    }
-
-    /**
-     * Carries `required`, `$defs` and `$schema` (plus a `$defs`-backed `$ref`
-     * property) so the e2e suite can pin that the agent advertises MCP input
-     * schemas verbatim to the LLM (issue #12: a rebuild dropped
-     * `required`/`$defs`/`$schema`).
-     */
-    private fun inputSchemaJson() = buildJsonObject {
-        put("\$schema", "https://json-schema.org/draft/2020-12/schema")
-        put("type", "object")
-        put("properties", buildJsonObject {
-            put("path", buildJsonObject { put("type", "string") })
-            put("page", buildJsonObject { put("\$ref", "#/\$defs/page") })
-        })
-        put("required", buildJsonArray { add(JsonPrimitive("path")) })
-        put("\$defs", buildJsonObject {
-            put("page", buildJsonObject {
-                put("type", "object")
-                put("properties", buildJsonObject { put("n", buildJsonObject { put("type", "integer") }) })
-            })
-        })
-    }
-
-    private fun callTool(name: String, arguments: JsonObject) = buildJsonObject {
-        put("content", buildJsonArray {
-            add(buildJsonObject {
-                put("type", "text")
-                put(
-                    "text", when (name) {
-                        "mcp_read" -> "notes content"
-                        "mcp_write" -> {
-                            appendMarker("mcp_write:" + flatArguments(arguments))
-                            "mcp_write ok"
-                        }
-
-                        "mcp_destructive" -> {
-                            appendMarker("mcp_destructive:" + flatArguments(arguments))
-                            "mcp_destructive ok"
-                        }
-
-                        else -> {
-                            put("isError", true)
-                            appendMarker("unknown:$name")
-                            "unknown tool $name"
-                        }
-                    }
-                )
-            })
-        })
-    }
-
-    private fun flatArguments(arguments: JsonObject): String =
-        arguments.entries.joinToString(",") { "${it.key}=${(it.value as JsonPrimitive).content}" }
 
     private fun appendMarker(line: String) {
         callCount.incrementAndGet()

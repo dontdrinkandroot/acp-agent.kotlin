@@ -38,6 +38,20 @@ abstract class E2eAgentTest {
     internal val binaryPath: String
         get() = System.getProperty("acp.agent.binary") ?: error("acp.agent.binary system property not set")
 
+    /**
+     * The project's test runtime classpath, injected by `build.gradle.kts`
+     * (`-Dacp.test.classpath`). Needed to launch the in-tree stdio MCP mock as a
+     * separate JVM: the Gradle test worker's `java.class.path` is not the test
+     * classpath, so the harness cannot derive it itself.
+     */
+    internal val testClasspath: String
+        get() = System.getProperty("acp.test.classpath") ?: error("acp.test.classpath system property not set")
+
+    /** The JVM running the tests; used to launch the stdio MCP mock. */
+    internal val javaBinary: String
+        get() = ProcessHandle.current().info().command()
+            .orElseGet { File(System.getProperty("java.home"), "bin/java").absolutePath }
+
     internal class AgentConnection(
         val process: Process,
         val client: Client,
@@ -129,8 +143,14 @@ abstract class E2eAgentTest {
         llmPort: Int,
         xdgStateHome: File,
         extraEnv: Map<String, String> = emptyMap(),
-    ): AgentConnection {
-        val process = startAgent(llmPort, xdgStateHome, extraEnv)
+    ): AgentConnection = connectProcess(startAgent(llmPort, xdgStateHome, extraEnv))
+
+    /**
+     * Wraps an already started agent [process] in the real ACP client. Split out
+     * of [startConnectedAgent] so a scenario can drain the agent's stderr (the
+     * MCP fail-open and tool-shadowing warnings) before connecting.
+     */
+    internal fun connectProcess(process: Process): AgentConnection {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val writeMutex = Mutex()
         val stdoutReader = process.inputStream.bufferedReader()

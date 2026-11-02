@@ -1,9 +1,5 @@
-import java.io.File
 import com.github.benmanes.gradle.versions.updates.DependencyUpdatesTask
-import org.gradle.api.attributes.Bundling
-import org.gradle.api.attributes.Category
-import org.gradle.api.attributes.DocsType
-import org.gradle.api.attributes.Usage
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
@@ -118,6 +114,19 @@ tasks.test {
     systemProperty(
         "acp.agent.binary",
         layout.buildDirectory.file("install/acp-agent.kotlin/bin/acp-agent.kotlin").get().asFile.absolutePath,
+    )
+    // The black-box e2e harness launches the stdio MCP mock as a separate JVM
+    // (StdioMcpMockServer), which needs this project's test runtime classpath.
+    // java.class.path of the Gradle test worker is not it (the worker loads the
+    // classpath through its own classloader), so it is handed over explicitly.
+    // The CommandLineArgumentProvider keeps the classpath an input of the task.
+    jvmArgumentProviders.add(
+        object : CommandLineArgumentProvider {
+            @get:Classpath
+            val classpath = sourceSets.test.get().runtimeClasspath
+
+            override fun asArguments(): Iterable<String> = listOf("-Dacp.test.classpath=" + classpath.asPath)
+        }
     )
 }
 
