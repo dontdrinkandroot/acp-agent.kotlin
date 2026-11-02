@@ -248,6 +248,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # local-tool-shadowing scenario
         MockMcpServer.kt             # in-process streamable-HTTP MCP mock (JSON POST responses,
                                      # 202 initialized, 405 GET/DELETE) serving MockMcpTools
+        MockMcpSseServer.kt          # in-process classic-SSE MCP mock: GET /sse streams the
+                                     # `endpoint` event then JSON-RPC responses, POST /messages
+                                     # answers 202; optional requiredHeader pins header forwarding
         StdioMcpMockServer.kt        # stdio MCP mock, run as a separate JVM (`main`): NDJSON
                                      # JSON-RPC on stdin/stdout, echoes the requested
                                      # protocolVersion, exits on stdin EOF; marker path + shadow
@@ -298,6 +301,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # prompts + executes (marker written by the child process),
                                      # local-tool shadowing ignored with a warning while the local
                                      # read_file still runs, unstartable server fails open
+        E2eMcpSseTransportTest.kt    # classic SSE transport end-to-end (issue #69) over
+                                     # MockMcpSseServer: read-only prompt-free, unannotated
+                                     # prompts + executes, McpServer.Sse.headers forwarded
 README.md                               # user-facing readme (install, IDE setup, config, troubleshooting)
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): always runs installDist
@@ -815,11 +821,12 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
-  `mcpCapabilities.http/sse`. **stdio and streamable HTTP are covered end-to-end**
-  (`E2eMcpStdioTransportTest` over `StdioMcpMockServer`, `E2eMcpToolPermissionTest` over
-  `MockMcpServer`), both serving the same tool payloads from `MockMcpTools` so a scenario
-  says the same thing about the agent over either transport; the **classic SSE** transport
-  has no e2e yet - tracked by issue #69. The streamable-HTTP client (`McpConnector.connectHttp`)
+  `mcpCapabilities.http/sse`. **All three transports are covered end-to-end**
+  (`E2eMcpToolPermissionTest` over `MockMcpServer` streamable HTTP,
+  `E2eMcpStdioTransportTest` over `StdioMcpMockServer`, `E2eMcpSseTransportTest` over
+  `MockMcpSseServer`), all serving the same tool payloads from `MockMcpTools` so a
+  scenario says the same thing about the agent over any transport; the SSE scenario also
+  pins header forwarding (`McpServer.Sse.headers`). The streamable-HTTP client (`McpConnector.connectHttp`)
   installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
   a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
   The **classic SSE** transport is deprecated in the MCP SDK since 0.16.0 (SEP-2596, in favour
@@ -832,9 +839,12 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
   tools carry the mandatory `inputSchema`) and over stdio by `E2eMcpStdioTransportTest`
   (read-only prompt-free, unannotated prompts + executes; the marker file is written by the *child process*, so it
-  proves `tools/call` crossed the pipe). The stdio scenarios also pin
-  two behaviors HTTP cannot: `McpServer.Stdio.env` reaches the child environment, and the
-  local-tool collision rule below.
+  proves `tools/call` crossed the pipe) and over classic SSE by `E2eMcpSseTransportTest`
+  (`MockMcpSseServer`: `GET /sse` streams the `endpoint` event then the JSON-RPC
+  responses, `POST /messages` answers 202 - both required by `SseClientTransport`). The
+  transport-specific scenarios pin one thing beyond the shared permission behavior each:
+  `McpServer.Stdio.env` reaching the child environment (stdio) and
+  `McpServer.Sse.headers` reaching the server on the SSE request (SSE).
   The advertised tool schema is the server's `inputSchema` serialized **verbatim**
   via the SDK's own `McpJson` (`mcp/McpBridge.kt`), so `required`, `$defs` and
   `$schema` round-trip losslessly and the LLM knows which MCP arguments are
@@ -1092,7 +1102,9 @@ stays a task input instead of a stale constant.
   transport (`E2eMcpStdioTransportTest`: the spec-mandatory stdio server as a real
   child process - read-only prompt-free, unannotated prompts + executes, a
   `read_file`-named server tool ignored with a warning while the local `read_file`
-  still runs, an unstartable server failing open with only a logged warning),
+  still runs, an unstartable server failing open with only a logged warning) and over
+  the classic SSE transport (`E2eMcpSseTransportTest`: read-only prompt-free,
+  unannotated prompts + executes, `McpServer.Sse.headers` forwarded),
   `$/cancel_request` dismissal
   of a stuck permission prompt, mode enforcement
   (`E2eModeRestrictionTest`: registered tool disabled in the current mode is
@@ -1201,15 +1213,15 @@ asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
 
 **Known e2e gaps against the ACP spec** (reviewed 2026-10-18; file new issues for
-new findings, don't just note them): the MCP **classic SSE** transport has no e2e - #69;
-the
+new findings, don't just note them): the
 missing cheap conformance assertions (stdout hygiene, version negotiation,
 capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
 contract) are #61; the orchestration-level assertions
 that contradict the policy above are collected in #63; `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64. (#60 left the gap list with
-`E2eMcpStdioTransportTest` covering the spec-mandatory stdio transport; #62 left it with
-the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
+emitted and no SDK release up to 0.34.0 can express it - #64. (#69 left the gap list with
+`E2eMcpSseTransportTest` covering the classic SSE transport - the mirror of #60, which
+left it with `E2eMcpStdioTransportTest` covering the spec-mandatory stdio transport;
+#62 left it with the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
 `PromptResponse`/`StopReason.CANCELLED`; #59 left it with the 0.34.0 upgrade: the replay now
 runs before the load response.)
 
@@ -1498,7 +1510,9 @@ communicate that with the user so we can review them.
 - **Connect an MCP server** - all three transports are verified on JVM (`mcp/McpConnector.kt`): stdio via
   `ProcessBuilder` + kotlinx-io
   `asSource()/asSink().buffered()`; streamable HTTP and classic SSE via
-  `HttpClient(CIO){ install(SSE) }`.
+  `HttpClient(CIO){ install(SSE) }`. Each has an e2e mock to copy from when
+  pinning new MCP behavior: `MockMcpServer` (HTTP), `StdioMcpMockServer` (stdio, separate
+  JVM) and `MockMcpSseServer` (SSE) - all sharing `MockMcpTools`.
 - **Add a tool** - implement `AgentTool` (in `tools/Tool.kt`: `name`, `description`,
   JSON-schema `parameters`, `kind`, `mutating`, optional `modes`, `execute`) and register
   it in the `ToolRegistry` in `Main.kt` (the per-session registry copies the local one).
