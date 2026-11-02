@@ -4,16 +4,7 @@ import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.PlanEntryStatus
-import com.agentclientprotocol.model.SessionConfigId
-import com.agentclientprotocol.model.SessionConfigOptionValue
-import com.agentclientprotocol.model.SessionId
-import com.agentclientprotocol.model.SessionModeId
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.ToolCallContent
-import com.agentclientprotocol.model.ToolCallStatus
-import com.agentclientprotocol.model.ToolKind
+import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.AcpExpectedError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
@@ -22,11 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.SessionStore
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Black-box session lifecycle flows across agent processes sharing one XDG state dir.
@@ -83,22 +70,29 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 println("[ok] session/list after restart (cwd filter, recency)")
 
                 val loadOps = TestClientOperations()
+                // The early-delivery overload takes the ready operations instead of a
+                // factory, so updates arriving during the agent's replay are delivered
+                // as they arrive rather than buffered until the answer.
                 val loaded = second.client.loadSession(
                     sessionId,
                     SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
-                    ClientOperationsFactory { _, _ -> loadOps },
+                    loadOps,
                 )
                 assertEquals(SessionModeId("build"), loaded.currentMode.value)
-                // Replay is emitted by the agent after the load response; wait for it to arrive.
-                awaitUntil(5_000) { loadOps.notifications.any { it is SessionUpdate.UserMessageChunk } }
+                // Since acp 0.34.0 the agent replays from `AgentSession.replayHistory`,
+                // which the SDK runs before the load response (spec MUST; was issue #59):
+                // the updates must already be delivered when the call returns.
                 val userChunks = loadOps.notifications.filterIsInstance<SessionUpdate.UserMessageChunk>()
-                assertEquals(1, userChunks.size)
+                assertEquals(1, userChunks.size, "replay must arrive before the load response")
                 assertEquals("Say hello", (userChunks.single().content as ContentBlock.Text).text)
                 val agentText = loadOps.notifications.filterIsInstance<SessionUpdate.AgentMessageChunk>()
                     .mapNotNull { (it.content as? ContentBlock.Text)?.text }
                     .joinToString("")
                 assertTrue(agentText.contains("phase4 done"), "expected replayed agent text, got '$agentText'")
-                println("[ok] session/load replays user + agent message chunks, mode=build")
+                // Raw-wire pin of the spec MUST (issue #59): every replayed session/update
+                // for this session must precede the session/load response line, not follow it.
+                assertReplayPrecedesLoadResponse(second, sessionId)
+                println("[ok] session/load replays user + agent chunks before the response (wire order), mode=build")
 
                 val continuation = collectPrompt(loaded, listOf(ContentBlock.Text("Continue")))
                 assertEndTurn(continuation)
@@ -212,9 +206,10 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 second.client.loadSession(
                     sessionId,
                     SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
-                    ClientOperationsFactory { _, _ -> loadOps },
+                    loadOps,
                 )
-                awaitUntil(5_000) { loadOps.notifications.any { it is SessionUpdate.PlanUpdate } }
+                // Replay arrives before the load response (issue #59), so the plan update
+                // is already delivered here - no polling needed.
                 assertEquals(
                     listOf("Investigate the bug", "Fix the bug"),
                     loadOps.notifications.filterIsInstance<SessionUpdate.PlanUpdate>()
@@ -321,12 +316,8 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 second.client.loadSession(
                     sessionId,
                     SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
-                    ClientOperationsFactory { _, _ -> loadOps },
+                    loadOps,
                 )
-                awaitUntil(5_000) {
-                    loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
-                        .any { it.toolCallId.value == "call_no_such_tool" }
-                }
                 val resultUpdates = loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     .associateBy { it.toolCallId.value }
                 assertEquals(
@@ -360,4 +351,35 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
             println("[ok] LLM called 3 times (denied read + unknown tool + final text; load/replay makes none)")
         }
     }
+
+    /**
+     * Pins the spec MUST on the raw wire (issue #59): for the `session/load` the
+     * agent answered last on [connection], every `session/update` notification of
+     * [sessionId] must appear *before* the response line carrying the `session/load`
+     * result - not after it (the deviation the SDK's `postInitialize()` hook forced
+     * before `acp` 0.34.0).
+     */
+    private fun assertReplayPrecedesLoadResponse(connection: AgentConnection, sessionId: SessionId) {
+        val lines = connection.wireLines.toList()
+        val loadResponseIndex = lines.indexOfLast { line ->
+            line.contains("\"id\"") &&
+                    line.contains("\"result\"") &&
+                    !line.contains("\"sessionUpdate\"") &&
+                    isLoadResponse(line)
+        }
+        assertTrue(loadResponseIndex >= 0, "no session/load response found on the wire")
+        val replayIndexes = lines.withIndex()
+            .filter { (_, line) -> line.contains("\"sessionUpdate\"") && line.contains(sessionId.value) }
+            .map { it.index }
+        assertTrue(replayIndexes.isNotEmpty(), "no replayed session/update found on the wire")
+        assertTrue(
+            replayIndexes.all { it < loadResponseIndex },
+            "every replayed session/update must precede the session/load response " +
+                    "(replay=$replayIndexes, response=$loadResponseIndex)",
+        )
+        println("[wire ok] ${replayIndexes.size} replayed updates all precede the load response")
+    }
+
+    private fun isLoadResponse(line: String): Boolean =
+        line.contains("\"configOptions\"") || line.contains("\"modes\"")
 }

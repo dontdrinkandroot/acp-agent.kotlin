@@ -42,6 +42,8 @@ abstract class E2eAgentTest {
         val process: Process,
         val client: Client,
         private val scope: CoroutineScope,
+        /** Every raw stdout line the agent emitted (ACP NDJSON), in arrival order. */
+        val wireLines: List<String> = Collections.synchronizedList(mutableListOf()),
     ) {
         suspend fun close() {
             runCatching { process.outputStream.close() }
@@ -132,12 +134,14 @@ abstract class E2eAgentTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val writeMutex = Mutex()
         val stdoutReader = process.inputStream.bufferedReader()
+        val wireLines = Collections.synchronizedList(mutableListOf<String>())
         val transport = StdioTransport(
             scope,
             Dispatchers.IO,
             flow {
                 while (true) {
                     val line = stdoutReader.readLine() ?: break
+                    wireLines.add(line)
                     emit(line)
                 }
             }.flowOn(Dispatchers.IO),
@@ -151,7 +155,7 @@ abstract class E2eAgentTest {
         val protocol = Protocol(scope, transport)
         val client = Client(protocol)
         protocol.start()
-        return AgentConnection(process, client, scope)
+        return AgentConnection(process, client, scope, wireLines)
     }
 
     internal fun testClientInfo(capabilities: ClientCapabilities = ClientCapabilities()): ClientInfo = ClientInfo(

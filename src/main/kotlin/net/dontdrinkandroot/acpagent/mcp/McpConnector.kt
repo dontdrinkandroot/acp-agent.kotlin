@@ -80,6 +80,10 @@ private suspend fun connectSse(
     val httpClient = HttpClient(CIO) {
         install(SSE)
     }
+    // The MCP SDK deprecates classic SSE in favour of streamable HTTP (SEP-2596),
+    // but ACP's `mcpServers` still carries an `sse` transport variant that a client
+    // may hand us, so the transport stays until ACP drops it.
+    @Suppress("DEPRECATION")
     val transport = httpClient.mcpSseTransport(url) {
         headers.forEach { header(it.name, it.value) }
     }

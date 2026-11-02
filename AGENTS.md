@@ -21,22 +21,23 @@ what actually resolves).
 
 | Layer                  | Dependency                                                                            | Version                      |
 |------------------------|---------------------------------------------------------------------------------------|------------------------------|
-| Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.6) | 2.4.10                       |
-| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.61.0                       |
-| ACP                    | `com.agentclientprotocol:acp`                                                         | 0.33.0                       |
-| MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.15.0                       |
-| HTTP                   | ktor client (CIO engine)                                                              | 3.5.1                        |
-|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.5.1                        |
+| Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.8) | 2.4.21                       |
+| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.67.0                       |
+| ACP                    | `com.agentclientprotocol:acp`                                                         | 0.34.0                       |
+| MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.16.0                       |
+| HTTP                   | ktor client (CIO engine)                                                              | 3.6.1                        |
+|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.6.1                        |
 | HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                       |
 | Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
-| IO                     | kotlinx-io-core                                                                       | 0.9.1                        |
-| JSON                   | kotlinx-serialization-json                                                            | 1.11.0 (declared + resolved) |
+| IO                     | kotlinx-io-core                                                                       | 0.9.2                        |
+| JSON                   | kotlinx-serialization-json                                                            | 1.12.0 (declared + resolved) |
 | OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.3.0                        |
 | UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
-| Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.17               |
+| Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.20               |
 
 Gradle conflict resolution picks the Koog-forced kotlinx versions; the catalog declares them
-at the values that actually resolve (1.11.0), so there is no declared-vs-resolved drift. Koog
+at the values that actually resolve (kotlinx-serialization-json 1.12.0), so there is no
+declared-vs-resolved drift. Koog
 is used as a wire-model / serialization library
 only (no framework); its OpenAI-compat wire types are the internal LLM contract (see the
 LLM provider bullet below). kotlin-logging 8.0.4 is declared explicitly because
@@ -371,9 +372,13 @@ Config comes from environment variables:
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
-  `postInitialize()` - after the load response (SDK hook limitation; the spec requires the
-  replay *before* the response, tracked by issue #59); the pure mapping is
-  `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`);
+  `AgentSession.replayHistory()`, which the SDK runs **before** the load response - the order
+  the spec requires (issue #59 closed with `acp` 0.34.0, which added the hook; previously
+  `postInitialize()` emitted it after the response); the pure mapping is
+  `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`), and the
+  ordering is pinned black-box by `E2eSessionPersistenceTest`, which asserts the updates are
+  already delivered when `loadSession` returns (and therefore uses the SDK's early-delivery
+  operations overload instead of the buffering factory);
   `session/resume` restores without replay. `session/list`
   filters by cwd, sorts by recency, skips corrupt records; the SDK pages the result (10 entries per page + `nextCursor`
   over our `Sequence` override since `acp` 0.33.0).
@@ -786,7 +791,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   round-trip). Path-scoped tool calls carry `locations`
   (`tool_call`, `request_permission` and load replay) for the client's follow-along
   surface. `rawOutput` keeps the plain result for wire compat. The spec's optional
-  programmatic `tool_call.name` is **not** emitted: no `acp` SDK release up to 0.33.0 carries
+  programmatic `tool_call.name` is **not** emitted: no `acp` SDK release up to 0.34.0 carries
   it (`SessionUpdate.ToolCall` still has no `name` property) - tracked by issue #64. **Revert path**: when JetBrains
   renders
   `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
@@ -799,6 +804,10 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   transport") and SSE have no e2e at all - tracked by issue #60. The streamable-HTTP client (`McpConnector.connectHttp`)
   installs the ktor SSE plugin so the transport's optional GET SSE probe degrades cleanly on
   a 405 ("stream disabled") instead of throwing - JSON-only servers (no GET stream) work.
+  The **classic SSE** transport is deprecated in the MCP SDK since 0.16.0 (SEP-2596, in favour
+  of streamable HTTP); `McpConnector.connectSse` keeps it - ACP's `mcpServers` still carries an
+  `sse` variant a client may hand us - with a local `@Suppress("DEPRECATION")` and the reason
+  documented in place, so it can be dropped when ACP drops the variant.
   MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
   trusted (`MCP_TRUST_ANNOTATIONS`, default enabled; see Permissions) - pinned black-box by
   `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
@@ -1156,15 +1165,16 @@ asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
 
 **Known e2e gaps against the ACP spec** (reviewed 2026-10-18; file new issues for
-new findings, don't just note them): the `session/load` replay ordering deviation is
-#59; MCP **stdio** has no e2e at all (spec: all agents MUST support it) - #60; the
+new findings, don't just note them): MCP **stdio** has no e2e at all (spec: all agents
+MUST support it) - #60; the
 missing cheap conformance assertions (stdout hygiene, version negotiation,
 capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
 contract) are #61; the orchestration-level assertions
 that contradict the policy above are collected in #63; `tool_call.name` is never
-emitted and no SDK release up to 0.33.0 can express it - #64. (#62 left the gap list with
+emitted and no SDK release up to 0.34.0 can express it - #64. (#62 left the gap list with
 the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
-`PromptResponse`/`StopReason.CANCELLED`.)
+`PromptResponse`/`StopReason.CANCELLED`; #59 left it with the 0.34.0 upgrade: the replay now
+runs before the load response.)
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —
@@ -1256,7 +1266,14 @@ deleted ids (pinned by `AgentSupportImplTest`), and `session/list` pagination ov
 unchanged; expect file moves, watch for renames.
 Upgrade history: 0.30.1 -> 0.33.0 (2026-10-19): all four verified, no source changes
 needed beyond the `E2eCancelTest` pin (fixes #62); `SessionUpdate.ToolCall.name` still
-absent (#64 stays open).
+absent (#64 stays open). 0.33.0 -> 0.34.0 (2026-11-02): `AgentSession` gained
+`replayHistory()` (run before the load response - the replay moved there from
+`postInitialize()` and **#59 is closed**; `E2eSessionPersistenceTest` now uses the SDK's
+early-delivery `loadSession(..., operations)` overload and asserts the replay already arrived
+when the call returns); `SessionUpdate.ToolCall` still has no `name` (#64 stays open);
+`Agent.kt` session wrappers/`AgentSupport` contracts unchanged (all existing pins green);
+`Exceptions.kt` helpers unchanged, `AcpRequestCancelledException` still not a
+`CancellationException`.
 
 **Definition of done**: a change is done when the `build` run configuration passes
 (compile + all tests incl. the black-box e2e).

@@ -113,7 +113,7 @@ public fun runAgent(args: Array<String>) {
             },
             sessionStore = sessionStore,
             restored = restored,
-            replayOnInitialize = replay,
+            replayOnLoad = replay,
             models = models,
         )
     }

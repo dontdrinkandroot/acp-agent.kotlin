@@ -27,7 +27,7 @@ class SessionLifecycleTest {
             todayProvider = { "2026-09-04" },
             sessionStore = store,
             restored = restored,
-            replayOnInitialize = replay,
+            replayOnLoad = replay,
         )
 
     private fun record(

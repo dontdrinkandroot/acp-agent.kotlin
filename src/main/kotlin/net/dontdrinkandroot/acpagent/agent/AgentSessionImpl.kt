@@ -32,7 +32,7 @@ internal class AgentSessionImpl(
     closeResources: suspend () -> Unit = {},
     private val sessionStore: SessionStore? = null,
     private val restored: SessionRecord? = null,
-    private val replayOnInitialize: Boolean = false,
+    private val replayOnLoad: Boolean = false,
     private val models: List<OpenRouterModel> = emptyList(),
 ) : AgentSession {
 
@@ -148,12 +148,13 @@ internal class AgentSessionImpl(
     }
 
     /**
-     * Replays a restored conversation to the client after `session/load`. The
-     * SDK runs this hook inside the session context (client operations
-     * available), right after the load response has been dispatched.
+     * Replays a restored conversation to the client while serving
+     * `session/load`. The SDK runs this hook inside the session context
+     * (client operations available) and, since `acp` 0.34.0, *before* the load
+     * response is dispatched - the order the spec requires (issue #59).
      */
-    override suspend fun postInitialize() {
-        if (!replayOnInitialize) return
+    override suspend fun replayHistory() {
+        if (!replayOnLoad) return
         val client = clientOrNull() ?: return
         val (history, plan, toolOutcomes) = state.replaySnapshot()
         buildReplayUpdates(history, plan, toolOutcomes, toolRegistry).forEach { client.notify(it) }

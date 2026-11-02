@@ -4,7 +4,6 @@ import ai.koog.prompt.executor.clients.openai.base.models.Content
 import ai.koog.prompt.executor.clients.openai.base.models.OpenAIFunction
 import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import ai.koog.prompt.executor.clients.openai.base.models.OpenAIToolCall
-import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.*
 import kotlinx.coroutines.async
@@ -129,12 +128,9 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                         val session = connection.client.loadSession(
                             SessionId(sessionId),
                             SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
-                            ClientOperationsFactory { _, _ -> loadOps },
+                            loadOps,
                         )
-                        awaitUntil(5_000) {
-                            loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
-                                .any { it.toolCallId.value == "call_poisoned" }
-                        }
+                        // Replay is delivered before the load response (issue #59).
                         assertEquals(
                             ToolCallStatus.FAILED,
                             loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
@@ -228,12 +224,8 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                     val session = second.client.loadSession(
                         sessionId,
                         SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
-                        ClientOperationsFactory { _, _ -> loadOps },
+                        loadOps,
                     )
-                    awaitUntil(5_000) {
-                        loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
-                            .any { it.toolCallId.value == "call_bash" }
-                    }
                     val replay = loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                         .associateBy { it.toolCallId.value }
                     assertEquals(
