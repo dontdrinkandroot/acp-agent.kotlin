@@ -49,7 +49,14 @@ internal class SessionState(
      */
     private val toolOutcomes = mutableMapOf<String, String>().apply { restored?.let { putAll(it.toolOutcomes) } }
 
-    /** Persistent allow/reject decisions, keyed by tool name. */
+    /**
+     * Allow/reject decisions from the `allow_always`/`reject_always` permission
+     * options, keyed by tool name (the keying is the over-grant of issue #3).
+     * Session-memory only on purpose: unlike mode/model/reasoning this map is
+     * not part of [SessionRecord] and evaporates on restart - pinned by
+     * `ToolCallExecutorTest` so issue #3's redesign must change that pin
+     * deliberately, not accidentally.
+     */
     val permanentPermissions = mutableMapOf<String, Boolean>()
 
     /**

@@ -1,15 +1,9 @@
 package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.common.ClientSessionOperations
-import com.agentclientprotocol.model.PermissionOption
-import com.agentclientprotocol.model.PermissionOptionId
-import com.agentclientprotocol.model.ReadTextFileResponse
-import com.agentclientprotocol.model.RequestPermissionOutcome
-import com.agentclientprotocol.model.RequestPermissionResponse
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.WriteTextFileResponse
-import kotlinx.coroutines.CompletableDeferred
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.json.JsonElement
 import java.io.File
 
@@ -40,7 +34,13 @@ internal class SuspendingPermissionOperations : ClientSessionOperations {
     override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
 }
 
-internal class TestClientOperations : ClientSessionOperations {
+/**
+ * Client operations that record their prompts/notifications/fs calls and always
+ * answer the given permission [permissionOptionId] (`allow_once` by default).
+ */
+internal class TestClientOperations(
+    private val permissionOptionId: String = "allow_once",
+) : ClientSessionOperations {
     val permissionRequests = mutableListOf<SessionUpdate.ToolCallUpdate>()
     val permissionOptions = mutableListOf<List<PermissionOption>>()
     val notifications = mutableListOf<SessionUpdate>()
@@ -55,7 +55,7 @@ internal class TestClientOperations : ClientSessionOperations {
         permissionRequests += toolCall
         permissionOptions += permissions
         return RequestPermissionResponse(
-            RequestPermissionOutcome.Selected(PermissionOptionId("allow_once"))
+            RequestPermissionOutcome.Selected(PermissionOptionId(permissionOptionId))
         )
     }
 

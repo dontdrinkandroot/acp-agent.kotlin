@@ -26,8 +26,8 @@ internal fun readFileArgs(path: String, limit: Int = 2000): JsonObject =
  * With [textOnly] every request is answered with plain text instead.
  * With [alwaysToolCall] every request carrying a tools field is answered with a `write_file`
  * tool call, while requests without tools (the wind-down pass) get plain text.
- * With [toolCalls] the Nth completion request answers with the Nth tool call, falling
- * back to plain text afterwards.
+ * With [toolCalls] the Nth completion request answers with the Nth tool call (a `null`
+ * entry answers with plain text, ending the turn), falling back to plain text afterwards.
  */
 internal class MockOpenAiServer(
     private val targetPath: String,
@@ -36,7 +36,7 @@ internal class MockOpenAiServer(
     private val imageSupport: Boolean = false,
     private val failEndpoints: Boolean = false,
     private val toolCall: MockToolCall? = null,
-    private val toolCalls: List<MockToolCall> = emptyList(),
+    private val toolCalls: List<MockToolCall?> = emptyList(),
     private val firstTurnStreamDeltas: Boolean = false,
     private val alwaysToolCall: Boolean = false,
     private val holdFirstRequest: Boolean = false,
@@ -90,7 +90,7 @@ internal class MockOpenAiServer(
                 alwaysToolCall -> textSse()
                 toolCalls.isNotEmpty() && n <= toolCalls.size -> {
                     val call = toolCalls[n - 1]
-                    toolCallSse(call.name, call.arguments)
+                    if (call != null) toolCallSse(call.name, call.arguments) else textSse()
                 }
                 planMode && n == 1 -> planSse()
                 toolCall != null && n == 1 -> toolCallSse(toolCall.name, toolCall.arguments)

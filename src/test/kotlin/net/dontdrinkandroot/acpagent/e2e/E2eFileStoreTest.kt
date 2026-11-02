@@ -130,6 +130,58 @@ class E2eFileStoreTest : E2eAgentTest() {
     }
 
     @Test
+    fun `e2e allow_always on an out-of-project read prompts once for the session`() = runBlocking {
+        val outsideDir = Files.createTempDirectory("acp-agent-e2e-outread-always").toFile()
+        val targetFile = outsideDir.resolve("secret.txt")
+        targetFile.writeText("secret-payload-65")
+        val llmMock = MockOpenAiServer(
+            "unused",
+            toolCalls = listOf(
+                MockToolCall("read_file", readFileArgs(targetFile.absolutePath)),
+                null,
+                MockToolCall("read_file", readFileArgs(targetFile.absolutePath)),
+                null,
+            ),
+        )
+        try {
+            withE2eAgent("outread-always", llmMock) {
+                val connection = connect()
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations(permissionOptionId = "allow_always")
+                    val session = newSession(connection.client, projectDir, ops)
+                    val first = collectPrompt(session, listOf(ContentBlock.Text("Read the file")))
+                    assertEndTurn(first)
+                    val second = collectPrompt(session, listOf(ContentBlock.Text("Read the file again")))
+                    assertEndTurn(second)
+                    // Both reads must really have executed (otherwise the prompt
+                    // count below would pass vacuously): each turn's follow-up
+                    // request carries the tool result with the file content.
+                    assertTrue(llmMock.requestBodies.size >= 4, "both prompts must continue after their read")
+                    assertTrue(
+                        llmMock.requestBodies[1].contains("secret-payload-65") &&
+                                llmMock.requestBodies[3].contains("secret-payload-65"),
+                        "both out-of-project reads must have executed and fed the LLM",
+                    )
+                    // allow_always arms the session-wide grant (issue #65 pins
+                    // today's tool-name-keyed semantics; the over-grant itself
+                    // is issue #3): the second prompt's read must not ask again.
+                    assertEquals(
+                        1,
+                        ops.permissionRequests.size,
+                        "the second out-of-project read must run without a permission prompt",
+                    )
+                    println("[ok] allow_always granted the rest of the session without further prompts")
+                } finally {
+                    connection.close()
+                }
+            }
+        } finally {
+            outsideDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `e2e read_file inside a trusted read path runs without a prompt`() = runBlocking {
         val trustedDir = Files.createTempDirectory("acp-agent-e2e-trusted-read").toFile()
         try {

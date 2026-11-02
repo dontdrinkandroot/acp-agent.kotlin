@@ -30,8 +30,8 @@ private class RecordingEmitter : FlowCollector<Event> {
     }
 }
 
-/** Client whose permission prompt always resolves to allow_once. */
-private class AllowOnceClient : ClientSessionOperations {
+/** Client whose permission prompt always resolves to the given option id. */
+private class SelectingClient(private val optionId: String = "allow_once") : ClientSessionOperations {
     val permissionRequests = mutableListOf<SessionUpdate.ToolCallUpdate>()
     override suspend fun requestPermissions(
         toolCall: SessionUpdate.ToolCallUpdate,
@@ -39,7 +39,7 @@ private class AllowOnceClient : ClientSessionOperations {
         _meta: JsonElement?,
     ): RequestPermissionResponse {
         permissionRequests += toolCall
-        return RequestPermissionResponse(RequestPermissionOutcome.Selected(PermissionOptionId("allow_once")))
+        return RequestPermissionResponse(RequestPermissionOutcome.Selected(PermissionOptionId(optionId)))
     }
 
     override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
@@ -68,12 +68,12 @@ class ToolCallExecutorTest {
         override fun targetPath(arguments: JsonObject): String? = arguments["path"]?.jsonPrimitive?.content
     }
 
-    private fun state() = SessionState(
+    private fun state(restored: SessionRecord? = null) = SessionState(
         sessionId = SessionId("sess_tooltest000001"),
         cwd = "/project",
         toolRegistry = ToolRegistry(),
         config = Config("k", "m", "http://127.0.0.1:1"),
-        restored = null,
+        restored = restored,
         sessionStore = null,
         closeResources = {},
     )
@@ -216,13 +216,106 @@ class ToolCallExecutorTest {
         val state = state()
         val executor = ToolCallExecutor(registry, state)
         val emitter = RecordingEmitter()
-        val client = AllowOnceClient()
+        val client = SelectingClient()
 
         execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
 
         assertEquals(true, tool.executed)
         assertEquals(1, client.permissionRequests.size, "out-of-project reads must ask permission")
         assertTrue(toolCallUpdates(emitter).any { it.status == ToolCallStatus.COMPLETED })
+    }
+
+    @Test
+    fun `allow_always grants the tool so the second call runs without another prompt`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val state = state()
+        val executor = ToolCallExecutor(registry, state)
+        val emitter = RecordingEmitter()
+        val client = SelectingClient("allow_always")
+
+        execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
+        execute(executor, emitter, StreamToolCall("call_2", "read", """{"path":"/etc/passwd"}"""), client = client)
+
+        assertEquals(2, tool.executedCount, "the second call must execute under the permanent grant")
+        assertEquals(1, client.permissionRequests.size, "allow_always must spare every later call the prompt")
+        assertEquals(
+            true,
+            state.permanentPermissions["read"],
+            "allow_always must arm the permanent grant for the tool",
+        )
+    }
+
+    @Test
+    fun `reject_always refuses the second call without another prompt or execution`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val state = state()
+        val executor = ToolCallExecutor(registry, state)
+        val emitter = RecordingEmitter()
+        val client = SelectingClient("reject_always")
+
+        execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
+        execute(executor, emitter, StreamToolCall("call_2", "read", """{"path":"/etc/passwd"}"""), client = client)
+
+        assertEquals(0, tool.executedCount, "a permanently rejected tool must never execute")
+        assertEquals(1, client.permissionRequests.size, "reject_always must spare every later call the prompt")
+        assertEquals(
+            false,
+            state.permanentPermissions["read"],
+            "reject_always must arm the permanent refusal for the tool",
+        )
+        val updates = toolCallUpdates(emitter)
+        assertEquals(2, updates.size, "both calls must surface a failed update")
+        assertTrue(updates.all { it.status == ToolCallStatus.FAILED })
+        val secondMessage =
+            (updates.last().content.orEmpty().filterIsInstance<ToolCallContent.Content>().single().content
+                    as ContentBlock.Text).text
+        assertTrue(secondMessage.contains("Permission denied"), "the second call must be refused as denied")
+    }
+
+    @Test
+    fun `allow_once does not arm the permanent grant so the second call prompts again`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val state = state()
+        val executor = ToolCallExecutor(registry, state)
+        val emitter = RecordingEmitter()
+        val client = SelectingClient("allow_once")
+
+        execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
+        execute(executor, emitter, StreamToolCall("call_2", "read", """{"path":"/etc/passwd"}"""), client = client)
+
+        assertEquals(2, tool.executedCount, "both calls were allowed and must execute")
+        assertEquals(2, client.permissionRequests.size, "without a permanent grant every call must ask again")
+        assertTrue(
+            state.permanentPermissions.isEmpty(),
+            "allow_once is a one-shot decision and must leave the permanent map untouched",
+        )
+    }
+
+    @Test
+    fun `permanent permissions are session-memory only and do not survive a restore`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val live = state()
+        val executor = ToolCallExecutor(registry, live)
+        val emitter = RecordingEmitter()
+        val client = SelectingClient("allow_always")
+
+        execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
+        assertEquals(true, live.permanentPermissions["read"])
+
+        val restored = state(restored = live.buildRecord())
+
+        // Deliberate current semantics, pinned for issue #3's redesign: unlike
+        // mode/model/reasoning, permanent permissions are not part of the
+        // record and evaporate on restart. A behavior change must update this
+        // pin deliberately.
+        assertTrue(
+            restored.permanentPermissions.isEmpty(),
+            "a session restored from its record must start without permanent grants",
+        )
     }
 
     @Test

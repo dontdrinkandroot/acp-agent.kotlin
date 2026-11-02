@@ -260,10 +260,12 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # one latest-mode message at the next prompt start (issue #36)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
         E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
-                                     # + trusted read paths (ACP_EXTRA_MOUNTS: read prompt-free, write
+                                     # + allow_always session grant (one prompt for two prompts'
+                                     # out-of-project reads, issue #65) + trusted read paths
+                                     # (ACP_EXTRA_MOUNTS: read prompt-free, write
                                      # still prompts) + move/delete tools (in-project without prompt,
                                      # out-of-project move destination prompts); no fs-capability
-                                     # negative scenario yet (issue #61), no allow_always case (#65)
+                                     # negative scenario yet (issue #61)
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
@@ -727,8 +729,13 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   In-project writes are further gated by mode (plan is read-only). The containment check (`tools/Containment.kt`) is
   symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
-  `reject_once` apply once. The permanent branches have **no test today** (issue #65); the
-  over-grant design flaw is #3. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call
+  `reject_once` apply once. The permanent branches are pinned by
+  `ToolCallExecutorTest` (allow_always/reject_always short-circuit + map writes,
+  allow_once contrast) and `E2eFileStoreTest` (two prompts, one session grant);
+  the map is **session-memory only** (not in `SessionRecord`, evaporates on
+  restart) - deliberately pinned so the over-grant redesign (issue #3, per-path
+  keys) must change these pins explicitly rather than silently regress the
+  contract. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call
   in
   permission prompts and progress - it ignores the `rawInput` field that carries the actual
   arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with **Observed (JetBrains,
@@ -1024,8 +1031,10 @@ agent's **wire contract**:
 - **Capabilities** — `promptCapabilities` (image/embeddedContext) + multimodal
   conversion (image data URI, inlined resources), `mcpCapabilities` (http/sse),
   AGENTS.md injection, the `Agent build:` hash round-tripped from `git.properties`.
-- **Security & permissions** — path-aware permissions + client fs proxy
-  (in-project prompt-free, out-of-project read prompts, `FS_PROXY_ENABLED=0`
+- **Security & permissions** — path-aware permissions + client fs proxy (in-project prompt-free, out-of-project read
+  prompts, the `allow_always`
+  session grant prompting once for two prompts' out-of-project reads (issue #65
+  pin of the tool-name-keyed semantics)), `FS_PROXY_ENABLED=0`
   local-store fallback), run tool prompt-free in every mode, run-config tools
   (build-mode permission prompt, plan-mode absence of write tools), move/delete
   tools (out-of-project move destination prompts), MCP tool annotations
@@ -1054,7 +1063,9 @@ agent's **wire contract**:
   `ToolCallExecutorTest` (outcome recording + immediate persistence, the repeat
   guard: third raw-identical call with the same result refused without execution/prompt,
   a single identical repeat executes, a changed result resets the streak, formatting variants
-  pass, reset by an intervening call, denied calls not tracked) and `PromptRunnerTest` (guard
+  pass, reset by an intervening call, denied calls not tracked; permanent permissions (issue #65):
+  allow_always/reject_always arm the map and spare later prompts, allow_once does not,
+  restored sessions start without grants) and `PromptRunnerTest` (guard
   integration: the refused third repeat fails the turn's third iteration and the turn continues;
   identical call in a new turn executes again; abnormal-end note chunks: content_filter
   and truncated/wind-down ends always emit their note to the client, streamed partial
@@ -1141,8 +1152,7 @@ missing cheap conformance assertions (stdout hygiene, version negotiation,
 capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
 contract) are #61; the orchestration-level assertions
 that contradict the policy above are collected in #63; `tool_call.name` is never
-emitted and no SDK release up to 0.33.0 can express it - #64; the
-`allow_always`/`reject_always` branches have no test - #65. (#62 left the gap list with
+emitted and no SDK release up to 0.33.0 can express it - #64. (#62 left the gap list with
 the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
 `PromptResponse`/`StopReason.CANCELLED`.)
 
