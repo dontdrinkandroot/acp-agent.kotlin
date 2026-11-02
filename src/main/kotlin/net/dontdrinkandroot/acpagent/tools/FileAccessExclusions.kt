@@ -63,7 +63,17 @@ internal class FileAccessExclusions private constructor(private val rules: List<
 
         val EMPTY: FileAccessExclusions = of(emptyList())
 
-        val DEFAULT: FileAccessExclusions = of(listOf(".env*.local"))
+        /**
+         * The fixed default rule set. `.ai/run.json` is not a secret but a
+         * privilege boundary: the file's command strings are executed by the
+         * prompt-free `run` tool, so letting the generic file tools write it
+         * would bypass the permission prompt of the dedicated run-config write
+         * tools (a rejected `create_run_config` could simply be re-applied by
+         * an in-project `edit_file`, issue #70). The dedicated tools keep full
+         * access - they read and write the file directly, never through this
+         * policy - and the system prompt lists the configurations anyway.
+         */
+        val DEFAULT: FileAccessExclusions = of(listOf(".env*.local", ".ai/run.json"))
 
         fun of(globs: List<String>): FileAccessExclusions =
             FileAccessExclusions(

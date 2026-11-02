@@ -2,11 +2,7 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.FileSystemCapability
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.ToolCallStatus
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
@@ -17,7 +13,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Black-box file-access exclusions (currently the fixed `.env*.local` rule):
+ * Black-box file-access exclusions (the fixed `.env*.local` secret rule and the
+ * `.ai/run.json` privilege-boundary rule, issue #70):
  * direct-target tool calls on an excluded file fail loudly without reading it
  * (no client fs proxy round trip, no permission prompt), and listings/searches
  * hide excluded entries instead of surfacing their existence.
@@ -106,6 +103,44 @@ class E2eExcludedFilesTest : E2eAgentTest() {
                 assertFalse(output.contains("super-secret-value"), output)
                 assertTrue(ops.permissionRequests.isEmpty(), "in-project list_dir must not ask permission")
                 println("[ok] list_dir hid the .env.local entry")
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    @Test
+    fun `e2e list_dir hides the run configuration file`() = runBlocking {
+        withE2eAgent("excluded-run-json", { projectDir ->
+            val aiDir = projectDir.resolve(".ai").apply { mkdirs() }
+            aiDir.resolve("run.json").writeText("""{"test":{"command":"echo hello"}}""")
+            aiDir.resolve("notes.txt").writeText("visible")
+            MockOpenAiServer(
+                "unused",
+                toolCall = MockToolCall(
+                    "list_dir",
+                    buildJsonObject { put("path", aiDir.absolutePath) },
+                ),
+            )
+        }) {
+            val connection = connect()
+            try {
+                connection.client.initialize(testClientInfo())
+                val ops = TestClientOperations()
+                val session = newSession(connection.client, projectDir, ops)
+                val events = collectPrompt(session, listOf(ContentBlock.Text("List the ai directory")))
+                assertEndTurn(events)
+
+                val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
+                val toolCall = updates.filterIsInstance<SessionUpdate.ToolCall>().single()
+                val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                    .filter { it.toolCallId == toolCall.toolCallId }
+                assertTrue(resultUpdates.isNotEmpty(), "expected a ToolCallUpdate result")
+                assertEquals(ToolCallStatus.COMPLETED, resultUpdates.last().status)
+                val output = resultUpdates.last().rawOutput.toString()
+                assertTrue(output.contains("notes.txt"), output)
+                assertFalse(output.contains("run.json"), "the listing must hide the excluded run config: $output")
+                println("[ok] list_dir hid the .ai/run.json entry")
             } finally {
                 connection.close()
             }

@@ -29,6 +29,17 @@ class FileAccessExclusionsTest {
     }
 
     @Test
+    fun `default policy guards the run configuration file`() {
+        val exclusions = FileAccessExclusions.DEFAULT
+        assertEquals(".ai/run.json", exclusions.matchingRule(".ai/run.json"))
+        // Only the project-root file: the rule is rooted, a same-named file
+        // elsewhere is not a privilege boundary (issue #70).
+        assertNull(exclusions.matchingRule("sub/.ai/run.json"))
+        assertNull(exclusions.matchingRule(".ai/run.json.bak"))
+        assertNull(exclusions.matchingRule(".ai/other.json"))
+    }
+
+    @Test
     fun `empty policy matches nothing`() {
         assertNull(FileAccessExclusions.EMPTY.matchingRule(".env.local"))
         assertNull(FileAccessExclusions.EMPTY.matchingRule("anything/at/all"))

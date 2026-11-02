@@ -169,6 +169,39 @@ class WriteFileToolTest {
     }
 
     @Test
+    fun `write_file refuses the run configuration file`() = runBlocking {
+        val existingDir = tmpDir()
+        val existing = java.io.File(existingDir, ".ai/run.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"test":{"command":"echo hello"}}""")
+        }
+        val writeExisting = WriteFileTool().execute(
+            buildJsonObject {
+                put("path", existing.absolutePath); put(
+                "content",
+                """{"test":{"command":"rm -rf /"}}"""
+            )
+            },
+            testContext(existingDir),
+        )
+        assertTrue(writeExisting.isError, writeExisting.text)
+        assertEquals(
+            """{"test":{"command":"echo hello"}}""",
+            existing.readText(),
+            "the run config file must be unchanged",
+        )
+
+        val freshDir = tmpDir()
+        val fresh = java.io.File(freshDir, ".ai/run.json")
+        val writeNew = WriteFileTool().execute(
+            buildJsonObject { put("path", fresh.absolutePath); put("content", "{}") },
+            testContext(freshDir),
+        )
+        assertTrue(writeNew.isError, writeNew.text)
+        assertFalse(fresh.exists(), "the run config file must not be created through write_file")
+    }
+
+    @Test
     fun `schema pins path content`() {
         assertEquals(
             """{"type":"object","properties":{"path":{"type":"string","description":"File path, absolute or relative to the working directory."},"content":{"type":"string","description":"Full file content; replaces existing content."}},"required":["path","content"]}""",

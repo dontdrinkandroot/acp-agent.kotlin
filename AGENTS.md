@@ -187,7 +187,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # sessions, AgentSessionFactory interface, randomSessionId)
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
-                                     # text; DEFAULT = .env*.local; future source: .aiignore
+                                     # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
     tools/ToolCatalog.kt             # localTools() + sessionTools(cwd): the production tool list
                                      # (Main.kt assembles the registries from it; iterated by the
@@ -282,7 +282,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # out-of-project move destination prompts); no fs-capability
                                      # negative scenario yet (issue #61)
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
-                                     # without reading/prompting, list_dir hides the entry
+                                     # without reading/prompting, list_dir hides the entry,
+                                     # the .ai/run.json rule is hidden too (issue #70)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eProviderOptionTest.kt     # provider config option (issue #42): advertisement, request
                                      # wire shape order, fail-open hidden, manual-beats-env,
@@ -291,7 +292,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
                                      # unknown config fails loudly, args = literal argv tokens
         E2eRunConfigCrudTest.kt      # create/update/delete_run_config: .ai/run.json persistence
-                                     # and permission prompts
+                                     # and permission prompts, plus the issue #70 pin that a
+                                     # rejected create cannot be re-applied via edit_file
         E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
                                      # (trusted), unannotated prompts + executes,
                                      # MCP_TRUST_ANNOTATIONS=0 prompts, destructive annotated
@@ -508,7 +510,11 @@ Config comes from environment variables:
   not be blank" via `RunConfigException` -> `runConfigResult`, never a raw
   `IllegalArgumentException` escaping `execute()`; issue #47). Writes are atomic (temp + move) and refuse to
   touch a corrupt/unparseable file; unknown entry fields
-  round-trip untouched. The repo ships a default `.ai/run.json` with the standard dev
+  round-trip untouched. These dedicated tools are the **only** writers of the file: `.ai/run.json`
+  is a default file-access exclusion, so `read_file`/`edit_file`/`write_file`/`delete_file`
+  refuse it and `list_dir`/`glob`/`grep` hide it (issue #70 - the permission prompt of the
+  write tools must not be bypassable by an in-project `edit_file`; see File-access exclusions).
+  The repo ships a default `.ai/run.json` with the standard dev
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class/method via `[args]`),
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
@@ -583,7 +589,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
   in the walk callback; `grep` folds them into the existing skip suffix, while a single-file
   grep `path` is refused like a direct target). The default rule
-  set is the fixed `.env*.local` secret-file exclusion (bare name, matches at any depth;
+  set holds two fixed entries: the `.env*.local` secret-file exclusion (bare name, matches at
+  any depth) and the rooted `.ai/run.json` privilege-boundary rule (issue #70 - see below;
   gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
   also checks the symlink-resolved target name, so an alias link to an excluded file cannot
   smuggle the read (unresolvable paths only skip that extra check - a block, not a gate).
@@ -594,7 +601,24 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `.aiignore` in the project root feeding `FileAccessExclusions.of()` - matching, error
   text, hiding and the prompt section already consume a rule list, so plumbing it changes
   no tool code. Not excluded on purpose: `bash`/`run` commands (not inspected) and
-  `move_file`/`move_directory`/`delete_directory` (no content flow into the model context).
+  `delete_directory` (no content flow into the model context; `move_file`/`move_directory`
+  do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded (
+  issue #70)**: it is not a secret but a privilege
+  boundary. Permissions are path-scoped (`permissionNeeded` allows every in-project target
+  outright), so the permission prompt of the dedicated write tools was
+  cosmetically bypassable - an observed session rejected `create_run_config`, and the model
+  re-applied the same entry with an in-project `edit_file`, prompt-free (because `run` is
+  non-mutating and prompt-free in every mode, that also re-opened a prompt-free execution
+  path for arbitrary command strings). The generic file tools therefore refuse/hide the
+  file, and `move_file`/`move_directory` refuse it as source **and** destination in the
+  shared `executeMove` (moving it away would delete it just like `delete_file`);
+  `list_run_configs`/`create_run_config`/`update_run_config`/`delete_run_config` are
+  unaffected because they read and write it through `loadRunConfigRoot`/`writeRunConfigRoot`,
+  never through the exclusion-aware tools. Pinned by the `e2e rejected create_run_config
+  cannot be re-applied through edit_file on ai run json` scenario (E2eRunConfigCrudTest) and
+  the per-tool exclusion tests. **Residual (issue #71)**: a *containing* directory can still
+  be moved or deleted (`.ai` itself does not match the rooted rule, its child does) - a
+  subtree walk for `move_directory`/`delete_directory` is deliberately not part of this fix.
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
   `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP (S) GET via a

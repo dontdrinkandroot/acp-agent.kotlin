@@ -43,9 +43,11 @@ public class MoveFileTool : AgentTool {
 
 /**
  * The shared move flow of move_file/move_directory: argument decoding,
- * source type gate, destination-exists refusal, missing-parent creation and
- * the move itself. [requireDirectory] selects which source type is expected
- * and names the sibling tool in the refusal.
+ * source type gate, exclusion gate (an excluded path may be neither the
+ * source - moving it away removes it just like a delete - nor the destination,
+ * which would create or replace it), destination-exists refusal, missing-parent
+ * creation and the move itself. [requireDirectory] selects which source type is
+ * expected and names the sibling tool in the refusal.
  */
 internal suspend fun executeMove(
     arguments: JsonObject,
@@ -58,6 +60,12 @@ internal suspend fun executeMove(
         ?: return ToolResult(arguments.argError("destination"), true)
     val source = absoluteToolPath(context.cwd, rawSource)
     val destination = absoluteToolPath(context.cwd, rawDestination)
+    context.fileExclusions.matchingRuleForTarget(context.cwd, source)?.let {
+        return ToolResult(exclusionError(source, it), true)
+    }
+    context.fileExclusions.matchingRuleForTarget(context.cwd, destination)?.let {
+        return ToolResult(exclusionError(destination, it), true)
+    }
     return executeSafely("Move failed") {
         val fs = SystemFileSystem
         val sourcePath = Path(source)

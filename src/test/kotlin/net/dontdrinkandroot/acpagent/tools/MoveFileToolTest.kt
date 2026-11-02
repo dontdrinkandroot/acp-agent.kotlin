@@ -97,6 +97,37 @@ class MoveFileToolTest {
     }
 
     @Test
+    fun `move_file refuses the run configuration file as source and destination`() = runBlocking {
+        val dir = tmpDir()
+        val runJson = java.io.File(dir, ".ai/run.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"test":{"command":"echo hello"}}""")
+        }
+        val staged = java.io.File(dir, "staged.json").apply { writeText("""{"x":{"command":"rm -rf /"}}""") }
+
+        val asSource = MoveFileTool().execute(
+            buildJsonObject { put("source", runJson.absolutePath); put("destination", "$dir/moved.json") },
+            testContext(dir),
+        )
+        assertTrue(asSource.isError, asSource.text)
+        assertTrue(asSource.text.contains("exclusion rule '.ai/run.json'"), asSource.text)
+        assertTrue(runJson.isFile, "the run config file must not be moved away")
+
+        val asDestination = MoveFileTool().execute(
+            buildJsonObject { put("source", staged.absolutePath); put("destination", runJson.absolutePath) },
+            testContext(dir),
+        )
+        assertTrue(asDestination.isError, asDestination.text)
+        assertTrue(asDestination.text.contains("exclusion rule '.ai/run.json'"), asDestination.text)
+        assertEquals(
+            """{"test":{"command":"echo hello"}}""",
+            runJson.readText(),
+            "the run config file must be unchanged"
+        )
+        assertTrue(staged.isFile, "the refused destination must leave the source in place")
+    }
+
+    @Test
     fun `schema pins source destination`() {
         assertEquals(
             """{"type":"object","properties":{"source":{"type":"string","description":"File to move, absolute or relative to the working directory."},"destination":{"type":"string","description":"New file location, absolute or relative to the working directory; missing parent directories are created."}},"required":["source","destination"]}""",

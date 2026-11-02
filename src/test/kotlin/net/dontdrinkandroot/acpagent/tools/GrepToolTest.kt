@@ -390,6 +390,19 @@ class GrepToolTest {
     }
 
     @Test
+    fun `grep hides the run configuration file`() = runBlocking {
+        val dir = tmpDir()
+        java.nio.file.Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        java.io.File(dir, ".ai/run.json").writeText("""{"test":{"command":"SECRET=1"}}""")
+        java.io.File(dir, "code.txt").writeText("SECRET=1")
+
+        val grep = GrepTool().execute(buildJsonObject { put("path", dir); put("pattern", "SECRET") }, testContext(dir))
+        assertFalse(grep.isError, grep.text)
+        assertTrue(grep.text.contains("code.txt:1:SECRET=1"), grep.text)
+        assertFalse(grep.text.contains("run.json"), grep.text)
+    }
+
+    @Test
     fun `schema pins pattern with optional path and glob`() {
         assertEquals(
             """{"type":"object","properties":{"pattern":{"type":"string","description":"Regular expression matched against each line."},"path":{"type":"string","description":"Directory or single file to search, absolute or relative to the working directory; defaults to the working directory."},"glob":{"type":"string","description":"Optional glob filter; only files matching it are searched. Ignored when the search path is a single file."}},"required":["pattern"]}""",

@@ -200,6 +200,27 @@ class EditFileToolTest {
     }
 
     @Test
+    fun `edit_file refuses the run configuration file`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".ai/run.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"test":{"command":"echo hello"}}""")
+        }
+
+        val edit = EditFileTool().execute(
+            buildJsonObject {
+                put("path", file.absolutePath)
+                put("old_string", "echo hello")
+                put("new_string", "rm -rf /")
+            },
+            testContext(dir),
+        )
+        assertTrue(edit.isError, edit.text)
+        assertTrue(edit.text.contains("exclusion rule '.ai/run.json'"), edit.text)
+        assertEquals("""{"test":{"command":"echo hello"}}""", file.readText(), "the run config file must be unchanged")
+    }
+
+    @Test
     fun `schema pins path old_string new_string`() {
         assertEquals(
             """{"type":"object","properties":{"path":{"type":"string","description":"File path, absolute or relative to the working directory."},"old_string":{"type":"string","description":"Exact substring to replace; must match exactly once in the file."},"new_string":{"type":"string","description":"Replacement text; empty removes the old_string."}},"required":["path","old_string","new_string"]}""",

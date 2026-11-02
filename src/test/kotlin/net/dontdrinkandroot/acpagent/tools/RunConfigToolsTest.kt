@@ -252,6 +252,33 @@ class RunConfigToolsTest {
     }
 
     @Test
+    fun `dedicated read and write tools keep access to the excluded run config file`() = runBlocking {
+        // Issue #70: `.ai/run.json` is excluded from the generic file tools,
+        // the dedicated tools are the only sanctioned writers.
+        val dir = tempDir()
+        val create = CreateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", "executable"); put("command", "chmod +x bin/*") },
+            context(dir),
+        )
+        assertFalse(create.isError, create.text)
+        assertTrue(runJsonPath(dir).toFile().isFile, "create_run_config must keep writing the excluded file")
+
+        val listed = ListRunConfigsTool(dir).execute(buildJsonObject {}, context(dir))
+        assertFalse(listed.isError, listed.text)
+        assertTrue(listed.text.contains("chmod +x bin/*"), listed.text)
+
+        val update = UpdateRunConfigTool(dir).execute(
+            buildJsonObject { put("name", "executable"); put("command", "find bin -type f -exec chmod +x {} +") },
+            context(dir),
+        )
+        assertFalse(update.isError, update.text)
+
+        val delete = DeleteRunConfigTool(dir).execute(buildJsonObject { put("name", "executable") }, context(dir))
+        assertFalse(delete.isError, delete.text)
+        assertTrue(configs(dir).isEmpty(), delete.text)
+    }
+
+    @Test
     fun `explicit json null command is rejected by create and update`() = runBlocking {
         val dir = tempDir()
         val create = CreateRunConfigTool(dir).execute(

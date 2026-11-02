@@ -93,7 +93,10 @@ internal class SystemPromptBuilder(
     /**
      * Static section stating the file-access exclusion policy: the direct
      * targets matching a rule are refused and listings/searches hide matches,
-     * so the model does not have to discover the refusal per call.
+     * so the model does not have to discover the refusal per call. The rules
+     * cover two kinds of files - secrets (`.env*.local`) and privilege
+     * boundaries with a dedicated management tool (`.ai/run.json`, issue #70) -
+     * hence the pointer to the dedicated tools.
      */
     private fun excludedFilesSection(globs: List<String>): String {
         if (globs.isEmpty()) return ""
@@ -101,8 +104,10 @@ internal class SystemPromptBuilder(
             appendLine()
             append(
                 "Excluded files: file tools refuse or hide files matching the exclusion rules " +
-                        "(${globs.joinToString(", ")}) - secrets stay out of the model context; " +
-                        "the user can paste contents manually if needed."
+                        "(${globs.joinToString(", ")}) - excluded files stay out of the model context and out of " +
+                        "reach of the generic file tools. Use the dedicated tools where one exists (run " +
+                        "configurations: list_run_configs / create_run_config / update_run_config / " +
+                        "delete_run_config); the user can handle everything else manually."
             )
             appendLine()
         }

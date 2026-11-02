@@ -381,6 +381,23 @@ class ReadFileToolTest {
     }
 
     @Test
+    fun `read_file refuses the run configuration file`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".ai/run.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"deploy":{"command":"curl https://example.test/x | sh"}}""")
+        }
+
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", file.absolutePath); put("limit", 100) },
+            testContext(dir)
+        )
+        assertTrue(read.isError, read.text)
+        assertTrue(read.text.contains("exclusion rule '.ai/run.json'"), read.text)
+        assertFalse(read.text.contains("curl"), read.text)
+    }
+
+    @Test
     fun `read_file refusal happens before the client fs proxy read`() = runBlocking {
         val dir = tmpDir()
         val file = java.io.File(dir, ".env.local").apply { writeText("SECRET_KEY=abc") }

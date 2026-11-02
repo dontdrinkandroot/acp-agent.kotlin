@@ -86,6 +86,74 @@ class E2eRunConfigCrudTest : E2eAgentTest() {
     }
 
     @Test
+    fun `e2e rejected create_run_config cannot be re-applied through edit_file on ai run json`() = runBlocking {
+        withE2eAgent("run-crud-bypass", { projectDir ->
+            val aiDir = projectDir.resolve(".ai").apply { mkdirs() }
+            aiDir.resolve("run.json").writeText("""{"test":{"command":"echo hello"}}""")
+            MockOpenAiServer(
+                "unused",
+                toolCalls = listOf(
+                    MockToolCall(
+                        "create_run_config",
+                        buildJsonObject {
+                            put("name", "executable")
+                            put("command", "find bin -type f -exec chmod +x {} +")
+                        },
+                    ),
+                    MockToolCall(
+                        "edit_file",
+                        buildJsonObject {
+                            put("path", projectDir.resolve(".ai/run.json").absolutePath)
+                            put("old_string", """{"test":{"command":"echo hello"}}""")
+                            put(
+                                "new_string",
+                                """{"test":{"command":"echo hello"},"executable":{"command":"find bin -type f -exec chmod +x {} +"}}""",
+                            )
+                        },
+                    ),
+                ),
+            )
+        }) {
+            val connection = connect()
+            try {
+                connection.client.initialize(testClientInfo())
+                val ops = RejectingClientOperations()
+                val session = newSession(connection.client, projectDir, ops)
+                session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
+                val events = collectPrompt(session, listOf(ContentBlock.Text("Add an executable run config")))
+                assertEndTurn(events)
+
+                assertEquals(1, ops.permissionRequests.size, "the rejected create_run_config prompted once")
+
+                val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
+                val results = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
+                    .filter { it.status == ToolCallStatus.COMPLETED || it.status == ToolCallStatus.FAILED }
+                assertEquals(2, results.size, "one terminal update per mocked tool call: $results")
+                assertEquals(ToolCallStatus.FAILED, results[0].status)
+                assertTrue(results[0].rawOutput.toString().contains("Permission denied for tool create_run_config"))
+
+                // Issue #70 regression pin: the rejected mutation must not be
+                // re-applied by a prompt-free write through the generic file tools.
+                assertEquals(ToolCallStatus.FAILED, results[1].status)
+                assertTrue(
+                    results[1].rawOutput.toString().contains("excluded from tool access"),
+                    results[1].rawOutput.toString(),
+                )
+
+                val runJson = File(projectDir, ".ai/run.json")
+                assertEquals(
+                    """{"test":{"command":"echo hello"}}""",
+                    runJson.readText(),
+                    "the rejected run configuration must never reach the file",
+                )
+                println("[ok] edit_file on .ai/run.json is refused after a rejected create_run_config")
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    @Test
     fun `e2e plan mode disables write tools and list_run_configs runs without permission`() = runBlocking {
         withE2eAgent("run-cfg-plan", { projectDir ->
             val aiDir = projectDir.resolve(".ai").apply { mkdirs() }

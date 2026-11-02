@@ -110,4 +110,18 @@ class DeleteFileToolTest {
         assertTrue(delete.text.contains("excluded from tool access"), delete.text)
         assertTrue(file.isFile, "the excluded file must survive the refused delete")
     }
+
+    @Test
+    fun `delete_file refuses the run configuration file`() = runBlocking {
+        val dir = tmpDir()
+        val file = java.io.File(dir, ".ai/run.json").apply {
+            parentFile.mkdirs()
+            writeText("""{"test":{"command":"echo hello"}}""")
+        }
+
+        val delete = DeleteFileTool().execute(buildJsonObject { put("path", file.absolutePath) }, testContext(dir))
+        assertTrue(delete.isError, delete.text)
+        assertTrue(delete.text.contains("exclusion rule '.ai/run.json'"), delete.text)
+        assertTrue(file.isFile, "the run config file must survive the refused delete")
+    }
 }

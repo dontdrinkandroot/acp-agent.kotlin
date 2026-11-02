@@ -92,6 +92,18 @@ class ListDirToolTest {
     }
 
     @Test
+    fun `list_dir hides the run configuration file`() = runBlocking {
+        val dir = tmpDir()
+        java.nio.file.Files.createDirectories(java.nio.file.Path.of(dir, ".ai"))
+        java.io.File(dir, ".ai/run.json").writeText("""{"test":{"command":"echo hello"}}""")
+        java.io.File(dir, "readme.md").writeText("x")
+
+        val list = ListDirTool().execute(buildJsonObject { put("path", "$dir/.ai") }, testContext(dir))
+        assertFalse(list.isError, list.text)
+        assertFalse(list.text.contains("run.json"), list.text)
+    }
+
+    @Test
     fun `nested excluded file is hidden in listings at any depth`() = runBlocking {
         val dir = tmpDir()
         java.nio.file.Files.createDirectories(java.nio.file.Path.of(dir, "config"))

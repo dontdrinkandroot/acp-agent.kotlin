@@ -42,20 +42,22 @@ class SystemPromptTest {
     @Test
     fun `operating rules pin run config durability and the bash-mode criteria`() {
         val prompt = builder.build(null)
-        assertTrue(prompt.contains("durable, shared project workflows"), prompt)
-        assertTrue(prompt.contains("only for commands worth repeating"), prompt)
-        assertTrue(prompt.contains("one-off"), prompt)
-        // The rule must be path-free: the storage location is an implementation detail.
-        assertTrue(!prompt.contains(".ai/run.json"), prompt)
+        // The rules section must be path-free: the storage location is an
+        // implementation detail (the separate exclusion section names it).
+        val rules = prompt.substringBefore("Excluded files:")
+        assertTrue(rules.contains("durable, shared project workflows"), prompt)
+        assertTrue(rules.contains("only for commands worth repeating"), prompt)
+        assertTrue(rules.contains("one-off"), prompt)
+        assertTrue(!rules.contains(".ai/run.json"), prompt)
         // The prohibition is absolute: no mint-then-clean-up escape hatch.
-        assertTrue(!prompt.contains("delete it"), prompt)
-        assertTrue(!prompt.contains("once it has served"), prompt)
+        assertTrue(!rules.contains("delete it"), prompt)
+        assertTrue(!rules.contains("once it has served"), prompt)
         // Bash-mode criteria: durable-config unusable/uncreatable or awkwardly complicated.
-        assertTrue(prompt.contains("no durable run configuration can be used or created"), prompt)
-        assertTrue(prompt.contains("awkwardly complicated"), prompt)
-        assertTrue(prompt.contains("ask the user for bash mode"), prompt)
+        assertTrue(rules.contains("no durable run configuration can be used or created"), prompt)
+        assertTrue(rules.contains("awkwardly complicated"), prompt)
+        assertTrue(rules.contains("ask the user for bash mode"), prompt)
         // The new criteria absorbs the old generic mode-gap clause.
-        assertTrue(!prompt.contains("attempting a workaround"), prompt)
+        assertTrue(!rules.contains("attempting a workaround"), prompt)
     }
 
     @Test
@@ -83,10 +85,25 @@ class SystemPromptTest {
     }
 
     @Test
+    fun `excluded files section names both default rules and the dedicated run-config tools`() {
+        val prompt = builder.build(null)
+        assertTrue(prompt.contains("Excluded files:"), prompt)
+        assertTrue(prompt.contains(".env*.local"), prompt)
+        assertTrue(prompt.contains(".ai/run.json"), prompt)
+        assertTrue(prompt.contains("create_run_config"), prompt)
+    }
+
+    @Test
+    fun `excluded files section is omitted without rules`() {
+        val builder = SystemPromptBuilder("/project", { "2026-09-03" }, excludedFileGlobs = emptyList())
+        assertTrue(!builder.build(null).contains("Excluded files:"), builder.build(null))
+    }
+
+    @Test
     fun `run configurations section is omitted when none are defined`() {
         val prompt = builder.build(null)
         assertTrue(!prompt.contains("Available run configurations"), prompt)
-        assertTrue(!prompt.contains(".ai/run.json"), prompt)
+        assertTrue(!prompt.contains("pass `args` (an array"), prompt)
     }
 
     @Test
