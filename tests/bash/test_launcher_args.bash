@@ -39,14 +39,32 @@ test_rw_rootfs_opt_out_relaxes_read_only() {
     assert_not_contains "$(last_run_line)" "--read-only"
 }
 
-# The agent inside the container must be able to reach MCP servers on the host
-# (e.g. the PhpStorm MCP server at http://host.docker.internal:64442/sse). A
-# plain Linux docker daemon does not resolve host.docker.internal, so the
-# launcher always maps it to the host gateway.
-test_host_docker_internal_resolves_to_the_host_gateway() {
+# The agent container shares the host's network namespace by default: Gradle's
+# cache locking only hands a lock to another process via a loopback UDP ping
+# (issue #68), so a bridge-namespaced container times out after ~60s instead of
+# handing over. In host mode the container also resolves host-loopback services
+# (e.g. the PhpStorm MCP server at http://host.docker.internal:64442/sse)
+# directly, so the mapping must point at 127.0.0.1 instead of the bridge
+# gateway, which would miss 127.0.0.1-bound services.
+test_host_network_is_the_default() {
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
     assert_exit_status 0
-    assert_contains "$(last_run_line)" "--add-host=host.docker.internal:host-gateway"
+    local line
+    line=$(last_run_line)
+    assert_contains "$line" "--network host"
+    assert_contains "$line" "--add-host=host.docker.internal:127.0.0.1"
+}
+
+# Opting back into a bridge/named network restores namespace isolation, so
+# host.docker.internal maps to the bridge gateway again (the service names of a
+# compose project, e.g. 'postgres', resolve through its embedded DNS).
+test_explicit_network_keeps_the_host_gateway_mapping() {
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ACP_DOCKER_NETWORK=development --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$line" "--network development"
+    assert_contains "$line" "--add-host=host.docker.internal:host-gateway"
 }
 
 test_explicit_docker_network_is_honored() {

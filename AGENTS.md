@@ -906,10 +906,20 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   shell test (`tests/bash/test_dockerfile.bash`) pins the allowlist against the real
   build inputs.
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
-  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
-  `--add-host=host.docker.internal:host-gateway` (plain Linux daemons do not resolve
+  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and **`--network host` by
+  default** (`ACP_DOCKER_NETWORK` restores isolation) with
+  `--add-host=host.docker.internal:127.0.0.1` in host mode /
+  `:host-gateway` on an explicit network (plain Linux daemons do not resolve
   `host.docker.internal`; the mapping lets the container reach MCP servers running on the
-  host, e.g. the PhpStorm MCP server at `http://host.docker.internal:<port>/sse`),
+  host, e.g. the PhpStorm MCP server at `http://host.docker.internal:<port>/sse`). Host
+  networking is what makes Gradle's cross-process cache locking work across the host and
+  container daemons (loopback UDP lock handover, see the Gradle lock timeout pitfall) and
+  what lets the container reach host services bound to loopback. The trade-off: no network
+  isolation (ports bound in the container are host ports, host-loopback services are
+  reachable), and Docker's embedded DNS is unavailable (compose service names like
+  `postgres` only resolve on the compose network — with host networking a project's own
+  test config must target `127.0.0.1:<published-port>` instead, e.g. via a
+  `.env.test.local` the project gitignores),
   tmpfs home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
   `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
   home tmpfs/named volume would shadow it anyway, so runc would create the deep
@@ -1176,7 +1186,8 @@ Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
-identity, pull fallback, `--add-host=host.docker.internal:host-gateway` (always present)
+identity, pull fallback, `--network host` as the default + `--add-host=host.docker.internal:(127.0.0.1|host-gateway)`
+depending on the network mode (always present)
 
 + `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, Gradle
   GUH sharing (content-addressed leaves incl. `build-cache-*`/`transforms-*`,
@@ -1397,11 +1408,21 @@ communicate that with the user so we can review them.
   held - the blocker is real contention, not the lock file's existence: idle daemons keep
   `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),
   and every lock file keeps the last owner's PID as a record after release, so neither
-  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. The shared
-  cache leaves form one lock domain across the host and all agent containers (issue #68),
-  so a concurrent host/other-container build surfaces here as `INVISIBLE-HOLDER` /
-  `Timeout waiting to lock` - Gradle documents cross-container concurrent cache access as
-  unsupported; a retry is safe, and the work share is the reason the cache is shared at all. First aid is
+  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. **Root cause (issue #68, proven by
+  repro)**: Gradle hands a held lock over only when the
+  waiter *asks*: the waiter pings the owner over **loopback UDP** (`FileLockCommunicator`),
+  the owner releases and the waiter proceeds. That ping cannot cross network namespaces,
+  so a container on a bridge/named network (a different netns than the host) waits out the
+  ~60s lock timeout and fails instead of queuing - even though the kernels' flocks would
+  serialize correctly. Gradle declares this unsupported and will not change the protocol (gradle/gradle#851, #8375; the
+  timeout is deliberately not configurable). **The launcher
+  therefore runs the container in the host network namespace by default** (`--network host`,
+  `ACP_DOCKER_NETWORK` for an opt-out), which puts host and container Gradle processes on
+  one loopback and restores the handover. The shared
+  cache leaves still form one lock domain across the host and all agent containers, so a
+  `Timeout waiting to lock` now only appears in the opt-out (bridge/named-network) mode or
+  for a genuinely hung owner; a retry is safe, and the work share is the reason the cache is
+  shared at all. First aid is
   `.ai/scripts/gradle-unstick [status|wipe]` (run configs `gradleUnstick` /
   `gradleUnstickWipe`, safe to run any time): `status` stops container-local daemons (`./gradlew --stop`), then
   classifies every `*.lock`/`*.lck` under

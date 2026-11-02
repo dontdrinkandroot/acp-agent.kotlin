@@ -17,7 +17,13 @@ image=ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest
 container_home=/home/dev
 container_cache_dir=$container_home/.cache
 container_data_dir=$container_home/.local/share
-network="${ACP_DOCKER_NETWORK:-development}"
+# Host network by default: Gradle hands a cache lock to a waiting process only
+# via a loopback UDP ping (issue #68), which never crosses network namespaces -
+# a bridge-networked container times out after ~60s instead of handing over.
+# With the host namespace the container also reaches host loopback services
+# (MCP servers bound to 127.0.0.1) and the host's compose services directly.
+# ACP_DOCKER_NETWORK restores isolation (e.g. 'development' for compose DNS).
+network="${ACP_DOCKER_NETWORK:-host}"
 host_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 host_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 host_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -675,13 +681,21 @@ fi
 
 # Not exec'd: the EXIT trap must run after docker returns to remove the
 # staged API key file and the .env.local mask file.
-# --add-host=host.docker.internal:host-gateway: plain Linux docker daemons do
-# not resolve host.docker.internal, so the mapping lets the container reach MCP
+# --add-host=host.docker.internal:...: plain Linux docker daemons do not
+# resolve host.docker.internal, so the mapping lets the container reach MCP
 # servers running on the host (e.g. the PhpStorm MCP server at
-# http://host.docker.internal:<port>/sse).
+# http://host.docker.internal:<port>/sse). In host network mode the host's
+# loopback IS the container's loopback, so 127.0.0.1 is the correct target
+# (host-gateway would name the bridge gateway, which misses 127.0.0.1-bound
+# services); on an explicit network the bridge gateway is.
+if [ "$network" = host ]; then
+    host_docker_internal_target=127.0.0.1
+else
+    host_docker_internal_target=host-gateway
+fi
 "$docker_bin" run --rm --init -i \
     --network "$network" \
-    --add-host=host.docker.internal:host-gateway \
+    --add-host="host.docker.internal:$host_docker_internal_target" \
     --user "$uid:$gid" \
     "${api_key_mounts[@]}" \
     "${extra_mount_args[@]}" \
