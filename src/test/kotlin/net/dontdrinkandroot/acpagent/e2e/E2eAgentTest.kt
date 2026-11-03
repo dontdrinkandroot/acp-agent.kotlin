@@ -19,12 +19,14 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.*
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Shared harness for the black-box e2e scenarios: drives the linked installDist
@@ -235,6 +237,40 @@ abstract class E2eAgentTest {
             delay(25)
         }
     }
+
+    /**
+     * The tool-call pairing invariant (issue #38) as seen by the chat request: every
+     * assistant tool-call id must be answered by a `role: "tool"` result, or a strict
+     * provider rejects the request with 400 "No tool output found for function call".
+     */
+    internal fun assertPairComplete(body: JsonObject, context: String) {
+        val messages = body["messages"]!!.jsonArray
+        val callIds = messages.asSequence()
+            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "assistant" }
+            .flatMap { (it.jsonObject["tool_calls"] as? JsonArray ?: JsonArray(emptyList())).jsonArray }
+            .map { it.jsonObject["id"]!!.jsonPrimitive.content }
+            .toList()
+        val resultIds = messages
+            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "tool" }
+            .map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content }
+        assertTrue(
+            callIds.subtract(resultIds.toSet()).isEmpty(),
+            "$context: every tool call in the chat request must carry a tool output " +
+                    "(dangling=${callIds.subtract(resultIds.toSet())}, calls=$callIds, results=$resultIds)",
+        )
+    }
+
+    /**
+     * Collapses consecutive equal entries, so a run of streamed deltas becomes one
+     * entry. Use it instead of indexing chunks by position when the property under
+     * test is "one id per iteration": it survives a mock emitting more or fewer
+     * deltas while still failing on an id split within a run or a merge across runs.
+     */
+    internal fun <T> List<T>.collapseConsecutiveDuplicates(): List<T> =
+        fold(mutableListOf()) { acc, item ->
+            if (acc.lastOrNull() != item) acc.add(item)
+            acc
+        }
 
     internal fun drainStderr(process: Process): MutableList<String> {
         val lines = Collections.synchronizedList(mutableListOf<String>())

@@ -27,6 +27,7 @@ class E2eProviderRoutingTest : E2eAgentTest() {
             try {
                 connectTextOnly(connection)
                 val session = promptTextOnlyTurn(connection, projectDir, "first")
+                val endpointsFetchedAfterFirstPrompt = llmMock.endpointRequestCount.get()
                 promptTextOnlyTurn(connection, projectDir, "again", session)
                 val bodies = llmMock.requestBodies.map { llmMock.parseChatBody(it) }
                 assertTrue(bodies.all { it["provider"] != null }, "every chat request must carry provider preferences")
@@ -38,7 +39,11 @@ class E2eProviderRoutingTest : E2eAgentTest() {
                         provider["max_price"]?.jsonObject?.get("completion")?.jsonPrimitive?.content?.toDouble()
                     )
                 }
-                assertEquals(1, llmMock.endpointRequestCount.toInt(), "endpoints must be fetched once per model")
+                assertEquals(
+                    endpointsFetchedAfterFirstPrompt,
+                    llmMock.endpointRequestCount.get(),
+                    "the per-model endpoints feed must be cached across prompts, not re-fetched",
+                )
                 println("[ok] auto provider routing (throughput sort, median cap, cached)")
             } finally {
                 connection.close()
@@ -78,7 +83,10 @@ class E2eProviderRoutingTest : E2eAgentTest() {
                 assertNull(body["provider"], "disabled routing must omit the provider preferences")
                 // The provider option fetches its feed even with routing off (the
                 // picker stays visible); only `auto` degrades (issue #42).
-                assertEquals(1, llmMock.endpointRequestCount.toInt(), "the provider option still reads the feed")
+                assertTrue(
+                    llmMock.endpointRequestCount.get() >= 1,
+                    "the provider option still reads the feed",
+                )
                 println("[ok] auto provider routing disabled via env")
             } finally {
                 connection.close()

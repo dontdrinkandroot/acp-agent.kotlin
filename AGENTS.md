@@ -909,7 +909,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   deliberate v1 choice so reasoning folds into the message block it belongs to. v2 makes
   `messageId` mandatory and keys whole `agent_message`/`agent_thought` messages by it, so
   this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
-  runtime is upgraded.
+  runtime is upgraded - the v1 equivalence is pinned **v1-only** by the labelled assertion in
+  `E2eWireConformanceTest` (finding the mandatory v2 flip, issue #63).
   Requests carry app attribution headers (`HTTP-Referer`
   + `X-OpenRouter-Title`).
 - **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
@@ -1235,14 +1236,19 @@ call counts, mock filler text, delta chunk splits). A behavioral change
 failure without a behavioral change is a test-design smell: fix the test by
 asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
+The shared harness therefore offers `assertPairComplete(body, context)` (the #38 pairing
+invariant as observed in a chat request) and `collapseConsecutiveDuplicates()`
+(streamed deltas -> one entry per contiguous id run) so scenarios pin shapes instead of
+chunk counts or positions.
 
 **Known e2e gaps against the ACP spec** (reviewed 2026-10-18; file new issues for
 new findings, don't just note them): the
 missing cheap conformance assertions (stdout hygiene, version negotiation,
 capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
-contract) are #61; the orchestration-level assertions
-that contradict the policy above are collected in #63; `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64. (#69 left the gap list with
+contract) are #61; `tool_call.name` is never
+emitted and no SDK release up to 0.34.0 can express it - #64. (#63 left the gap list with
+the orchestration-level assertions replaced by effect-based ones: no LLM call totals, no
+mock filler text, no positional chunk pins; #69 left the gap list with
 `E2eMcpSseTransportTest` covering the classic SSE transport - the mirror of #60, which
 left it with `E2eMcpStdioTransportTest` covering the spec-mandatory stdio transport;
 #62 left it with the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled

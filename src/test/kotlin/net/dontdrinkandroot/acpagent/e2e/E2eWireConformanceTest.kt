@@ -15,7 +15,10 @@ import kotlinx.serialization.json.*
 import java.io.File
 import java.nio.file.Files
 import java.util.*
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * Black-box wire conformance:
@@ -233,8 +236,13 @@ class E2eWireConformanceTest : E2eAgentTest() {
             assertEquals(StopReason.END_TURN, promptResponse.response.stopReason)
             println("[ok] prompt response (stopReason=end_turn)")
 
-            assertEquals(2, llmMock.requestCount.toInt())
-            println("[ok] LLM called exactly 2 turns (tool-call turn + final turn)")
+            // The turn's follow-up request must answer the tool call it asked for
+            // (pairing invariant, #38) - the previous pin was a global LLM call total.
+            assertPairComplete(
+                llmMock.parseChatBody(llmMock.lastRequestBody),
+                "the chat request after the write_file tool call",
+            )
+            println("[ok] follow-up chat request is pair-complete (tool result answered)")
 
             assertTrue(
                 llmMock.lastRequestBody?.contains("\"reasoning\":{\"effort\":\"medium\"}") ?: false,
@@ -259,23 +267,19 @@ class E2eWireConformanceTest : E2eAgentTest() {
                 thoughtChunks.size >= 2,
                 "expected multiple agent_thought_chunk deltas, got ${thoughtChunks.size}"
             )
-            assertEquals(
-                "priming the writepondering the request",
-                thoughtChunks.mapNotNull { (it.content as ContentBlock.Text).text }.joinToString("")
-            )
             val uuidRegex = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
             val thoughtIds = thoughtChunks.map { it.messageId?.value }
             assertTrue(thoughtIds.isNotEmpty() && thoughtIds.all { it != null }, "thought chunks must carry a messageId")
             thoughtIds.forEach { id ->
                 assertTrue(uuidRegex.matches(id!!), "messageId must be UUIDv7 format, got '$id'")
             }
+            // Grouped by contiguous run rather than by chunk position: the mock's
+            // delta split is filler, "one id per LLM iteration" is the contract.
             assertEquals(
                 2,
-                thoughtIds.distinct().size,
+                thoughtIds.collapseConsecutiveDuplicates().size,
                 "each LLM iteration's thought deltas share one messageId, got $thoughtIds"
             )
-            assertEquals(thoughtIds[1], thoughtIds[2], "iteration-2 thought deltas share one messageId")
-            assertNotEquals(thoughtIds[0], thoughtIds[1], "a fresh LLM iteration gets a fresh thought messageId")
             println("[ok] agent_thought_chunk relayed from reasoning deltas, one UUIDv7 messageId per iteration")
 
             val textIds = updates.filterIsInstance<SessionUpdate.AgentMessageChunk>()
@@ -286,13 +290,16 @@ class E2eWireConformanceTest : E2eAgentTest() {
             }
             assertEquals(
                 2,
-                textIds.distinct().size,
+                textIds.collapseConsecutiveDuplicates().size,
                 "each LLM iteration's text deltas share one messageId, got $textIds"
             )
+            // ACP v1-only pin: v2 keys whole agent_message/agent_thought messages by
+            // messageId and requires distinct ids per stream - this assertion must
+            // flip to "disjoint id sets" on v2 (see the messageId pitfall in AGENTS.md).
             assertEquals(
                 thoughtIds.toSet(),
                 textIds.toSet(),
-                "an iteration's reasoning and reply deltas share the same messageId",
+                "an iteration's reasoning and reply deltas share the same messageId (v1 only)",
             )
             println("[ok] agent_message_chunk deltas share the iteration's messageId")
 
@@ -304,14 +311,17 @@ class E2eWireConformanceTest : E2eAgentTest() {
                     ?.get("messageId")?.jsonPrimitive?.content
             }
             assertTrue(
-                thoughtWireIds.size >= 3,
+                thoughtWireIds.size >= 2,
                 "expected raw agent_thought_chunk lines on the wire, got ${thoughtWireIds.size}",
             )
             thoughtWireIds.forEach { id ->
                 assertTrue(uuidRegex.matches(id), "wire messageId must be UUIDv7 format, got '$id'")
             }
-            assertEquals(2, thoughtWireIds.distinct().size, "wire thought chunks must share per-iteration messageIds")
-            assertEquals(thoughtIds.toList(), thoughtWireIds.toList(), "wire messageIds must match the decoded ones")
+            assertEquals(
+                thoughtIds.collapseConsecutiveDuplicates(),
+                thoughtWireIds.collapseConsecutiveDuplicates(),
+                "wire thought chunks must carry the same per-iteration messageIds as the decoded ones",
+            )
             println("[ok] raw session/update wire lines carry the iteration messageId on agent_thought_chunk")
 
             val headers = llmMock.lastRequestHeaders

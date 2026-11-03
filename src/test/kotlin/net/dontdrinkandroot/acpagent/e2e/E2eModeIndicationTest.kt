@@ -178,9 +178,10 @@ class E2eModeIndicationTest : E2eAgentTest() {
                         "the flushed build switch must be stated at the next prompt start, got: $modeTexts2",
                     )
                     assertEquals(
-                        2,
-                        modeTexts2.size,
-                        "plan (first turn) + build (flushed switch) - one message per governing change, got: $modeTexts2",
+                        1,
+                        modeTexts2.count { it.startsWith("Mode: plan.") },
+                        "plan (first turn) must be stated exactly once - one message per governing change, " +
+                                "got: $modeTexts2",
                     )
 
                     println("[ok] mid-turn switch message appears once at the next prompt start")

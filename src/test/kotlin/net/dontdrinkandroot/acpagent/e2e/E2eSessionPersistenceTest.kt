@@ -44,6 +44,9 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
             } finally {
                 first.close()
             }
+            // Everything after this point is load/resume bookkeeping: it must not
+            // reach the LLM, so each step is pinned as a delta against this count.
+            val requestsAfterPrompt = llmMock.requestCount.get()
 
             val store = SessionStore(sessionsStoreDir)
             val record = store.load(sessionId.value)
@@ -79,6 +82,11 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                     loadOps,
                 )
                 assertEquals(SessionModeId("build"), loaded.currentMode.value)
+                assertEquals(
+                    requestsAfterPrompt,
+                    llmMock.requestCount.get(),
+                    "session/load must replay without calling the LLM",
+                )
                 // Since acp 0.34.0 the agent replays from `AgentSession.replayHistory`,
                 // which the SDK runs before the load response (spec MUST; was issue #59):
                 // the updates must already be delivered when the call returns.
@@ -96,10 +104,15 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
 
                 val continuation = collectPrompt(loaded, listOf(ContentBlock.Text("Continue")))
                 assertEndTurn(continuation)
+                assertTrue(
+                    llmMock.requestCount.get() > requestsAfterPrompt,
+                    "the continuation prompt on the loaded session must reach the LLM",
+                )
                 println("[ok] prompt on loaded session (history continuity)")
             } finally {
                 second.close()
             }
+            val requestsAfterContinuation = llmMock.requestCount.get()
 
             val third = connect()
             try {
@@ -111,6 +124,11 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                     ClientOperationsFactory { _, _ -> resumeOps },
                 )
                 assertEquals(SessionModeId("build"), resumed.currentMode.value)
+                assertEquals(
+                    requestsAfterContinuation,
+                    llmMock.requestCount.get(),
+                    "session/resume must restore without calling the LLM",
+                )
                 assertTrue(resumeOps.notifications.isEmpty(), "resume must not replay history")
                 println("[ok] session/resume restores mode without replay")
 
@@ -139,8 +157,7 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 third.close()
             }
 
-            assertEquals(2, llmMock.requestCount.toInt())
-            println("[ok] LLM called exactly 2 times across both prompts (load/resume make no LLM calls)")
+            println("[ok] load/resume/delete across restarts issued no LLM requests")
         }
     }
 
@@ -192,6 +209,7 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
             } finally {
                 first.close()
             }
+            val requestsAfterPrompt = llmMock.requestCount.get()
 
             val store = SessionStore(sessionsStoreDir)
             val record = store.load(sessionId.value)
@@ -231,8 +249,12 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 second.close()
             }
 
-            assertEquals(2, llmMock.requestCount.toInt())
-            println("[ok] LLM called for the plan turn + final text turn (load/replay makes no LLM calls)")
+            assertEquals(
+                requestsAfterPrompt,
+                llmMock.requestCount.get(),
+                "session/load replay must not call the LLM",
+            )
+            println("[ok] load/replay issued no LLM requests")
         }
     }
 
@@ -299,6 +321,7 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
             } finally {
                 first.close()
             }
+            val requestsAfterPrompt = llmMock.requestCount.get()
 
             val record = SessionStore(sessionsStoreDir).load(sessionId.value)
             assertNotNull(record)
@@ -347,8 +370,12 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 second.close()
             }
 
-            assertEquals(3, llmMock.requestCount.toInt())
-            println("[ok] LLM called 3 times (denied read + unknown tool + final text; load/replay makes none)")
+            assertEquals(
+                requestsAfterPrompt,
+                llmMock.requestCount.get(),
+                "session/load replay must not call the LLM",
+            )
+            println("[ok] load/replay issued no LLM requests")
         }
     }
 

@@ -9,7 +9,8 @@ import com.agentclientprotocol.model.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.SessionRecord
 import net.dontdrinkandroot.acpagent.agent.SessionStore
 import java.io.File
@@ -28,23 +29,6 @@ import kotlin.test.assertTrue
  * a record poisoned before the fix, and the replayed call's outcome.
  */
 class E2eToolCallPairingRepairTest : E2eAgentTest() {
-
-    private fun assertPairComplete(body: JsonObject, context: String) {
-        val messages = body["messages"]!!.jsonArray
-        val callIds = messages.asSequence()
-            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "assistant" }
-            .flatMap { (it.jsonObject["tool_calls"] as? JsonArray ?: JsonArray(emptyList())).jsonArray }
-            .map { it.jsonObject["id"]!!.jsonPrimitive.content }
-            .toList()
-        val resultIds = messages
-            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "tool" }
-            .map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content }
-        assertTrue(
-            callIds.subtract(resultIds.toSet()).isEmpty(),
-            "$context: every tool call in the chat request must carry a tool output " +
-                    "(dangling=${callIds.subtract(resultIds.toSet())}, calls=$callIds, results=$resultIds)",
-        )
-    }
 
     @Test
     fun `e2e a cancelled tool call is closed in the next prompt's chat request`() = runBlocking {
