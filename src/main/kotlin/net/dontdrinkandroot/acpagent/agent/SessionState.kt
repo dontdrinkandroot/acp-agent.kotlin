@@ -79,6 +79,14 @@ internal class SessionState(
     private var title: String? = restored?.title?.takeIf { it.isNotEmpty() }
 
     /**
+     * The title the client already knows. A restored record's title counts as
+     * announced - `session/load`, `session/resume` and `session/list` carry it -
+     * so only a title that is new to the client is sent as a
+     * `session_info_update` (issue #73).
+     */
+    private var announcedTitle: String? = title
+
+    /**
      * A restored session starts in its persisted mode, which is also reported
      * as the default mode of the restored session.
      */
@@ -312,6 +320,21 @@ internal class SessionState(
 
     private companion object {
         const val MODE_TRAIL_PREFIX = "Mode: "
+    }
+
+    /**
+     * The session title to announce to the client, or null when the client
+     * already knows it. Derives the title from the first user message exactly
+     * like [buildRecord] does and marks it announced, so the prompt flow sends
+     * exactly one `session_info_update` per title (issue #73). Called at prompt
+     * start - before the turn runs - so the update travels inside the prompt's
+     * event stream instead of racing its response.
+     */
+    fun takeTitleAnnouncement(): String? = synchronized(historyLock) {
+        val current = title ?: deriveTitle(history)?.also { title = it } ?: return null
+        if (current == announcedTitle) return null
+        announcedTitle = current
+        current
     }
 
     fun buildRecord(): SessionRecord {

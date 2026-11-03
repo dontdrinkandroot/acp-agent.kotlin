@@ -161,7 +161,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
-                                     # (buildRecord/persist/delete)
+                                     # (buildRecord/persist/delete) + title announcement
+                                     # (takeTitleAnnouncement, once per title - issue #73)
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
                                      # AgentSession interface (config options, prompt plumbing)
     agent/PromptContent.kt           # contentBlocksToLlmContentTopLevel: prompt content blocks ->
@@ -423,8 +424,16 @@ Config comes from environment variables:
   the shortened `toString()` forms that drop seconds/millis), so clients that render it
   as wall time do not shift it by the local offset (issue #22; `AgentSupportImpl` takes the
   `ZoneId` as a constructor parameter, defaulting to `ZoneId.systemDefault()`, so the
-  rendering is unit-pinned with a fixed zone). The agent does not yet send
-  `session_info_update` notifications (issue #73).
+  rendering is unit-pinned with a fixed zone). The derived title is announced to the client:
+  the prompt flow emits one `session_info_update` (title only - `updatedAt` changes on every
+  persist and would be chatty) right after the user message is appended, i.e. inside the
+  turn's own update stream rather than racing the prompt response that closes the client's
+  channel. `SessionState.takeTitleAnnouncement` (issue #73) derives the title exactly like
+  `buildRecord`, compares it against `announcedTitle` and marks it announced, so each title
+  is sent exactly once: a restored record's title counts as already announced (load/resume
+  responses and `session/list` carry it, so a loaded session does not re-announce), and a
+  legacy record without a title announces at its next prompt. Unit-pinned by
+  `SessionStateTitleTest`, black-box by `E2eSessionPersistenceTest`.
   Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
 - **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
@@ -1189,7 +1198,11 @@ stays a task input instead of a stale constant.
   `+00:00` on a UTC zone, the parsed instant always round-trips - issue #22) and
   black-box in `E2eSessionPersistenceTest` (regex for a numeric offset +
   `OffsetDateTime.parse(...).toEpochMilli() == record.updatedAt`, timezone-independent
-  so it holds on a UTC CI box and in the docker container).
+  so it holds on a UTC CI box and in the docker container). The title announcement (issue #73) is unit-pinned by
+  `SessionStateTitleTest` (announced exactly once, restored
+  titles not re-announced, legacy empty-title records announce at the next turn, 72-code-point
+  cap) and black-box in `E2eSessionPersistenceTest` (one `session_info_update` with the
+  derived title on the first prompt, none on the loaded session's continuation).
   Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open),
   `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
   semantics, idempotence, duplicate ids count as answered) and
@@ -1286,9 +1299,7 @@ chunk counts or positions.
 
 **Known e2e gaps against the ACP spec** (reviewed 2026-10-18, re-reviewed 2026-11-03; file
 new issues for new findings, don't just note them): `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64; `session_info_update`
-is never sent, so a client does not see the auto-generated title until it re-lists -
-#73; `session/list`
+emitted and no SDK release up to 0.34.0 can express it - #64; `session/list`
 pagination is unexercised (no scenario has >10 sessions, and the SDK batches at
 `batchSize = 10` - #61 deliberately left this one unwired: the capability is marked
 UNSTABLE upstream and the paging is SDK-supplied). (#61 closed the rest of the gap list
@@ -1301,7 +1312,8 @@ mock filler text, no positional chunk pins; #69 left the gap list with
 left it with `E2eMcpStdioTransportTest` covering the spec-mandatory stdio transport;
 #62 left it with the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
 `PromptResponse`/`StopReason.CANCELLED`; #59 left it with the 0.34.0 upgrade: the replay now
-runs before the load response.)
+runs before the load response; #73 left it with the title announcement: the prompt flow
+sends `session_info_update`, pinned in `E2eSessionPersistenceTest`.)
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —

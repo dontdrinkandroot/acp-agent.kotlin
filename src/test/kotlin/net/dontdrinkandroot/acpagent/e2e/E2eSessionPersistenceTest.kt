@@ -40,6 +40,17 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 sessionId = session.sessionId
                 val events = collectPrompt(session, listOf(ContentBlock.Text("Say hello")))
                 assertEndTurn(events)
+                // The derived title is announced to the client (issue #73): exactly
+                // one session_info_update, carrying only the new title.
+                val infoUpdates = events.filterIsInstance<Event.SessionUpdateEvent>()
+                    .map { it.update }
+                    .filterIsInstance<SessionUpdate.SessionInfoUpdate>()
+                assertEquals(
+                    listOf("Say hello"),
+                    infoUpdates.map { it.title },
+                    "the derived title must be announced exactly once",
+                )
+                assertNull(infoUpdates.single().updatedAt, "only changed fields belong in the update")
                 session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
                 println("[ok] session/new + prompt + mode switch on first agent")
             } finally {
@@ -112,6 +123,13 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
 
                 val continuation = collectPrompt(loaded, listOf(ContentBlock.Text("Continue")))
                 assertEndTurn(continuation)
+                // The restored title was already delivered by session/load, so the
+                // loaded session must not re-announce it (issue #73).
+                assertTrue(
+                    continuation.filterIsInstance<Event.SessionUpdateEvent>()
+                        .none { it.update is SessionUpdate.SessionInfoUpdate },
+                    "a loaded session must not re-announce its restored title",
+                )
                 assertTrue(
                     llmMock.requestCount.get() > requestsAfterPrompt,
                     "the continuation prompt on the loaded session must reach the LLM",

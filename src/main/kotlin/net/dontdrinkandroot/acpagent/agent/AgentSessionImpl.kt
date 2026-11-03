@@ -189,6 +189,13 @@ internal class AgentSessionImpl(
         // governing mode are captured together.
         state.indicateCurrentMode()
         state.appendToHistory(OpenAIMessage.User(userContent))
+        // The title is derived from the first user message; announce it to the
+        // client once, inside this turn's update stream (issue #73). Emitted
+        // before the loop runs so it cannot race the prompt response, which
+        // closes the client's update channel.
+        state.takeTitleAnnouncement()?.let { title ->
+            emit(Event.SessionUpdateEvent(SessionUpdate.SessionInfoUpdate(title = title)))
+        }
         val mode = state.currentMode
 
         val toolContext = ToolContext(
