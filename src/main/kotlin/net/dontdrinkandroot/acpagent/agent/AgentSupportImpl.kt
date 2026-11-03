@@ -11,8 +11,15 @@ import com.agentclientprotocol.protocol.acpFail
 import com.agentclientprotocol.protocol.jsonRpcInvalidParams
 import kotlinx.serialization.json.JsonElement
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
+import kotlin.text.HexFormat
+import kotlin.text.isNotEmpty
+import kotlin.text.isNullOrEmpty
+import kotlin.text.toHexString
 
 /**
  * Creates fresh sessions and restores persisted ones. Implemented in `Main.kt`
@@ -31,6 +38,7 @@ internal interface AgentSessionFactory {
 internal class AgentSupportImpl(
     private val sessionFactory: AgentSessionFactory,
     private val sessionStore: SessionStore,
+    private val zoneId: ZoneId = ZoneId.systemDefault(),
 ) : AgentSupport {
 
     private val sessions = ConcurrentHashMap<SessionId, AgentSessionImpl>()
@@ -111,7 +119,7 @@ internal class AgentSupportImpl(
                     sessionId = SessionId(record.sessionId),
                     cwd = record.cwd,
                     title = record.title.takeIf { it.isNotEmpty() },
-                    updatedAt = Instant.ofEpochMilli(record.updatedAt).toString(),
+                    updatedAt = formatSessionUpdatedAt(record.updatedAt, zoneId),
                 )
             }
     }
@@ -126,6 +134,19 @@ internal class AgentSupportImpl(
         return DeleteSessionResponse()
     }
 }
+
+private val SESSION_UPDATED_AT_FORMAT: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSxxx", Locale.ROOT)
+
+/**
+ * Renders a session record's epoch millis as an RFC 3339 timestamp with a numeric
+ * offset (`2026-09-23T15:37:02.123+02:00`), never a `Z` suffix: clients render
+ * `SessionInfo.updatedAt` as wall time, so a UTC stamp shifts it by the local
+ * offset (issue #22). Seconds and milliseconds are always present - `toString()`
+ * on the java.time types drops them when zero, which is not a valid RFC 3339 time.
+ */
+internal fun formatSessionUpdatedAt(epochMillis: Long, zoneId: ZoneId): String =
+    SESSION_UPDATED_AT_FORMAT.withZone(zoneId).format(Instant.ofEpochMilli(epochMillis))
 
 /**
  * A fresh session id: `sess_` + 16 lowercase hex digits, exactly the id set

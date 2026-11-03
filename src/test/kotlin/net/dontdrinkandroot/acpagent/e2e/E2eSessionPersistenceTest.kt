@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.SessionStore
 import java.nio.file.Files
+import java.time.OffsetDateTime
 import kotlin.test.*
 
 /**
@@ -69,7 +70,14 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 assertEquals(1, listed.size)
                 assertEquals(sessionId, listed.first().sessionId)
                 assertEquals("Say hello", listed.first().title)
-                assertNotNull(listed.first().updatedAt)
+                // updatedAt is an RFC 3339 stamp with a numeric offset (issue #22); the
+                // instant must round-trip exactly, whatever the agent's zone is.
+                val updatedAt = assertNotNull(listed.first().updatedAt)
+                assertTrue(
+                    Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$""").matches(updatedAt),
+                    "expected a numeric-offset RFC 3339 timestamp, got '$updatedAt'",
+                )
+                assertEquals(record.updatedAt, OffsetDateTime.parse(updatedAt).toInstant().toEpochMilli())
                 println("[ok] session/list after restart (cwd filter, recency)")
 
                 val loadOps = TestClientOperations()

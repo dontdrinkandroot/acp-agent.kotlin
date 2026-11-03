@@ -24,7 +24,7 @@ setup_git_identity() {
 }
 
 # The launcher invocation strips both API key variants (plus
-# ACP_DOCKER_EXTRA_MOUNTS, the Android SDK vars and the tool-cache env vars)
+# ACP_DOCKER_EXTRA_MOUNTS, the Android SDK vars, TZ and the tool-cache env vars)
 # so ambient values can never leak into a test; tests opt into a fake key via
 # leading KEY=VALUE arguments.
 
@@ -75,7 +75,7 @@ run_docker_launcher() {
         -u NPM_CONFIG_CACHE -u CARGO_HOME -u GOMODCACHE -u NUGET_PACKAGES \
         -u PUB_CACHE -u KONAN_DATA_DIR -u UV_LINK_MODE \
         -u PNPM_CONFIG_STORE_DIR -u PNPM_CONFIG_CACHE_DIR \
-        -u PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE "${env_args[@]}" \
+        -u PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE -u TZ "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.

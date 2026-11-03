@@ -10,6 +10,9 @@ import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.ZoneOffset
 import kotlin.test.*
 
 class SessionLifecycleTest {
@@ -37,11 +40,11 @@ class SessionLifecycleTest {
         title: String = "Fix the bug",
     ) = SessionRecord(sessionId = sessionId, cwd = cwd, mode = mode, title = title, updatedAt = 1_700_000_000_000)
 
-    private fun support(): Pair<AgentSupportImpl, DelegatingSessionFactory> {
+    private fun support(zoneId: ZoneId = ZoneId.of("UTC")): Pair<AgentSupportImpl, DelegatingSessionFactory> {
         val factory = DelegatingSessionFactory { sessionId, cwd, restored, replay ->
             session(sessionId, cwd, restored, replay)
         }
-        return AgentSupportImpl(factory, store) to factory
+        return AgentSupportImpl(factory, store, zoneId) to factory
     }
 
     @Test
@@ -204,6 +207,32 @@ class SessionLifecycleTest {
         assertNotNull(filtered.first().updatedAt)
 
         assertTrue(support.listSessions("/elsewhere", null, null).toList().isEmpty())
+    }
+
+    @Test
+    fun `listSessions renders updatedAt with a numeric local offset`() = runBlocking {
+        val summerMillis = OffsetDateTime.parse("2026-07-01T12:00:00.123+02:00").toInstant().toEpochMilli()
+        val winterMillis = OffsetDateTime.parse("2026-01-15T12:00:00.456+01:00").toInstant().toEpochMilli()
+        store.save(record("sess_0000000000000001").copy(updatedAt = summerMillis))
+        store.save(record("sess_0000000000000002").copy(updatedAt = winterMillis))
+
+        val (support, _) = support(ZoneId.of("Europe/Berlin"))
+        val listed = support.listSessions(null, null, null).associateBy { it.sessionId.value }
+
+        assertEquals("2026-07-01T12:00:00.123+02:00", listed.getValue("sess_0000000000000001").updatedAt)
+        assertEquals("2026-01-15T12:00:00.456+01:00", listed.getValue("sess_0000000000000002").updatedAt)
+    }
+
+    @Test
+    fun `listSessions never renders a Z suffix`() = runBlocking {
+        store.save(record().copy(updatedAt = 1_700_000_000_000))
+
+        val (support, _) = support(ZoneOffset.UTC)
+        val updatedAt = assertNotNull(support.listSessions(null, null, null).single().updatedAt)
+
+        assertEquals("2023-11-14T22:13:20.000+00:00", updatedAt)
+        assertFalse(updatedAt.endsWith("Z"))
+        assertEquals(1_700_000_000_000, OffsetDateTime.parse(updatedAt).toInstant().toEpochMilli())
     }
 
     @Test

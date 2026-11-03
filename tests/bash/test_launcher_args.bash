@@ -337,13 +337,16 @@ test_optional_env_vars_are_forwarded_only_when_set() {
     # KEY=VALUE env args must precede launcher flags (run_docker_launcher
     # parses them until the first non-assignment).
     run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        OPENROUTER_MODEL=test/model FS_PROXY_ENABLED=0 ACP_WEB_FETCH_ALLOW_PRIVATE=1 --skip-pull
+        OPENROUTER_MODEL=test/model FS_PROXY_ENABLED=0 ACP_WEB_FETCH_ALLOW_PRIVATE=1 \
+        TZ=Europe/Berlin --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
     assert_eq "test/model" "$(env_value_for "$line" OPENROUTER_MODEL)"
     assert_eq "0" "$(env_value_for "$line" FS_PROXY_ENABLED)"
     assert_eq "1" "$(env_value_for "$line" ACP_WEB_FETCH_ALLOW_PRIVATE)"
+    # TZ keeps the agent's rendered timestamps on the host zone (issue #22).
+    assert_eq "Europe/Berlin" "$(env_value_for "$line" TZ)"
     assert_empty "$(env_value_for "$line" ACP_MAX_TURN_REQUESTS)"
 }
 

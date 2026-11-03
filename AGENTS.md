@@ -184,7 +184,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
-                                     # sessions, AgentSessionFactory interface, randomSessionId)
+                                     # sessions, AgentSessionFactory interface, randomSessionId,
+                                     # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
+                                     # with a numeric local offset, never `Z` - issue #22)
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
@@ -413,8 +415,16 @@ Config comes from environment variables:
   already delivered when `loadSession` returns (and therefore uses the SDK's early-delivery
   operations overload instead of the buffering factory);
   `session/resume` restores without replay. `session/list`
-  filters by cwd, sorts by recency, skips corrupt records; the SDK pages the result (10 entries per page + `nextCursor`
-  over our `Sequence` override since `acp` 0.33.0).
+  filters by cwd, sorts by recency (on the raw epoch millis), skips corrupt records; the SDK pages the result (10
+  entries per page + `nextCursor`
+  over our `Sequence` override since `acp` 0.33.0). Its `updatedAt` is rendered by
+  `formatSessionUpdatedAt` as `uuuu-MM-dd'T'HH:mm:ss.SSSxxx` in the system zone (`2026-09-23T15:37:02.123+02:00`,
+  `+00:00` on a UTC host - never a `Z` suffix, never
+  the shortened `toString()` forms that drop seconds/millis), so clients that render it
+  as wall time do not shift it by the local offset (issue #22; `AgentSupportImpl` takes the
+  `ZoneId` as a constructor parameter, defaulting to `ZoneId.systemDefault()`, so the
+  rendering is unit-pinned with a fixed zone). The agent does not yet send
+  `session_info_update` notifications (issue #73).
   Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
 - **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
@@ -1076,11 +1086,14 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-  `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE` forwarded (the API key excepted: it
+    `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE`/`TZ` forwarded (the API key
+    excepted: it
   is staged as a `0600` file or taken from
   `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
   the path in the container env; the staged copy and the `.env.local` mask are removed by
-  an EXIT trap, which is why the launcher does not `exec` docker),
+    an EXIT trap, which is why the launcher does not `exec` docker; `TZ` keeps the
+    container's wall clock on the host zone, since the read-only rootfs has no
+    `/etc/localtime` and the agent renders local-offset timestamps - issue #22),
   host `.env.local` masked, git identity forwarded. Optional extra host paths
   (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
   identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
@@ -1171,6 +1184,12 @@ stays a task input instead of a stale constant.
   an unknown tool call, then `session/load` pins both replayed `tool_call_update`s
   as FAILED with their denial text (was the issue #5 blanket-COMPLETED bug) and
   the `update_plan` scenario pins the successful call replaying COMPLETED.
+  The `session/list` `updatedAt` shape is pinned twice: unit-level in
+  `SessionLifecycleTest` (a fixed `Europe/Berlin` zone renders summer/winter offsets,
+  `+00:00` on a UTC zone, the parsed instant always round-trips - issue #22) and
+  black-box in `E2eSessionPersistenceTest` (regex for a numeric offset +
+  `OffsetDateTime.parse(...).toEpochMilli() == record.updatedAt`, timezone-independent
+  so it holds on a UTC CI box and in the docker container).
   Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open),
   `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
   semantics, idempotence, duplicate ids count as answered) and
@@ -1267,7 +1286,9 @@ chunk counts or positions.
 
 **Known e2e gaps against the ACP spec** (reviewed 2026-10-18, re-reviewed 2026-11-03; file
 new issues for new findings, don't just note them): `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64; `session/list`
+emitted and no SDK release up to 0.34.0 can express it - #64; `session_info_update`
+is never sent, so a client does not see the auto-generated title until it re-lists -
+#73; `session/list`
 pagination is unexercised (no scenario has >10 sessions, and the SDK batches at
 `batchSize = 10` - #61 deliberately left this one unwired: the capability is marked
 UNSTABLE upstream and the paging is SDK-supplied). (#61 closed the rest of the gap list
@@ -1296,7 +1317,7 @@ subshell and the first failing assert aborts it via `_fail`'s `exit` - bash igno
 issue #52), `tests/bash/common.sh` provides the
 launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
 assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS`/`ANDROID_HOME`/
-`ANDROID_SDK_ROOT`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`,
+`ANDROID_SDK_ROOT`/`TZ`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`,
 the `PNPM_CONFIG_*` cache vars) are always cleared).
 Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
@@ -1312,7 +1333,8 @@ depending on the network mode (always present)
   cache dir identity-mounted
 
 + env forwarded verbatim, forwarded without a mount when inside the project dir,
-  `UV_LINK_MODE` forwarding, pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
+  `UV_LINK_MODE` forwarding, `TZ` forwarding (the agent's rendered timestamps follow
+  the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
   `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the
   container defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
   forwarding), `ACP_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
