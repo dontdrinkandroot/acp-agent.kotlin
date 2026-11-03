@@ -260,6 +260,10 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # SuspendingPermissionOperations (stuck permission prompt)
         E2eWireConformanceTest.kt    # initialize/session/config-option/prompt/tool-call/permission
                                      # flow + UUIDv7 messageIds, usage_update, attribution headers
+                                     # + the cheap spec MUSTs: stdout hygiene (every stdout line a
+                                     # JSON-RPC 2.0 message), protocolVersion negotiation (incl. an
+                                     # unsupported requested version answered with the latest) and
+                                     # the complete capability advertisement (issue #61)
         E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
                                      # restarts + update_plan persistence/replay
         E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
@@ -274,13 +278,18 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
                                      # one latest-mode message at the next prompt start (issue #36)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
-        E2eFileStoreTest.kt          # client fs proxy (on/off) + out-of-project read permission
+                                     # (image data URI, inlined text resource, resource_link
+                                     # markdown link)
+        E2eFileStoreTest.kt          # client fs proxy (on/off) + the fs-capability negative
+                                     # (no fs capability advertised -> local store, no
+                                     # fs/read_text_file or fs/write_text_file call, issue #61)
+                                     # + out-of-project read permission (incl. the four
+                                     # permission option kinds, issue #61)
                                      # + allow_always session grant (one prompt for two prompts'
                                      # out-of-project reads, issue #65) + trusted read paths
                                      # (ACP_EXTRA_MOUNTS: read prompt-free, write
                                      # still prompts) + move/delete tools (in-project without prompt,
-                                     # out-of-project move destination prompts); no fs-capability
-                                     # negative scenario yet (issue #61)
+                                     # out-of-project move destination prompts)
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry,
                                      # the .ai/run.json rule is hidden too (issue #70)
@@ -1112,15 +1121,30 @@ stays a task input instead of a stale constant.
 
 - **Wire flow** — initialize/session/config-option/prompt/tool-call/permission,
   model/reasoning switches, the chat request's `reasoning` effort, `usage_update`,
-  UUIDv7 messageIds, attribution headers.
+  UUIDv7 messageIds, attribution headers; plus the cheap spec MUSTs (issue #61):
+  **stdout hygiene** (every line the harness consumed on stdout parses strictly as a
+  JSON-RPC 2.0 message - a stray `println` is invisible otherwise, the SDK logs
+  undecodable lines at trace only), **version negotiation** (the requested v1 is
+  echoed, and a v2 request is answered with the agent's latest v1 on a fresh
+  connection - the SDK pins the version per connection), and the complete **capability advertisement** (loadSession +
+  `sessionCapabilities.list/resume/delete`,
+  image/embeddedContext advertised, audio deliberately not, http/sse MCP).
 - **Capabilities** — `promptCapabilities` (image/embeddedContext) + multimodal
-  conversion (image data URI, inlined resources), `mcpCapabilities` (http/sse),
+  conversion (image data URI, inlined resources, `ResourceLink` as a markdown link -
+  the baseline prompt content every agent MUST support), `mcpCapabilities` (http/sse),
   AGENTS.md injection, the `Agent build:` hash round-tripped from `git.properties`.
 - **Security & permissions** — path-aware permissions + client fs proxy (in-project prompt-free, out-of-project read
   prompts, the `allow_always`
   session grant prompting once for two prompts' out-of-project reads (issue #65
-  pin of the tool-name-keyed semantics)), `FS_PROXY_ENABLED=0`
-  local-store fallback), run tool prompt-free in every mode, run-config tools
+  pin of the tool-name-keyed semantics)), `FS_PROXY_ENABLED=0` and the **fs-capability negative** (issue #61: with the
+  default `ClientCapabilities()` -
+  `fs` absent - `read_file` + `write_file` run through the local store and never
+  call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT attempt to
+  call the corresponding filesystem method") local-store fallback), the **permission option contract** (issue #61: all
+  four `PermissionOptionKind`s
+  offered, distinct non-blank ids and names, id/kind pairing - the previously
+  collected-but-never-asserted `TestClientOperations.permissionOptions`), run tool
+  prompt-free in every mode, run-config tools
   (build-mode permission prompt, plan-mode absence of write tools), move/delete
   tools (out-of-project move destination prompts), MCP tool annotations (`E2eMcpToolPermissionTest` over
   `MockMcpServer`) and the same over the stdio
@@ -1241,12 +1265,15 @@ invariant as observed in a chat request) and `collapseConsecutiveDuplicates()`
 (streamed deltas -> one entry per contiguous id run) so scenarios pin shapes instead of
 chunk counts or positions.
 
-**Known e2e gaps against the ACP spec** (reviewed 2026-10-18; file new issues for
-new findings, don't just note them): the
-missing cheap conformance assertions (stdout hygiene, version negotiation,
-capability advertisement, fs capability *negatives*, `ResourceLink`, permission-option
-contract) are #61; `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64. (#63 left the gap list with
+**Known e2e gaps against the ACP spec** (reviewed 2026-10-18, re-reviewed 2026-11-03; file
+new issues for new findings, don't just note them): `tool_call.name` is never
+emitted and no SDK release up to 0.34.0 can express it - #64; `session/list`
+pagination is unexercised (no scenario has >10 sessions, and the SDK batches at
+`batchSize = 10` - #61 deliberately left this one unwired: the capability is marked
+UNSTABLE upstream and the paging is SDK-supplied). (#61 closed the rest of the gap list
+with the cheap conformance assertions pinned in their feature-area classes - stdout
+hygiene, version negotiation, the complete capability advertisement, the fs-capability
+negative, `ResourceLink` and the permission-option contract; #63 left the gap list with
 the orchestration-level assertions replaced by effect-based ones: no LLM call totals, no
 mock filler text, no positional chunk pins; #69 left the gap list with
 `E2eMcpSseTransportTest` covering the classic SSE transport - the mirror of #60, which

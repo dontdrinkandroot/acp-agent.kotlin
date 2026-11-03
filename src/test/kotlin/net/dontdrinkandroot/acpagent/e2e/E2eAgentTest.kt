@@ -8,10 +8,7 @@ import com.agentclientprotocol.client.ClientSession
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.Implementation
-import com.agentclientprotocol.model.StopReason
+import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
 import kotlinx.coroutines.*
@@ -180,8 +177,17 @@ abstract class E2eAgentTest {
         return AgentConnection(process, client, scope, wireLines)
     }
 
-    internal fun testClientInfo(capabilities: ClientCapabilities = ClientCapabilities()): ClientInfo = ClientInfo(
-        protocolVersion = 1,
+    /**
+     * What the harness announces as the client. [protocolVersion] is the version sent in the
+     * `initialize` request (the latest the client supports); the default [ClientInfo] keeps v1
+     * in `supportedProtocolVersions`, so a version probe can ask for a newer one and still
+     * accept the agent's downgrade answer.
+     */
+    internal fun testClientInfo(
+        capabilities: ClientCapabilities = ClientCapabilities(),
+        protocolVersion: ProtocolVersion = 1,
+    ): ClientInfo = ClientInfo(
+        protocolVersion = protocolVersion,
         implementation = Implementation(name = "acp-agent-e2e-test", version = "0.0.1"),
         capabilities = capabilities,
     )

@@ -2,7 +2,9 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.Client
+import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
+import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
@@ -15,10 +17,7 @@ import kotlinx.serialization.json.*
 import java.io.File
 import java.nio.file.Files
 import java.util.*
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Black-box wire conformance:
@@ -89,16 +88,37 @@ class E2eWireConformanceTest : E2eAgentTest() {
             val agentImplementation = agentInfo.implementation
             assertNotNull(agentImplementation)
             assertEquals("acp-agent.kotlin", agentImplementation.name)
-            assertNotNull(agentInfo.capabilities.sessionCapabilities.delete)
+            // Version negotiation (spec MUST): the client asked for v1, so the agent must
+            // answer with that same version.
+            assertEquals(1, agentInfo.protocolVersion, "the agent must echo the requested protocol version")
+            // Capability advertisement: everything AgentSupportImpl.initialize() advertises is
+            // pinned here, so a capability silently dropped at an SDK upgrade fails loudly.
+            assertTrue(agentInfo.capabilities.loadSession, "loadSession must be advertised")
+            assertNotNull(
+                agentInfo.capabilities.sessionCapabilities.list,
+                "sessionCapabilities.list must be advertised"
+            )
+            assertNotNull(
+                agentInfo.capabilities.sessionCapabilities.resume,
+                "sessionCapabilities.resume must be advertised"
+            )
+            assertNotNull(
+                agentInfo.capabilities.sessionCapabilities.delete,
+                "sessionCapabilities.delete must be advertised"
+            )
             assertNotNull(agentInfo.capabilities.mcpCapabilities)
             assertTrue(agentInfo.capabilities.promptCapabilities.image, "image prompt capability must be advertised")
             assertTrue(
                 agentInfo.capabilities.promptCapabilities.embeddedContext,
                 "embeddedContext prompt capability must be advertised",
             )
+            assertFalse(
+                agentInfo.capabilities.promptCapabilities.audio,
+                "audio prompt capability must stay unadvertised"
+            )
             assertTrue(agentInfo.capabilities.mcpCapabilities.http, "http mcp capability must be advertised")
             assertTrue(agentInfo.capabilities.mcpCapabilities.sse, "sse mcp capability must be advertised")
-            println("[ok] initialize")
+            println("[ok] initialize (protocolVersion 1, capabilities advertised)")
 
             val session = newSession(client, tmpDir, testOps)
             println("[ok] session/new -> ${session.sessionId}")
@@ -345,10 +365,65 @@ class E2eWireConformanceTest : E2eAgentTest() {
                 "expected the system prompt to carry the build hash, got: ${llmMock.lastRequestBody}",
             )
             println("[ok] system prompt carries the build hash ($buildCommit)")
+
+            // Transports (spec MUST): the agent must not write anything to stdout that is not
+            // a valid ACP message. Every line the harness consumed is checked, so a stray
+            // println - invisible otherwise, the SDK logs undecodable lines at trace only -
+            // names itself here.
+            assertStdoutHygiene(wireLines.toList())
+            println("[ok] stdout carries only JSON-RPC 2.0 messages (${wireLines.size} lines)")
         } finally {
             process.outputStream.close()
             protocol.close()
             scope.cancel()
+        }
+    }
+
+    /**
+     * Pins the transports MUST "the agent MUST NOT write anything to stdout that is not a
+     * valid ACP message". Parsed strictly (not with the lenient `llmWireJson`), because a
+     * lenient parser would accept an unquoted stray token as JSON.
+     */
+    private fun assertStdoutHygiene(lines: List<String>) {
+        assertTrue(lines.isNotEmpty(), "no stdout lines captured - the check would be vacuous")
+        val offenders = lines.filterNot(::isJsonRpcMessage)
+        assertTrue(offenders.isEmpty(), "every stdout line must be a JSON-RPC 2.0 message, offenders: $offenders")
+    }
+
+    private fun isJsonRpcMessage(line: String): Boolean {
+        val root = runCatching { Json.parseToJsonElement(line) }.getOrNull() ?: return false
+        // JSON-RPC batch: every element must be a valid message itself.
+        val messages = (root as? JsonArray)?.map { it.jsonObject } ?: listOf(root.jsonObject)
+        return messages.isNotEmpty() && messages.all { it["jsonrpc"]?.jsonPrimitive?.content == "2.0" }
+    }
+
+    /**
+     * Version negotiation (spec MUST): a requested version the agent does not speak is
+     * answered with the latest version the agent supports. The SDK pins the version per
+     * connection (a repeated `initialize` only logs a warning), so the probe needs its own
+     * agent process; the client is wired for v1+v2 so it accepts the downgrade answer.
+     */
+    @Test
+    fun `e2e initialize answers an unsupported requested version with the latest supported one`() = runBlocking {
+        val llmMock = MockOpenAiServer("unused", textOnly = true)
+        withE2eAgent("version-negotiation", llmMock) {
+            val connection = connect()
+            try {
+                val agentInfo = connection.client.initialize(testClientInfo(protocolVersion = 2))
+                assertEquals(
+                    1,
+                    agentInfo.protocolVersion,
+                    "an unsupported requested version must be answered with the agent's latest version",
+                )
+                // The connection stays usable at the negotiated version.
+                connection.client.newSession(
+                    SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
+                    ClientOperationsFactory { _, _ -> TestClientOperations() },
+                )
+                println("[ok] requested v2 -> answered v1, session/new works on the negotiated version")
+            } finally {
+                connection.close()
+            }
         }
     }
 }

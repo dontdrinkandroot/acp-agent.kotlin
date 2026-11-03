@@ -98,6 +98,59 @@ class E2eFileStoreTest : E2eAgentTest() {
     }
 
     @Test
+    fun `e2e file tools use the local store when the client advertises no fs capability`() = runBlocking {
+        var targetFile: File? = null
+        withE2eAgent("fs-cap-absent", { projectDir ->
+            val source = projectDir.resolve("known.txt")
+            source.writeText("local evidence")
+            val target = projectDir.resolve("copy.txt")
+            targetFile = target
+            MockOpenAiServer(
+                "unused",
+                toolCalls = listOf(
+                    MockToolCall("read_file", readFileArgs(source.absolutePath)),
+                    MockToolCall(
+                        "write_file",
+                        buildJsonObject {
+                            put("path", target.absolutePath)
+                            put("content", "copied")
+                        },
+                    ),
+                ),
+            )
+        }) {
+            val connection = connect()
+            try {
+                // Spec MUST (file-system "Checking support"): with readTextFile/writeTextFile
+                // absent the agent must not call the corresponding method. The default
+                // ClientCapabilities() advertises no fs capability at all.
+                connection.client.initialize(testClientInfo())
+                val ops = TestClientOperations()
+                val session = newSession(connection.client, projectDir, ops)
+                session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
+                val events = collectPrompt(session, listOf(ContentBlock.Text("Copy the file")))
+                assertEndTurn(events)
+                assertTrue(ops.fsReadCalls.isEmpty(), "a read must not call fs/read_text_file without the capability")
+                assertTrue(
+                    ops.fsWriteCalls.isEmpty(),
+                    "a write must not call fs/write_text_file without the capability"
+                )
+                assertTrue(ops.permissionRequests.isEmpty(), "in-project file tools must not prompt")
+                // The local store did the work: the read content fed the LLM and the write landed.
+                assertTrue(llmMock.requestBodies.size >= 2, "the turn must continue after the read")
+                assertTrue(
+                    llmMock.requestBodies[1].contains("local evidence"),
+                    "the local read must have executed and fed the LLM",
+                )
+                assertEquals("copied", requireNotNull(targetFile).readText(), "the local write must have landed")
+                println("[ok] no fs capability advertised -> local store used for read_file + write_file")
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    @Test
     fun `e2e out of project read asks permission`() = runBlocking {
         val outsideDir = Files.createTempDirectory("acp-agent-e2e-outread-target").toFile()
         val targetFile = outsideDir.resolve("secret.txt")
@@ -119,7 +172,42 @@ class E2eFileStoreTest : E2eAgentTest() {
                     assertEquals("read_file", ops.permissionRequests.single().title)
                     val rawInput = ops.permissionRequests.single().rawInput as JsonObject
                     assertEquals(targetFile.absolutePath, (rawInput["path"] as JsonPrimitive).content)
-                    println("[ok] out-of-project read routed through session/request_permission")
+                    // Spec contract (tool-calls "Permission options"): all four kinds are
+                    // offered, each with a distinct, non-blank id and a human-readable name.
+                    val options = ops.permissionOptions.single()
+                    assertEquals(
+                        listOf(
+                            PermissionOptionKind.ALLOW_ONCE,
+                            PermissionOptionKind.ALLOW_ALWAYS,
+                            PermissionOptionKind.REJECT_ONCE,
+                            PermissionOptionKind.REJECT_ALWAYS,
+                        ),
+                        options.map { it.kind },
+                        "the permission request must offer all four option kinds in this order",
+                    )
+                    assertEquals(
+                        options.size,
+                        options.map { it.optionId.value }.distinct().size,
+                        "permission option ids must be distinct, got ${options.map { it.optionId.value }}",
+                    )
+                    assertTrue(
+                        options.all { it.optionId.value.isNotBlank() },
+                        "permission option ids must not be blank"
+                    )
+                    assertTrue(options.all { it.name.isNotBlank() }, "permission option names must not be blank")
+                    // The id carries the kind, so a selected id is unambiguous on the way back.
+                    val kindOfId = options.associate { it.optionId.value to it.kind }
+                    assertEquals(
+                        PermissionOptionKind.ALLOW_ONCE,
+                        kindOfId.getValue("allow_once"),
+                        "the allow_once option must be advertised with the allow_once kind",
+                    )
+                    assertEquals(
+                        PermissionOptionKind.REJECT_ALWAYS,
+                        kindOfId.getValue("reject_always"),
+                        "the reject_always option must be advertised with the reject_always kind",
+                    )
+                    println("[ok] out-of-project read routed through session/request_permission (4 option kinds pinned)")
                 } finally {
                     connection.close()
                 }

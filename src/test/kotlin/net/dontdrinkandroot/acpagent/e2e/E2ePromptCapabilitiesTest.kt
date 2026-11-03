@@ -11,8 +11,8 @@ import kotlin.test.assertTrue
 /**
  * Black-box AGENTS.md injection and multimodal prompt conversion: the session
  * cwd's AGENTS.md is re-read into the system prompt, an image content block is
- * converted to a base64 data URI (the mock model advertises image input), and a
- * text resource is inlined.
+ * converted to a base64 data URI (the mock model advertises image input), a
+ * text resource is inlined and a resource link renders as a markdown link.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2ePromptCapabilitiesTest : E2eAgentTest() {
@@ -36,6 +36,9 @@ class E2ePromptCapabilitiesTest : E2eAgentTest() {
                         ContentBlock.Resource(
                             EmbeddedResourceResource.TextResourceContents("embedded snippet", "file:///embed.txt")
                         ),
+                        // Baseline prompt support (spec: all agents MUST support text and
+                        // resource_link), so it is pinned here rather than in a scenario of its own.
+                        ContentBlock.ResourceLink(name = "the file", uri = "file:///link.txt"),
                     ),
                 )
                 assertEndTurn(events)
@@ -45,7 +48,11 @@ class E2ePromptCapabilitiesTest : E2eAgentTest() {
                 assertTrue(body.contains("data:image/png;base64,aGVsbG8="), "image must become a data URI")
                 assertTrue(body.contains("embedded snippet"), "text resource must be inlined")
                 assertTrue(body.contains("file:///embed.txt"), "resource uri must be rendered")
-                println("[ok] AGENTS.md injected into the system prompt + image/resource converted")
+                assertTrue(
+                    body.contains("[the file](file:///link.txt)"),
+                    "resource_link must reach the chat request as a markdown link",
+                )
+                println("[ok] AGENTS.md injected into the system prompt + image/resource/resource_link converted")
             } finally {
                 connection.close()
             }
