@@ -63,7 +63,7 @@ public class UpdatePlanTool : AgentTool {
     }
 
     private companion object {
-        private val INVALID_ARGUMENTS_MESSAGE =
+        private const val INVALID_ARGUMENTS_MESSAGE =
             "Error: invalid arguments for update_plan; entries must be a list of objects with a non-empty content, " +
                     "a priority (high, medium, low) and a status (pending, in_progress, completed)."
 

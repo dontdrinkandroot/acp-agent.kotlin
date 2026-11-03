@@ -264,9 +264,9 @@ internal fun permissionNeeded(
 ): Boolean {
     val targets = tool.targetPaths(arguments)
     if (targets.isNotEmpty() && targets.all { isWithin(cwd, it) }) return false
-    if (!tool.mutating && trustedReadPaths.isNotEmpty() &&
-        targets.isNotEmpty() && targets.all { isWithinAnyRoot(cwd, trustedReadPaths, it) }
-    ) {
+    val withinTrustedReadPaths = targets.isNotEmpty() &&
+            targets.all { isWithinAnyRoot(cwd, trustedReadPaths, it) }
+    if (!tool.mutating && trustedReadPaths.isNotEmpty() && withinTrustedReadPaths) {
         return false
     }
     return tool.mutating || targets.isNotEmpty()
@@ -284,7 +284,8 @@ internal fun selectFileStore(
     fsProxyEnabled: Boolean,
 ): FileStore {
     val fs = capabilities.fs
-    return if (fsProxyEnabled && client != null && fs?.readTextFile == true && fs?.writeTextFile == true) {
+    val proxyCapable = fs != null && fs.readTextFile == true && fs.writeTextFile == true
+    return if (fsProxyEnabled && client != null && proxyCapable) {
         ClientFileStore(client)
     } else {
         LocalFileStore()

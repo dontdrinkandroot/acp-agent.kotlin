@@ -56,7 +56,7 @@ public class EditFileTool : AgentTool {
  * client renders the modification itself) and when either side exceeds
  * [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
  */
-private suspend fun editResultDiff(
+private fun editResultDiff(
     path: String,
     oldContent: String,
     newContent: String,

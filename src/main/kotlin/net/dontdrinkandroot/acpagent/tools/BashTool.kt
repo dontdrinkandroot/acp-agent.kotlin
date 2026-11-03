@@ -164,10 +164,10 @@ internal object ProcessRunner {
         // child's pipe ends close; a short second drain usually completes. A
         // reader that still does not finish is detached and the output captured
         // so far is snapshotted - never discarded.
-        if (!drainReaders(readerScope, stdout, stderr, DRAIN_GRACE_MILLIS)) {
+        if (!drainReaders(stdout, stderr, DRAIN_GRACE_MILLIS)) {
             runCatching { process.descendants().forEach { it.destroyForcibly() } }
             runCatching { process.destroyForcibly() }
-            drainReaders(readerScope, stdout, stderr, DRAIN_GRACE_MILLIS)
+            drainReaders(stdout, stderr, DRAIN_GRACE_MILLIS)
         }
         val result = ProcessResult(
             exitCode = if (finished) process.exitValue() else -1,
@@ -198,7 +198,6 @@ internal object ProcessRunner {
      * caller) and their captured output remains available via the tails.
      */
     private suspend fun drainReaders(
-        readerScope: CoroutineScope,
         stdout: Deferred<*>,
         stderr: Deferred<*>,
         graceMillis: Long,

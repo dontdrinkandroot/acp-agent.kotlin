@@ -85,20 +85,20 @@ internal class LocalFileStore : FileStore {
                 // readLine() advances lineNumber past the line it returns, so
                 // the number of the line being read must be captured first.
                 val lineNumber = scanner.lineNumber
-                val line = scanner.readLine() ?: break
+                val scannedLine = scanner.readLine() ?: break
                 if (lineNumber < startLine || (limit != null && lineNumber >= startLine + limit)) continue
-                if (line.text.length > MAX_LINE_CHARS) {
+                if (scannedLine.text.length > MAX_LINE_CHARS) {
                     // Per-line cap: see [truncateLine].
-                    selected.append(line.text, 0, MAX_LINE_CHARS)
+                    selected.append(scannedLine.text, 0, MAX_LINE_CHARS)
                     selected.append(TRUNCATED_LINE_SUFFIX)
                 } else {
-                    selected.append(line.text)
+                    selected.append(scannedLine.text)
                 }
                 // The window keeps each line's own terminator (the same
                 // representation the client fs proxy passes through), so a
                 // single empty line is "\n", not "" - visualLines can then
                 // count and render the window unambiguously.
-                if (line.terminated) selected.append('\n')
+                if (scannedLine.terminated) selected.append('\n')
                 windowLineCount++
             }
         } finally {
@@ -167,7 +167,7 @@ internal class StreamingLineReader(path: Path) {
     private val byteBuffer = ByteArray(8192)
     private var bufferPos = 0
     private var bufferLen = 0
-    private var current = java.io.ByteArrayOutputStream()
+    private val current = java.io.ByteArrayOutputStream()
     private var currentChars: SourceLine? = null
     private var pendingPartial = false
 

@@ -29,10 +29,10 @@ import java.time.LocalDate
 public fun main(args: Array<String>) {
     System.setProperty("org.slf4j.simpleLogger.logFile", "System.err")
     KotlinLoggingConfiguration.logStartupMessage = false
-    runAgent(args)
+    runAgent()
 }
 
-public fun runAgent(args: Array<String>) {
+public fun runAgent() {
     val logger = KotlinLogging.logger {}
 
     val config = Config.fromEnv()
@@ -158,7 +158,7 @@ public fun runAgent(args: Array<String>) {
             },
         )
         val protocol = Protocol(this, transport)
-        val agent = Agent(protocol, agentSupport)
+        Agent(protocol, agentSupport)
         protocol.start()
 
         while (transport.state.value != Transport.State.CLOSED) {

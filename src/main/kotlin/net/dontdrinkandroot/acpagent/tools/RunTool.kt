@@ -203,7 +203,7 @@ public class RunTool internal constructor(private val cwd: String) : AgentTool {
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val configName = arguments.stringArg("config") ?: return ToolResult(arguments.argError("config"), true)
         if (arguments.isNullArg("args")) return ToolResult(arguments.argError("args", "an array of strings"), true)
-        val args = when (val value = arguments["args"]) {
+        val args = when (arguments["args"]) {
             null -> emptyList()
             else -> arguments.stringListArg("args")
                 ?: return ToolResult(arguments.argError("args", "an array of strings"), true)

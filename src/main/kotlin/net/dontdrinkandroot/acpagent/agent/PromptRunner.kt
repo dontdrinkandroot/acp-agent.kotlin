@@ -249,14 +249,14 @@ internal class PromptRunner(
                 // Reasoning and reply deltas differ only in their accumulation
                 // buffer, seen-flag and relay target; relay them identically.
                 relayDeltas(
-                    emitter, messageId,
+                    emitter,
                     delta = choice.delta.reasoning,
                     raw = rawReasoning,
                     mark = { reasoningSeen = true },
                 ) { text -> SessionUpdate.AgentThoughtChunk(ContentBlock.Text(text), messageId) }
                 choice.delta.reasoningDetails?.let { reasoningDetailsAccum += it }
                 relayDeltas(
-                    emitter, messageId,
+                    emitter,
                     delta = choice.delta.content,
                     raw = rawContent,
                     mark = { contentSeen = true },
@@ -312,7 +312,6 @@ internal class PromptRunner(
      */
     private suspend fun relayDeltas(
         emitter: FlowCollector<Event>,
-        messageId: MessageId,
         delta: String?,
         raw: StringBuilder,
         mark: () -> Unit,
