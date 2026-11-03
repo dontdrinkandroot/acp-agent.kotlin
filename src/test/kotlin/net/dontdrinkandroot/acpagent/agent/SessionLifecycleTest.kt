@@ -48,7 +48,7 @@ class SessionLifecycleTest {
     }
 
     @Test
-    fun `initialize advertises loadSession, list, resume and delete capabilities`() {
+    fun `initialize advertises loadSession, list, resume, delete and close capabilities`() {
         runBlocking {
             val (support, _) = support()
             val info = support.initialize(
@@ -62,6 +62,7 @@ class SessionLifecycleTest {
             assertNotNull(capabilities.list)
             assertNotNull(capabilities.resume)
             assertNotNull(capabilities.delete)
+            assertNotNull(capabilities.close)
         }
     }
 
@@ -105,7 +106,7 @@ class SessionLifecycleTest {
     }
 
     @Test
-    fun `delete removes the record, closes resources and suppresses later persists`() = runBlocking {
+    fun `delete removes the record, closes resources and refuses later work`() = runBlocking {
         val (support, _) = support()
         val created = support.createSession(SessionCreationParameters(cwd = "/project", mcpServers = emptyList()))
         created.setMode(SessionModeId("build"), null)
@@ -114,8 +115,11 @@ class SessionLifecycleTest {
         support.deleteSession(SessionId(created.sessionId.value), null)
         assertEquals(null, store.load(created.sessionId.value))
 
-        created.setMode(SessionModeId("plan"), null)
-        assertEquals(null, store.load(created.sessionId.value))
+        // A deleted session refuses work with -32002 (issue #21) instead of
+        // running a turn whose persistence is silently dropped.
+        val error = assertFailsWith<JsonRpcException> { created.setMode(SessionModeId("plan"), null) }
+        assertEquals(JsonRpcErrorCode.RESOURCE_NOT_FOUND.code, error.code)
+        assertEquals(null, store.load(created.sessionId.value), "a refused call must not resurrect the record")
         assertTrue(support.listSessions(null, null, null).toList().isEmpty())
     }
 
@@ -233,6 +237,110 @@ class SessionLifecycleTest {
         assertEquals("2023-11-14T22:13:20.000+00:00", updatedAt)
         assertFalse(updatedAt.endsWith("Z"))
         assertEquals(1_700_000_000_000, OffsetDateTime.parse(updatedAt).toInstant().toEpochMilli())
+    }
+
+    @Test
+    fun `listSessions marks only the sessions open in this process`() = runBlocking {
+        store.save(record("sess_0000000000000001", cwd = "/project-a", title = "Open"))
+        store.save(record("sess_0000000000000002", cwd = "/project-a", title = "Closed"))
+
+        val (support, _) = support()
+        support.loadSession(
+            SessionId("sess_0000000000000001"),
+            SessionCreationParameters(cwd = "/project-a", mcpServers = emptyList()),
+        )
+
+        val listed = support.listSessions(null, null, null).associateBy { it.sessionId.value }
+        assertEquals(ACTIVE_SESSION_META, listed.getValue("sess_0000000000000001")._meta)
+        assertNull(listed.getValue("sess_0000000000000002")._meta, "a session not open here carries no marker")
+    }
+
+    @Test
+    fun `closing a session clears its marker and frees the id for a later load`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val sessionId = SessionId("sess_0000000000000001")
+        val parameters = SessionCreationParameters(cwd = "/project", mcpServers = emptyList())
+        val session = support.loadSession(sessionId, parameters)
+        assertEquals(ACTIVE_SESSION_META, support.listSessions(null, null, null).single()._meta)
+
+        session.close(null)
+
+        assertNull(support.listSessions(null, null, null).single()._meta, "a closed session must not stay marked open")
+        assertNotNull(
+            support.loadSession(sessionId, parameters),
+            "a closed session must be loadable again instead of reporting 'already active'",
+        )
+        Unit
+    }
+
+    @Test
+    fun `deleting a session clears its marker and frees the id`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val sessionId = SessionId("sess_0000000000000001")
+        support.loadSession(sessionId, SessionCreationParameters(cwd = "/project", mcpServers = emptyList()))
+
+        support.deleteSession(sessionId, null)
+
+        assertTrue(
+            support.listSessions(null, null, null).toList().isEmpty(),
+            "a deleted session must disappear from the list (record removed, no stale marker)",
+        )
+    }
+
+    @Test
+    fun `a session that already released itself notifies a late callback immediately`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val session = support.loadSession(
+            SessionId("sess_0000000000000001"),
+            SessionCreationParameters(cwd = "/project", mcpServers = emptyList()),
+        ) as AgentSessionImpl
+        session.close(null)
+
+        var notified = 0
+        session.onSessionReleased { notified++ }
+
+        assertEquals(1, notified, "a late registration must not miss the release event")
+    }
+
+    @Test
+    fun `work on a deleted session is refused with -32002`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val sessionId = SessionId("sess_0000000000000001")
+        val session = support.loadSession(
+            sessionId,
+            SessionCreationParameters(cwd = "/project", mcpServers = emptyList()),
+        )
+
+        support.deleteSession(sessionId, null)
+
+        val error = assertFailsWith<JsonRpcException> {
+            session.prompt(listOf(ContentBlock.Text("still there?"))).collect { }
+        }
+        assertEquals(JsonRpcErrorCode.RESOURCE_NOT_FOUND.code, error.code, "a deleted session must answer -32002")
+        assertFailsWith<JsonRpcException> { session.setMode(SessionModeId("build"), null) }
+        assertNull(store.load(sessionId.value), "a refused turn must not resurrect the record")
+    }
+
+    @Test
+    fun `work on a closed session is refused with -32002, closing stays idempotent`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val session = support.loadSession(
+            SessionId("sess_0000000000000001"),
+            SessionCreationParameters(cwd = "/project", mcpServers = emptyList()),
+        )
+
+        session.close(null)
+        session.close(null)
+
+        val error = assertFailsWith<JsonRpcException> {
+            session.prompt(listOf(ContentBlock.Text("still there?"))).collect { }
+        }
+        assertEquals(JsonRpcErrorCode.RESOURCE_NOT_FOUND.code, error.code, "a closed session must answer -32002")
     }
 
     @Test

@@ -6,6 +6,8 @@ import com.agentclientprotocol.agent.clientInfo
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
+import com.agentclientprotocol.protocol.JsonRpcException
+import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -19,6 +21,7 @@ import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal class AgentSessionImpl(
     override val sessionId: SessionId,
@@ -29,12 +32,54 @@ internal class AgentSessionImpl(
     private val providerRouting: ProviderRouting? = null,
     private val initialProviderOptions: List<ProviderOption>? = null,
     private val todayProvider: () -> String,
-    closeResources: suspend () -> Unit = {},
+    private val closeResources: suspend () -> Unit = {},
     private val sessionStore: SessionStore? = null,
     private val restored: SessionRecord? = null,
     private val replayOnLoad: Boolean = false,
     private val models: List<OpenRouterModel> = emptyList(),
 ) : AgentSession {
+
+    /**
+     * Notified exactly once, when this instance stops being a live session
+     * (closed, deleted, or its load replay failed). [AgentSupportImpl] registers
+     * it to drop the session from its live-session map, so a session the client
+     * ended never stays "already active" (issue #27).
+     */
+    private val released = AtomicBoolean(false)
+
+    @Volatile
+    private var onReleased: () -> Unit = {}
+
+    /**
+     * Installs the release callback; a session that already released itself
+     * notifies immediately, so a late registration cannot miss the event.
+     */
+    internal fun onSessionReleased(callback: () -> Unit) {
+        onReleased = callback
+        if (released.get()) callback()
+    }
+
+    private fun release() {
+        if (released.compareAndSet(false, true)) onReleased()
+    }
+
+    /**
+     * Refuses work on a session that already ended. `session/delete` on an
+     * active session is answered by the SDK (which keeps routing `session/prompt`
+     * to this instance) exactly like the spec requires for later requests: with
+     * `-32002` (issue #21). Without the guard the turn would run, spend tokens
+     * and silently drop its history, because a deleted session no longer
+     * persists. `close()` and `delete()` deliberately stay callable - both are
+     * specified to be idempotent.
+     */
+    private fun ensureActive() {
+        if (released.get()) {
+            throw JsonRpcException(
+                JsonRpcErrorCode.RESOURCE_NOT_FOUND.code,
+                "session \"${sessionId.value}\" is no longer active",
+            )
+        }
+    }
 
     private val state = SessionState(
         sessionId = sessionId,
@@ -103,6 +148,7 @@ internal class AgentSessionImpl(
         get() = ModelId(state.currentModel)
 
     override suspend fun setMode(modeId: SessionModeId, _meta: JsonElement?): SetSessionModeResponse {
+        ensureActive()
         sessionConfigOptions.apply(SessionConfigId("mode"), SessionConfigOptionValue.of(modeId.value))
         notifyModeState()
         // persist() records the governing-mode change only; the mode status
@@ -117,6 +163,7 @@ internal class AgentSessionImpl(
         value: SessionConfigOptionValue,
         _meta: JsonElement?
     ): SetSessionConfigOptionResponse {
+        ensureActive()
         sessionConfigOptions.apply(configId, value)
         // A model switch via the "model" option re-reads the new model's
         // provider feed; other options reuse the current snapshot.
@@ -128,6 +175,7 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     override suspend fun setModel(modelId: ModelId, _meta: JsonElement?): SetSessionModelResponse {
+        ensureActive()
         sessionConfigOptions.applyModel(modelId.value)
         sessionConfigOptions.refreshProviderOptions()
         notifyModeState()
@@ -157,7 +205,16 @@ internal class AgentSessionImpl(
         if (!replayOnLoad) return
         val client = clientOrNull() ?: return
         val (history, plan, toolOutcomes) = state.replaySnapshot()
-        buildReplayUpdates(history, plan, toolOutcomes, toolRegistry).forEach { client.notify(it) }
+        try {
+            buildReplayUpdates(history, plan, toolOutcomes, toolRegistry).forEach { client.notify(it) }
+        } catch (e: Throwable) {
+            // The SDK drops its wrapper when the replay fails, so the load never
+            // registers the session: close and release ours too, or the id would
+            // stay "already active" while the MCP/LLM resources leak (issue #27).
+            runCatching { state.close() }
+            release()
+            throw e
+        }
     }
 
     /**
@@ -174,6 +231,7 @@ internal class AgentSessionImpl(
 
     @OptIn(UnstableApi::class)
     override suspend fun prompt(content: List<ContentBlock>, _meta: JsonElement?): Flow<Event> = flow {
+        ensureActive()
         val client = clientOrNull()
         val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
             ?: com.agentclientprotocol.model.ClientCapabilities()
@@ -241,11 +299,16 @@ internal class AgentSessionImpl(
     @OptIn(UnstableApi::class)
     override suspend fun close(_meta: JsonElement?): CloseSessionResponse {
         state.close()
+        release()
         return CloseSessionResponse()
     }
 
     internal suspend fun delete() {
-        state.delete()
+        try {
+            state.delete()
+        } finally {
+            release()
+        }
     }
 }
 

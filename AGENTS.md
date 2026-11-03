@@ -164,7 +164,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # (buildRecord/persist/delete) + title announcement
                                      # (takeTitleAnnouncement, once per title - issue #73)
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
-                                     # AgentSession interface (config options, prompt plumbing)
+                                     # AgentSession interface (config options, prompt plumbing);
+                                     # one-shot onSessionReleased hook (close/delete/failed replay)
     agent/PromptContent.kt           # contentBlocksToLlmContentTopLevel: prompt content blocks ->
                                      # LLM content (multimodal conversion; pure, pinned by
                                      # AgentSessionPromptContentTest)
@@ -187,7 +188,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
                                      # sessions, AgentSessionFactory interface, randomSessionId,
                                      # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
-                                     # with a numeric local offset, never `Z` - issue #22)
+                                     # with a numeric local offset, never `Z` - issue #22);
+                                     # self-cleaning live-session map + the `_meta` open marker
+                                     # (ACTIVE_SESSION_META) in session/list - issue #27
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
@@ -378,7 +381,18 @@ Config comes from environment variables:
 
 - **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
   `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
-  record); `session/cancel` is coroutine cancellation. Sessions persist to
+  record); `session/cancel` is coroutine cancellation. **An ended session refuses work**
+  (issue #21): `session/delete` on an active session ends it (record removed, resources
+  closed, live-map entry dropped), but the SDK keeps routing `session/prompt`/set-mode/
+  set-model/set-config-option to our instance - so `AgentSessionImpl.ensureActive()` refuses
+  every one of them with `-32002` (`JsonRpcErrorCode.RESOURCE_NOT_FOUND`, the spec's code for
+  later requests against a deleted session) instead of running a turn whose persistence is
+  silently dropped (`SessionState.persist()` no-ops once deleted) while still spending tokens.
+  `close()` and `delete()` stay callable and idempotent, as the spec requires. Known SDK
+  deviation: a `session/close` of a session the SDK no longer tracks answers `-32602`
+  ("Session … not found") instead of the spec's idempotent empty result - the SDK's handler
+  rejects before reaching us (`Agent.getSessionOrThrow`), so it cannot be fixed on our side.
+  Sessions persist to
   `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
   atomically (temp + move) on every completed turn and mode/config change **and after every
   executed or denied tool call** (`ToolCallExecutor` -> `state.persist()`, so a crash mid-turn
@@ -404,7 +418,7 @@ Config comes from environment variables:
   record are always pair-complete while the in-memory history is never mutated by the repair (a cancelled call only
   reaches disk with the next persist, O1-accepted). One warn log per
   snapshot keeps the dangling state visible on stderr.
-- **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume`.
+- **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume/close`.
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
@@ -424,7 +438,17 @@ Config comes from environment variables:
   the shortened `toString()` forms that drop seconds/millis), so clients that render it
   as wall time do not shift it by the local offset (issue #22; `AgentSupportImpl` takes the
   `ZoneId` as a constructor parameter, defaulting to `ZoneId.systemDefault()`, so the
-  rendering is unit-pinned with a fixed zone). The derived title is announced to the client:
+  rendering is unit-pinned with a fixed zone). **Open-session marker** (issue #27):
+  `SessionInfo` has no liveness field and the spec forbids adding one at the root of a spec
+  type, so `session/list` marks the sessions open in this process with
+  `_meta = {"net.dontdrinkandroot/active": true}` (`ACTIVE_SESSION_META` in
+  `agent/AgentSupportImpl.kt`); its absence means "not open here". The live map is the
+  single source of liveness and is now self-cleaning: `AgentSessionImpl` fires a one-shot
+  `onSessionReleased` callback when the session ends - `session/close`, `session/delete`, or
+  a failing `replayHistory` (the SDK drops its wrapper there, so the session would otherwise
+  stay "already active" and leak its MCP/LLM resources) - and `AgentSupportImpl.register`
+  uses it to remove the entry value-conditionally. A closed session therefore loses its
+  marker and its id becomes `session/load`-able again. The derived title is announced to the client:
   the prompt flow emits one `session_info_update` (title only - `updatedAt` changes on every
   persist and would be chatty) right after the user message is appended, i.e. inside the
   turn's own update stream rather than racing the prompt response that closes the client's
@@ -1198,7 +1222,18 @@ stays a task input instead of a stale constant.
   `+00:00` on a UTC zone, the parsed instant always round-trips - issue #22) and
   black-box in `E2eSessionPersistenceTest` (regex for a numeric offset +
   `OffsetDateTime.parse(...).toEpochMilli() == record.updatedAt`, timezone-independent
-  so it holds on a UTC CI box and in the docker container). The title announcement (issue #73) is unit-pinned by
+  so it holds on a UTC CI box and in the docker container). The open-session marker (issue #27) is pinned in
+  `SessionLifecycleTest` (only live ids carry `_meta`,
+  `session/close` clears it and frees the id for a later load, a late
+  `onSessionReleased` registration still fires) and black-box in
+  `E2eSessionPersistenceTest` (two open sessions marked, `close()` unmarks one and its
+  id loads again); `sessionCapabilities.close` is advertised and pinned in
+  `E2eWireConformanceTest`. The zombie-prompt contract (issue #21) is pinned unit-level
+  in `SessionLifecycleTest` (`prompt`/`setMode` after `delete()` or `close()` fail with
+  `-32002`, closing twice stays idempotent, a refused call never resurrects the record)
+  and black-box in `E2eSessionPersistenceTest` (the resumed - i.e. active - session is
+  deleted, then a prompt is refused with `-32002`, reaches no LLM and leaves no record).
+  The title announcement (issue #73) is unit-pinned by
   `SessionStateTitleTest` (announced exactly once, restored
   titles not re-announced, legacy empty-title records announce at the next turn, 72-code-point
   cap) and black-box in `E2eSessionPersistenceTest` (one `session_info_update` with the

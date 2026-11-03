@@ -6,11 +6,14 @@ import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.AcpExpectedError
+import com.agentclientprotocol.protocol.JsonRpcException
+import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.agent.ACTIVE_SESSION_META
 import net.dontdrinkandroot.acpagent.agent.SessionStore
 import java.nio.file.Files
 import java.time.OffsetDateTime
@@ -179,6 +182,30 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 assertTrue(third.client.listSessions(projectDir.absolutePath).toList().isEmpty())
                 third.client.deleteSession(sessionId)
                 println("[ok] session/delete removes the record and is idempotent")
+
+                // Deleting an *active* session (it was resumed above) must end it:
+                // a later prompt is refused with the spec's -32002 instead of
+                // running a turn whose persistence would be silently dropped
+                // (issue #21).
+                val requestsAfterDelete = llmMock.requestCount.get()
+                val zombieError = assertFailsWith<JsonRpcException>("a deleted session must refuse prompts") {
+                    collectPrompt(resumed, listOf(ContentBlock.Text("still there?")))
+                }
+                assertEquals(
+                    JsonRpcErrorCode.RESOURCE_NOT_FOUND.code,
+                    zombieError.code,
+                    "a deleted session must answer -32002 (Resource not found)",
+                )
+                assertEquals(
+                    requestsAfterDelete,
+                    llmMock.requestCount.get(),
+                    "a refused prompt on a deleted session must not reach the LLM",
+                )
+                assertTrue(
+                    !Files.exists(sessionsStoreDir.resolve("${sessionId.value}.json")),
+                    "a refused prompt must not resurrect the deleted record",
+                )
+                println("[ok] prompt on a deleted active session is refused with -32002 (no LLM call)")
             } finally {
                 third.close()
             }
@@ -402,6 +429,60 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                 "session/load replay must not call the LLM",
             )
             println("[ok] load/replay issued no LLM requests")
+        }
+    }
+
+    /**
+     * Black-box liveness marking in `session/list` (issue #27): two sessions
+     * open in one process, one closed -> both stay listed, only the open one
+     * carries the `_meta` marker, and the closed id can be loaded again.
+     */
+    @Test
+    fun `e2e session list marks only the open sessions and closing frees the id`() = runBlocking {
+        val llmMock = MockOpenAiServer("unused", textOnly = true)
+        withE2eAgent("liveness", llmMock) {
+            val connection = connect()
+            try {
+                connection.client.initialize(testClientInfo())
+                val first = newSession(connection.client, projectDir, TestClientOperations())
+                collectPrompt(first, listOf(ContentBlock.Text("First session"))).also { assertEndTurn(it) }
+                val second = newSession(connection.client, projectDir, TestClientOperations())
+                collectPrompt(second, listOf(ContentBlock.Text("Second session"))).also { assertEndTurn(it) }
+
+                suspend fun markersById() = connection.client.listSessions(projectDir.absolutePath)
+                    .toList()
+                    .associate { it.sessionId to it._meta }
+
+                val openMarkers = markersById()
+                assertEquals(
+                    setOf(first.sessionId, second.sessionId),
+                    openMarkers.keys,
+                    "both open sessions must stay listed",
+                )
+                assertTrue(
+                    openMarkers.values.all { it == ACTIVE_SESSION_META },
+                    "every session open in this process must carry the marker, got $openMarkers",
+                )
+                println("[ok] session/list marks both open sessions")
+
+                second.close()
+
+                val afterClose = markersById()
+                assertEquals(ACTIVE_SESSION_META, afterClose.getValue(first.sessionId))
+                assertNull(
+                    afterClose.getValue(second.sessionId),
+                    "a closed session must not stay marked open",
+                )
+                // The closed session is not open any more, so its id is loadable again.
+                connection.client.loadSession(
+                    second.sessionId,
+                    SessionCreationParameters(cwd = projectDir.absolutePath, mcpServers = emptyList()),
+                    TestClientOperations(),
+                )
+                println("[ok] closing a session clears its marker and frees the id for session/load")
+            } finally {
+                connection.close()
+            }
         }
     }
 

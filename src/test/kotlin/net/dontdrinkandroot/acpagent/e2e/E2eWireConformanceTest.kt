@@ -106,6 +106,10 @@ class E2eWireConformanceTest : E2eAgentTest() {
                 agentInfo.capabilities.sessionCapabilities.delete,
                 "sessionCapabilities.delete must be advertised"
             )
+            assertNotNull(
+                agentInfo.capabilities.sessionCapabilities.close,
+                "sessionCapabilities.close must be advertised (issue #27)"
+            )
             assertNotNull(agentInfo.capabilities.mcpCapabilities)
             assertTrue(agentInfo.capabilities.promptCapabilities.image, "image prompt capability must be advertised")
             assertTrue(

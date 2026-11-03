@@ -179,10 +179,11 @@ Docker launcher extras (host side, not forwarded into the container):
 
 Session records live under `$XDG_STATE_HOME/ddr-acp-agent/sessions/`
 (fallback `~/.local/state/ddr-acp-agent/sessions/`), one JSON file per session, and
-are filtered by project directory in the client's session list. Use the client's
-UI (or `session/list`, `session/load`, `session/resume`, `session/delete`) to pick
-conversations back up after an IDE or agent restart; work in progress can also be
-continued from the persisted plan.
+are filtered by project directory in the client's session list; sessions currently open
+in the running agent are marked via the `_meta` field (`net.dontdrinkandroot/active`).
+Use the client's UI (or `session/list`, `session/load`, `session/resume`, `session/close`,
+`session/delete`) to pick conversations back up after an IDE or agent restart; work in
+progress can also be continued from the persisted plan.
 
 ## Troubleshooting
 
