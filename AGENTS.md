@@ -107,7 +107,11 @@ versions are wiped automatically on version bumps. Built on the current
 at 9.x — gradle/gradle#26365) and is deliberately not used.
 
 **Shutdown**: `runAgent` loops until `transport.state.value == Transport.State.CLOSED`
-(small delay) then `protocol.close()`.
+(small delay), then runs the exit sequence: `protocol.cancelPendingIncomingRequests(...)` (a
+client that closes stdin never sends `session/cancel`, so the in-flight prompt turn would
+otherwise keep running), `agentSupport.persistAllSessions()` (flush every live session - the
+cancelled turn's own persist races the JVM exit, the flush does not; issue #17), then
+`protocol.close()`.
 
 ## Tool Usage
 
@@ -165,7 +169,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # (takeTitleAnnouncement, once per title - issue #73)
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
                                      # AgentSession interface (config options, prompt plumbing);
-                                     # one-shot onSessionReleased hook (close/delete/failed replay)
+                                     # one-shot onSessionReleased hook (close/delete/failed replay);
+                                     # persist-on-interrupt (prompt finally + close) - issue #17
     agent/PromptContent.kt           # contentBlocksToLlmContentTopLevel: prompt content blocks ->
                                      # LLM content (multimodal conversion; pure, pinned by
                                      # AgentSessionPromptContentTest)
@@ -190,7 +195,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
                                      # with a numeric local offset, never `Z` - issue #22);
                                      # self-cleaning live-session map + the `_meta` open marker
-                                     # (ACTIVE_SESSION_META) in session/list - issue #27
+                                     # (ACTIVE_SESSION_META) in session/list - issue #27;
+                                     # persistAllSessions(): the shutdown flush - issue #17
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
@@ -279,6 +285,10 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eToolCallPairingRepairTest.kt # pairing invariant e2e (issue #38): cancelled call closed
                                      # in the next chat request; poisoned record heals at load
                                      # (terminal FAILED replay); mid-batch cancel record pin
+                                     # (already pair-complete on disk right after the cancel)
+        E2eShutdownTest.kt           # graceful shutdown (issue #17): a turn interrupted by the
+                                     # client closing stdin and a turn cancelled via session/cancel
+                                     # both reach the session record (user message + pair-complete)
         E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
                                      # before permission/execution (bash in build mode)
         E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
@@ -394,9 +404,15 @@ Config comes from environment variables:
   rejects before reaching us (`Agent.getSessionOrThrow`), so it cannot be fixed on our side.
   Sessions persist to
   `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
-  atomically (temp + move) on every completed turn and mode/config change **and after every
+  atomically (temp + move) on every completed turn and mode/config change, **after every
   executed or denied tool call** (`ToolCallExecutor` -> `state.persist()`, so a crash mid-turn
-  keeps the effects-so-far visible in the record; fixes #26's per-turn window). The record
+  keeps the effects-so-far visible in the record; fixes #26's per-turn window), **when a turn
+  is interrupted** (`prompt`'s `finally` persists under `NonCancellable` when the turn did not
+  complete - `session/cancel` or a closing client, so the user message, the streamed partial
+  reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
+  (same `NonCancellable` flush before the resources go away) and **at
+  shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
+  Shutdown; issue #17). The record
   (`agent/SessionRecord.kt`) holds history (Koog `OpenAIMessage` wire types via the shared
   `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning, plan and
   `toolOutcomes` (toolCallId -> `"completed"` | `"failed"`, recorded at history-append time in
@@ -415,8 +431,9 @@ Config comes from environment variables:
   interrupted before a result was produced; any effects may already be applied."), inserted
   after the batch's already-present results, and runs inside `SessionState.historySnapshot` /
   `replaySnapshot` / `buildRecord` — so the LLM request, the load replay and the persisted
-  record are always pair-complete while the in-memory history is never mutated by the repair (a cancelled call only
-  reaches disk with the next persist, O1-accepted). One warn log per
+  record are always pair-complete while the in-memory history is never mutated by the repair (an
+  interrupted call reaches disk pair-complete at the turn's cancel persist, the close persist or
+  the shutdown flush - the pre-#17 "next persist" window is gone). One warn log per
   snapshot keeps the dangling state visible on stderr.
 - **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume/close`.
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
@@ -1015,6 +1032,10 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `SafeCollector.emit` (`currentContext.ensureActive()`) masks a swallowed
   cancellation before the bogus `ToolCallUpdate(FAILED)` is emitted, so the
   end-to-end symptom is latent, not observed.
+  A cancelled turn is **persisted**: `prompt`'s `finally` writes the record under
+  `NonCancellable` when the turn did not complete, so the user message, the streamed partial
+  reply and every applied tool call survive the cancel (issue #17; the dangling call is closed
+  by the #38 repair).
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
   `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
   builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
@@ -1233,6 +1254,11 @@ stays a task input instead of a stale constant.
   `-32002`, closing twice stays idempotent, a refused call never resurrects the record)
   and black-box in `E2eSessionPersistenceTest` (the resumed - i.e. active - session is
   deleted, then a prompt is refused with `-32002`, reaches no LLM and leaves no record).
+  The graceful-shutdown contract (issue #17) is pinned by `E2eShutdownTest`: a turn
+  interrupted by the client closing stdin and a turn ended by `session/cancel` both reach
+  the record (user message + pair-complete history, asserted without a follow-up turn), and
+  by `SessionLifecycleTest` (an interrupted turn persists what it did; `persistAllSessions`
+  flushes live sessions only).
   The title announcement (issue #73) is unit-pinned by
   `SessionStateTitleTest` (announced exactly once, restored
   titles not re-announced, legacy empty-title records announce at the next turn, 72-code-point
@@ -1348,7 +1374,9 @@ left it with `E2eMcpStdioTransportTest` covering the spec-mandatory stdio transp
 #62 left it with the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
 `PromptResponse`/`StopReason.CANCELLED`; #59 left it with the 0.34.0 upgrade: the replay now
 runs before the load response; #73 left it with the title announcement: the prompt flow
-sends `session_info_update`, pinned in `E2eSessionPersistenceTest`.)
+sends `session_info_update`, pinned in `E2eSessionPersistenceTest`; #17 left it with the
+graceful-shutdown pin: `E2eShutdownTest` covers the client closing stdin mid-turn and
+`session/cancel` mid-turn.)
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —
@@ -1594,8 +1622,11 @@ communicate that with the user so we can review them.
   agent-side code); agent-side direct calls (unit tests) see `JsonRpcException`
   for `jsonRpcInvalidParams`.
 - **Shutdown**: do not drive shutdown from the transport's `onClose`; `runAgent` polls
-  `transport.state.value == Transport.State.CLOSED` and then calls `protocol.close()`
-  (`Main.kt`).
+  `transport.state.value == Transport.State.CLOSED`, then cancels the pending incoming
+  requests, flushes every live session and calls `protocol.close()` (`Main.kt`). Cancelling
+  first is what stops a turn the client abandoned by closing stdin - the SDK never sees a
+  `session/cancel` there - and the flush is what guarantees the record: a cancelled
+  coroutine's own persist races the JVM exit, the flush does not (issue #17).
 - **Gradle lock timeout**: `Timeout waiting to lock ...` means an OS *flock* on a lock file is
   held - the blocker is real contention, not the lock file's existence: idle daemons keep
   `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),

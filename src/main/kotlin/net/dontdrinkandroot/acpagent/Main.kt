@@ -9,6 +9,7 @@ import com.agentclientprotocol.transport.StdioTransport
 import com.agentclientprotocol.transport.Transport
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.github.oshai.kotlinlogging.KotlinLoggingConfiguration
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
@@ -164,6 +165,12 @@ public fun runAgent() {
         while (transport.state.value != Transport.State.CLOSED) {
             delay(50)
         }
+        // The client went away (typically: it closed our stdin). A turn may still
+        // be running - the transport's read side hit EOF, not a cancel - so stop
+        // it first, then flush every live session: the cancelled turn's own
+        // persist races the JVM exit, the flush does not (issue #17).
+        protocol.cancelPendingIncomingRequests(CancellationException("client closed the connection"))
+        agentSupport.persistAllSessions()
         protocol.close()
     }
 }

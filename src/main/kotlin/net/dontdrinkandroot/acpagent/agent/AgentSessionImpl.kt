@@ -8,10 +8,12 @@ import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import net.dontdrinkandroot.acpagent.config.Config
@@ -269,6 +271,7 @@ internal class AgentSessionImpl(
         )
 
         state.setPromptActive(true)
+        var turnCompleted = false
         try {
             promptRunner.run(this, mode, instructions, toolContext)
             // The turn handed control back: apply any mode requested while it
@@ -277,6 +280,7 @@ internal class AgentSessionImpl(
             // next prompt start (indicateCurrentMode).
             val changed = state.flushPendingMode()
             state.persist()
+            turnCompleted = true
             if (changed) {
                 // The turn is over - clear the active flag so the flush is
                 // announced (notifyModeState skips it while a turn is active).
@@ -289,6 +293,15 @@ internal class AgentSessionImpl(
             // and clear the active flag even when the flow is cancelled.
             state.cancelPrompt()
             state.setPromptActive(false)
+            if (!turnCompleted) {
+                // An interrupted turn (session/cancel, a closing client) still
+                // did work the record must keep: the user message, the streamed
+                // partial reply and every applied tool call (issue #17). The
+                // persist must not be skipped by the cancellation that brought
+                // us here, and it is idempotent for the shutdown flush that
+                // follows.
+                withContext(NonCancellable) { state.persist() }
+            }
         }
     }
 
@@ -296,8 +309,20 @@ internal class AgentSessionImpl(
         // The flow is cancelled via coroutine cancellation.
     }
 
+    /**
+     * Writes the session's current state to its record. Used by the shutdown
+     * flush ([AgentSupportImpl.persistAllSessions]) and by [close], so a turn
+     * interrupted mid-flight is never lost (issue #17).
+     */
+    internal suspend fun persistState() {
+        state.persist()
+    }
+
     @OptIn(UnstableApi::class)
     override suspend fun close(_meta: JsonElement?): CloseSessionResponse {
+        // A close can land while a turn is running (the SDK does not cancel it),
+        // so the in-flight history is flushed here before the resources go away.
+        withContext(NonCancellable) { state.persist() }
         state.close()
         release()
         return CloseSessionResponse()

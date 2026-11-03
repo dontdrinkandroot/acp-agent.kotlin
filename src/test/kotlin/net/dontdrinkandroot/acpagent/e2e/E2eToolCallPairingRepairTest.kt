@@ -174,10 +174,29 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                     promptJob.await()
                     sessionId = session.sessionId
 
-                    // The cancel persists nothing itself; the repaired view
-                    // ships with the very next persist of this process. Run a
-                    // short second turn so the record on disk is fresh, then
-                    // verify it is pair-complete with the synthetic result.
+                    // The cancel persists the interrupted turn itself (issue #17):
+                    // the record on disk is already pair-complete, with the
+                    // synthetic result closing the dangling call.
+                    val cancelledRecord = SessionStore(sessionsStoreDir).load(sessionId.value)
+                    assertNotNull(cancelledRecord, "a cancelled turn must persist its record")
+                    val cancelledCalls = cancelledRecord.history
+                        .filterIsInstance<OpenAIMessage.Assistant>()
+                        .flatMap { it.toolCalls.orEmpty() }
+                        .map { it.id }
+                    val cancelledResults = cancelledRecord.history
+                        .filterIsInstance<OpenAIMessage.Tool>()
+                        .map { it.toolCallId }
+                    assertTrue(
+                        "call_bash" in cancelledCalls && "call_bash" in cancelledResults,
+                        "the record persisted by the cancel must be pair-complete " +
+                                "(calls=$cancelledCalls, results=$cancelledResults)",
+                    )
+
+                    // The cancel now persists the interrupted turn itself (issue
+                    // #17), so the repaired record is on disk without a follow-up
+                    // turn. A short second turn keeps the scenario's original
+                    // shape (the record is re-persisted on the way out) and pins
+                    // that the healed pair survives a later persist unchanged.
                     val secondTurn = collectPrompt(session, listOf(ContentBlock.Text("Continue")))
                     assertEndTurn(secondTurn)
                 } finally {

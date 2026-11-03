@@ -164,6 +164,16 @@ internal class AgentSupportImpl(
             }
     }
 
+    /**
+     * Flushes every session open in this process to its record. Called once by
+     * `runAgent` before the protocol closes, so a turn the shutdown cancelled
+     * cannot be lost to a coroutine that never got to its own persist (issue
+     * #17). Persist failures are logged by [SessionState] and never propagate.
+     */
+    suspend fun persistAllSessions() {
+        sessions.values.forEach { session -> session.persistState() }
+    }
+
     override suspend fun deleteSession(sessionId: SessionId, _meta: JsonElement?): DeleteSessionResponse {
         val id = sessionId.value
         if (!isValidSessionId(id)) {

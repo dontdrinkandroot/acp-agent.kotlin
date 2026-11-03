@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
+import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.client.ClientInfo
 import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.*
@@ -341,6 +342,49 @@ class SessionLifecycleTest {
             session.prompt(listOf(ContentBlock.Text("still there?"))).collect { }
         }
         assertEquals(JsonRpcErrorCode.RESOURCE_NOT_FOUND.code, error.code, "a closed session must answer -32002")
+    }
+
+    @Test
+    fun `persistAllSessions flushes every live session and leaves the others untouched`() = runBlocking {
+        store.save(record("sess_0000000000000001", title = "Live"))
+        store.save(record("sess_0000000000000002", title = "Not open here"))
+        val (support, _) = support()
+        support.loadSession(
+            SessionId("sess_0000000000000001"),
+            SessionCreationParameters(cwd = "/project", mcpServers = emptyList()),
+        )
+
+        support.persistAllSessions()
+
+        assertTrue(
+            store.load("sess_0000000000000001")!!.updatedAt > 1_700_000_000_000,
+            "the open session must be flushed to its record (issue #17)",
+        )
+        assertEquals(
+            1_700_000_000_000,
+            store.load("sess_0000000000000002")!!.updatedAt,
+            "a session that is not open in this process must not be rewritten",
+        )
+    }
+
+    @Test
+    fun `an interrupted turn persists what it did before it was interrupted`() = runBlocking {
+        store.save(record())
+        val (support, _) = support()
+        val session = support.loadSession(
+            SessionId("sess_0000000000000001"),
+            SessionCreationParameters(cwd = "/project", mcpServers = emptyList()),
+        )
+        // The test config points the LLM at a closed port, so the turn dies after
+        // the user message was appended - the shape a cancel leaves behind.
+        runCatching { session.prompt(listOf(ContentBlock.Text("interrupted prompt"))).collect { } }
+
+        assertEquals(
+            "interrupted prompt",
+            store.load("sess_0000000000000001")?.history?.filterIsInstance<OpenAIMessage.User>()
+                ?.last()?.content?.text(),
+            "an interrupted turn must persist instead of dropping its history (issue #17)",
+        )
     }
 
     @Test
