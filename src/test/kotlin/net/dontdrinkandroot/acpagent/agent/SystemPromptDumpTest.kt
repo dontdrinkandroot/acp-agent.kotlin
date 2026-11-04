@@ -1,20 +1,22 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
 class SystemPromptDumpTest {
 
     @Test
-    fun `review dump renders the prompt sections but never the AGENTS md instructions`() {
-        val dir = Files.createTempDirectory("acp-agent-prompt-dump").toFile()
-        dir.resolve("AGENTS.md").writeText("Project rules here")
-        val prompt = reviewSystemPrompt(dir.absolutePath, emptyMap())
-        assertTrue(prompt.contains("Session working directory: ${dir.absolutePath}"), prompt)
-        assertTrue(prompt.contains("- plan: read-only"), prompt)
-        assertTrue(prompt.contains("Excluded files:"), prompt)
+    fun `review dump renders every section from example values, not the environment`() {
+        val prompt = reviewSystemPrompt()
+        assertTrue(prompt.contains("Session working directory: /home/dev/projects/example-project"), prompt)
+        assertTrue(prompt.contains("* plan: read-only"), prompt)
+        // The example data is invented, so every optional section renders.
+        assertTrue(prompt.contains("## Trusted read paths"), prompt)
+        assertTrue(prompt.contains("* /srv/data"), prompt)
+        assertTrue(prompt.contains("## Excluded files"), prompt)
+        assertTrue(prompt.contains("secrets/**"), prompt)
+        assertTrue(prompt.contains("## Available run configurations"), prompt)
+        // The project instructions are never part of the dump.
         assertTrue(!prompt.contains("Project Instructions"), prompt)
-        assertTrue(!prompt.contains("Project rules here"), prompt)
     }
 }

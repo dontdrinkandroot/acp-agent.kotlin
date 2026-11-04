@@ -1,38 +1,47 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import io.github.oshai.kotlinlogging.KotlinLoggingConfiguration
-import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.config.platformEnv
 import net.dontdrinkandroot.acpagent.isoDateToday
-import net.dontdrinkandroot.acpagent.tools.FileAccessExclusions
-import net.dontdrinkandroot.acpagent.tools.loadRunConfigs
-import java.io.File
+import net.dontdrinkandroot.acpagent.tools.RunConfig
+
+/** Example working directory of the dump - deliberately not the real one. */
+private const val EXAMPLE_CWD = "/home/dev/projects/example-project"
+
+private val exampleTrustedReadPaths = listOf("/srv/data", "/mnt/scratch")
+
+private val exampleExcludedFileGlobs = listOf(".env*.local", ".ai/run.json", "secrets/**")
+
+private val exampleRunConfigs = listOf(
+    RunConfig("build", "./gradlew build", "Compile + run all unit and e2e tests"),
+    RunConfig("test_class", "./gradlew test --tests [args]", "Run a single test class via [args]"),
+)
 
 /**
  * Prints the assembled system prompt for review (run config `system_prompt`,
- * Gradle task `printSystemPrompt`). The optional first argument is the working
- * directory to render for, defaulting to the current one.
+ * Gradle task `printSystemPrompt`).
  */
-public fun main(args: Array<String>) {
+public fun main() {
     // Keep stdout clean: the kotlin-logging startup banner would otherwise
     // become the prompt's first line.
     System.setProperty("org.slf4j.simpleLogger.logFile", "System.err")
     KotlinLoggingConfiguration.logStartupMessage = false
-    val cwd = args.firstOrNull()?.let { File(it).absolutePath } ?: System.getProperty("user.dir")
-    print(reviewSystemPrompt(cwd))
+    print(reviewSystemPrompt())
 }
 
 /**
- * Assembles the system prompt exactly like [AgentSessionImpl] does it, but
- * without the project instructions (AGENTS.md), so the static prompt sections
- * can be reviewed on their own. The environment only contributes the trusted
- * read paths (`ACP_EXTRA_MOUNTS`); no API key is required.
+ * Assembles the system prompt like [AgentSessionImpl] does it, but without the
+ * project instructions (AGENTS.md) and from invented example values instead of
+ * the actual environment: the working directory, the trusted read paths, the
+ * exclusion rules and the run configurations are all made up, so the review is
+ * reproducible and always renders every section - a real cwd would silently
+ * drop the sections it has no data for. Only the build hash and today's date
+ * come from the running build.
  */
-internal fun reviewSystemPrompt(cwd: String, env: Map<String, String> = platformEnv()): String =
+internal fun reviewSystemPrompt(): String =
     SystemPromptBuilder(
-        cwd,
+        EXAMPLE_CWD,
         ::isoDateToday,
-        runConfigsProvider = { loadRunConfigs(cwd) },
-        trustedReadPaths = Config.parseExtraMounts(env["ACP_EXTRA_MOUNTS"]),
-        excludedFileGlobs = FileAccessExclusions.DEFAULT.globs(),
+        runConfigsProvider = { exampleRunConfigs },
+        trustedReadPaths = exampleTrustedReadPaths,
+        excludedFileGlobs = exampleExcludedFileGlobs,
     ).build(null)

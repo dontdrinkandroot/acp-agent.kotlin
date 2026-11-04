@@ -65,6 +65,6 @@
     },
     "system_prompt": {
         "command": "timeout 120 ./gradlew -q printSystemPrompt",
-        "description": "Print the assembled system prompt without AGENTS.md for review (pass --args=<cwd> by hand to render for another directory)"
+        "description": "Print the assembled system prompt without AGENTS.md, rendered from invented example values so every section shows"
     }
 }

@@ -88,8 +88,10 @@ Use the `run` tool's configurations for the standard dev loop:
 - `sources` — resolve + unpack the `-sources` jars of the main+test classpath into
   `build/library-sources-unpacked/<artifact>/` for browsing library code at the exact resolved
   versions (see Library-source investigation below)
-- `system_prompt` — print the assembled system prompt **without** AGENTS.md (optional `[args]` =
-  cwd to render for) for reviewing the static prompt sections on their own
+- `system_prompt` — print the assembled system prompt **without** AGENTS.md, rendered from
+  invented example values (cwd, trusted read paths, exclusion rules, run configurations) so
+  every section shows and the output is reproducible - for reviewing the static prompt
+  sections on their own
 
 The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
 `OPENROUTER_API_KEY_FILE` required):
@@ -193,8 +195,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
     agent/SystemPromptDump.kt        # reviewSystemPrompt + `main`: renders the prompt without
-                                     # AGENTS.md (run config system_prompt / Gradle task
-                                     # printSystemPrompt)
+                                     # AGENTS.md from invented example values (run config
+                                     # system_prompt / Gradle task printSystemPrompt)
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
                                      # sessions, AgentSessionFactory interface, randomSessionId,
                                      # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
@@ -603,9 +605,10 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   main+test classpath into `build/library-sources-unpacked/<artifact>/` via the Gradle tasks
   `downloadLibrarySources` + `unpackLibrarySources` in `build.gradle.kts`, for browsing library
   code at the exact resolved versions - see Library-source investigation under Building / running)
-  and `system_prompt` (prints the assembled system prompt without AGENTS.md, optional `[args]` =
-  cwd to render for, via the `printSystemPrompt` JavaExec task and
-  `agent/SystemPromptDump.kt` - so the static prompt sections can be reviewed on their own).
+  and `system_prompt` (prints the assembled system prompt without AGENTS.md, rendered from
+  invented example values - cwd, trusted read paths, exclusion rules, run configurations - via
+  the `printSystemPrompt` JavaExec task and `agent/SystemPromptDump.kt`, so the static prompt
+  sections can be reviewed on their own and every section shows regardless of the checkout).
   The gradle configs are
   wrapped in `timeout` (180s for the fast loop and single test classes, 300s for the
   full `build`/`test` suites incl. a cold daemon) so
@@ -654,7 +657,24 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
       `SessionConfigOptionsTest`/`SessionStateProviderSelectionTest` (unit) and `E2eProviderOptionTest` (e2e).
 - **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
   `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
-  `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough).
+  `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough). **Prompt guidance**
+  (`agent/SystemPrompt.kt`: a mode-independent sentence after the modes table
+  plus the `### Plans and progress` rule group): the plan is stated as available in every mode and
+  outliving mode switches and turns (a plan started while researching keeps governing in build/bash);
+  trigger = three or more distinct steps, many tool calls or an explicit user request for a plan,
+  skipping single-step work and padding;
+  creation as soon as the shape of the work is clear ("never only at the end of the turn"), with the
+  mode-specific role (in plan mode the settled plan is the hand-back, in build/bash the executed
+  checklist); whole-list replacement (every call replaces the plan, no unchanged re-sends); one
+  `in_progress` entry, statuses flipped as work happens (no batched completions); structural revision
+  (add/remove/split/reorder) explicitly sanctioned, a stale plan named a defect; completed entries
+  consolidated into one outcome entry so the plan stays a short progress log; the plan doubles as a
+  scratchbook for decisions/blockers; closure requires nothing left `in_progress`. The prompt states
+  there is no `blocked`/`cancelled` status (ACP's `PlanEntryStatus` is `pending|in_progress|completed`),
+  so blockers go into the reply. `### Communication` additionally forbids restating a just-sent plan (the client renders
+  it). Pinned by `SystemPromptTest`; the tool description carries the same
+  replacement/one-in_progress contract (its `parameters` schema is untouched, so
+  `UpdatePlanToolTest`'s encoded-schema pin stays as is).
 - **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
   `size` = model `context_length`); skipped when either is missing. During an active prompt the
   SDK routes session updates into the prompt event flow, not the `notify` callback.
@@ -842,7 +862,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
   against the session cwd so a symlink escape still gates); writes/moves/deletes under them
   always prompt. The paths are also surfaced as a static "Trusted read paths" system-prompt
-  section (`SystemPromptBuilder`) so the model knows reads there are prompt-free. MCP tools
+  section (`SystemPromptBuilder`, a `## Trusted read paths` heading + one bullet per path)
+  so the model knows reads there are prompt-free. MCP tools
   always prompt **unless** the server annotates the
   tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
   enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the

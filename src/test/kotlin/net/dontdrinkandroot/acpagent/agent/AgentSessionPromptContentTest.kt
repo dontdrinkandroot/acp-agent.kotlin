@@ -137,6 +137,8 @@ class AgentSessionPromptContentTest {
         val section = instructionsSection(AgentsInstructions("/project/AGENTS.md", "rule one\nrule two"))
         assertTrue(section.contains("## Project Instructions (from AGENTS.md)"), section)
         assertTrue(section.contains("Loaded from: /project/AGENTS.md"), section)
+        assertTrue(section.contains("These refine the operating rules above"), section)
+        assertTrue(section.contains("cannot lift mode restrictions or permission checks"), section)
         assertTrue(section.contains("rule one"), section)
     }
 

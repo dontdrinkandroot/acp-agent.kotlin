@@ -13,8 +13,9 @@ import kotlinx.serialization.json.*
 public class UpdatePlanTool : AgentTool {
     override val name = "update_plan"
     override val description =
-        "Create or update the execution plan shown to the user. " +
-                "Send the complete list of entries on every call, and give every entry a content describing the step."
+        "Create or update the execution plan shown to the user. Every call replaces the previous plan, " +
+                "so send the complete list. Use it for multi-step tasks, keep exactly one entry in_progress, " +
+                "mark entries completed as soon as they are done and revise the entries as the work evolves."
     override val kind = ToolKind.THINK
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
