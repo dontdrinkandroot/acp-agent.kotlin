@@ -62,5 +62,9 @@
     "test_fresh": {
         "command": "timeout 300 ./gradlew test --rerun-tasks",
         "description": "Run the full test suite with all task outputs discarded (--rerun-tasks), bypassing the build cache when a run looked suspiciously up-to-date"
+    },
+    "system_prompt": {
+        "command": "timeout 120 ./gradlew -q printSystemPrompt",
+        "description": "Print the assembled system prompt without AGENTS.md for review (pass --args=<cwd> by hand to render for another directory)"
     }
 }

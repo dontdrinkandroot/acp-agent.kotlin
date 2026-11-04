@@ -76,6 +76,18 @@ val unpackLibrarySources = tasks.register<Sync>("unpackLibrarySources") {
 	into(layout.buildDirectory.dir("library-sources-unpacked"))
 }
 
+// Prints the assembled system prompt (without the AGENTS.md instructions) so the
+// static prompt sections can be reviewed in isolation. Run it by hand:
+//   ./gradlew -q printSystemPrompt
+//   ./gradlew -q printSystemPrompt --args=/some/other/project   (cwd to render for)
+val printSystemPrompt = tasks.register<JavaExec>("printSystemPrompt") {
+    group = "documentation"
+    description = "Prints the assembled system prompt without AGENTS.md; optional --args=<cwd> to render for"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("net.dontdrinkandroot.acpagent.agent.SystemPromptDumpKt")
+    outputs.upToDateWhen { false }
+}
+
 repositories {
     mavenCentral()
 }

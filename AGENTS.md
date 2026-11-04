@@ -88,6 +88,8 @@ Use the `run` tool's configurations for the standard dev loop:
 - `sources` — resolve + unpack the `-sources` jars of the main+test classpath into
   `build/library-sources-unpacked/<artifact>/` for browsing library code at the exact resolved
   versions (see Library-source investigation below)
+- `system_prompt` — print the assembled system prompt **without** AGENTS.md (optional `[args]` =
+  cwd to render for) for reviewing the static prompt sections on their own
 
 The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
 `OPENROUTER_API_KEY_FILE` required):
@@ -190,6 +192,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
+    agent/SystemPromptDump.kt        # reviewSystemPrompt + `main`: renders the prompt without
+                                     # AGENTS.md (run config system_prompt / Gradle task
+                                     # printSystemPrompt)
     agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
                                      # sessions, AgentSessionFactory interface, randomSessionId,
                                      # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
@@ -597,7 +602,10 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `.ai/scripts/show-test-failures.sh`) and `sources` (resolve + unpack the `-sources` jars of the
   main+test classpath into `build/library-sources-unpacked/<artifact>/` via the Gradle tasks
   `downloadLibrarySources` + `unpackLibrarySources` in `build.gradle.kts`, for browsing library
-  code at the exact resolved versions - see Library-source investigation under Building / running).
+  code at the exact resolved versions - see Library-source investigation under Building / running)
+  and `system_prompt` (prints the assembled system prompt without AGENTS.md, optional `[args]` =
+  cwd to render for, via the `printSystemPrompt` JavaExec task and
+  `agent/SystemPromptDump.kt` - so the static prompt sections can be reviewed on their own).
   The gradle configs are
   wrapped in `timeout` (180s for the fast loop and single test classes, 300s for the
   full `build`/`test` suites incl. a cold daemon) so
