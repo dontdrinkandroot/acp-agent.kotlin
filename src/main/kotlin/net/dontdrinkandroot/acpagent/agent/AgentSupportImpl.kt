@@ -50,6 +50,12 @@ internal class AgentSupportImpl(
     private val sessionFactory: AgentSessionFactory,
     private val sessionStore: SessionStore,
     private val zoneId: ZoneId = ZoneId.systemDefault(),
+    /**
+     * Why a session `cwd` cannot be served, or null when it can
+     * ([sessionCwdProblem]). A seam so lifecycle tests can drive sessions with
+     * synthetic working directories; production always checks the filesystem.
+     */
+    private val cwdProblem: (String) -> String? = ::sessionCwdProblem,
 ) : AgentSupport {
 
     /**
@@ -86,6 +92,7 @@ internal class AgentSupportImpl(
     }
 
     override suspend fun createSession(sessionParameters: SessionCreationParameters): AgentSession {
+        refuseUnusableCwd(sessionParameters.cwd)
         return register(sessionFactory.create(sessionParameters))
     }
 
@@ -127,6 +134,8 @@ internal class AgentSupportImpl(
         val record = runCatching { sessionStore.load(id) }
             .getOrElse { acpFail("load session \"$id\": ${it.message}") }
             ?: jsonRpcInvalidParams("unknown session \"$id\"")
+        // After the record lookup, so an unknown id keeps its own refusal text.
+        refuseUnusableCwd(parameters.cwd)
         if (record.cwd != parameters.cwd) {
             jsonRpcInvalidParams("session \"$id\" belongs to \"${record.cwd}\", not \"${parameters.cwd}\"")
         }
@@ -134,6 +143,18 @@ internal class AgentSupportImpl(
             jsonRpcInvalidParams("session \"$id\" is already active")
         }
         return sessionFactory.restore(record, parameters, replay)
+    }
+
+    /**
+     * The session's working directory is its file context: every path-scoped
+     * tool resolves against it, and `bash`/`run` and stdio MCP servers start
+     * there. A `cwd` that is not an existing directory is therefore refused up
+     * front with `-32602` instead of producing a session that fails per tool
+     * call (or a stdio MCP server running in the agent's own directory,
+     * issue #74).
+     */
+    private fun refuseUnusableCwd(cwd: String) {
+        cwdProblem(cwd)?.let { jsonRpcInvalidParams(it) }
     }
 
     @OptIn(UnstableApi::class)

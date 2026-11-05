@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -29,7 +30,10 @@ class E2eMcpStdioTransportTest : E2eAgentTest() {
      * through `env` (not `args`), which also pins that the agent forwards
      * `McpServer.Stdio.env` into the child's environment.
      */
-    private fun stdioServer(markerFile: File, extraEnv: Map<String, String> = emptyMap()): McpServer.Stdio =
+    private fun stdioServer(
+        markerFile: File,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): McpServer.Stdio =
         McpServer.Stdio(
             name = "mock-stdio",
             command = javaBinary,
@@ -37,6 +41,60 @@ class E2eMcpStdioTransportTest : E2eAgentTest() {
             env = listOf(EnvVariable("MOCK_MCP_MARKER", markerFile.absolutePath)) +
                     extraEnv.map { (name, value) -> EnvVariable(name, value) },
         )
+
+    @Test
+    fun `e2e stdio mcp server runs in the session cwd without the agent's secrets`() = runBlocking {
+        withE2eAgent(
+            "mcp-stdio-launch",
+            { MockOpenAiServer("unused", textOnly = true) },
+        ) {
+            // The agent process itself starts somewhere else, so the child's cwd
+            // can only match the session cwd if the agent sets it (issue #74).
+            val agentWorkingDir = Files.createTempDirectory("acp-agent-e2e-launch-cwd").toFile()
+            val markerFile = projectDir.toPath().resolve("marker.txt")
+            val process = startAgent(llmMock.port, stateHome, workingDir = agentWorkingDir)
+            val connection = connectProcess(process)
+            try {
+                connection.client.initialize(testClientInfo())
+                val session = connection.client.newSession(
+                    SessionCreationParameters(
+                        cwd = projectDir.absolutePath,
+                        mcpServers = listOf(
+                            stdioServer(markerFile.toFile(), mapOf("MOCK_MCP_PROBE" to "1")),
+                        ),
+                    ),
+                    ClientOperationsFactory { _, _ -> TestClientOperations() },
+                )
+                val events = collectPrompt(session, listOf(ContentBlock.Text("Hello")))
+                assertEndTurn(events)
+
+                val probe = markerLines(markerFile.toFile())
+                assertEquals(
+                    projectDir.canonicalPath,
+                    probe.single { it.startsWith("cwd=") }.removePrefix("cwd="),
+                    "a stdio MCP server must run in the session cwd, not the agent's own directory",
+                )
+                assertTrue(
+                    "openrouter_api_key=absent" in probe,
+                    "an MCP server must not inherit the agent's API key: $probe",
+                )
+                assertTrue("path=present" in probe, "the child environment must keep PATH: $probe")
+                println("[ok] the stdio MCP server ran in the session cwd and saw no agent secret")
+            } finally {
+                connection.close()
+                agentWorkingDir.deleteRecursively()
+            }
+        }
+    }
+
+    private suspend fun markerLines(markerFile: File): List<String> {
+        var lines = emptyList<String>()
+        awaitUntil(10_000) {
+            lines = if (markerFile.isFile) markerFile.readLines() else emptyList()
+            lines.count { it.contains('=') } >= 3
+        }
+        return lines
+    }
 
     @Test
     fun `e2e read-only annotated mcp tool runs without permission over stdio`() = runBlocking {

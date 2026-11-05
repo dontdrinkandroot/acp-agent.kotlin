@@ -160,10 +160,14 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # per-model endpoints cache (slug + display name)
     mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
                                      # mutating/kind/title), JsonObject->Any map
-    mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE)
+    mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE;
+                                     # stdio children get the session cwd + a built env
+                                     # allowlist, never the agent env - issues #74, #14)
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
                                      # model, reasoning, provider, toolOutcomes:
                                      # toolCallId -> completed|failed)
+    agent/SessionCwd.kt              # sessionCwdProblem: the cwd gate (absolute + existing
+                                     # directory, else -32602 at new/load/resume) - issue #74
     agent/SessionCoroutines.kt       # clientOrNull() + Content?.textOrNull() shared by the
                                      # session facade, prompt runner and session state
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
@@ -275,7 +279,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         StdioMcpMockServer.kt        # stdio MCP mock, run as a separate JVM (`main`): NDJSON
                                      # JSON-RPC on stdin/stdout, echoes the requested
                                      # protocolVersion, exits on stdin EOF; marker path + shadow
-                                     # mode via env (pins McpServer.Stdio.env forwarding)
+                                     # mode via env (pins McpServer.Stdio.env forwarding);
+                                     # MOCK_MCP_PROBE=1 records the launch context (cwd, key
+                                     # presence, PATH) into the marker - issues #74/#14
         ClientOperations.kt          # client session ops doubles: TestClientOperations
                                      # (records requests/notifications, allow_once) +
                                      # SuspendingPermissionOperations (stuck permission prompt)
@@ -339,7 +345,10 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # over StdioMcpMockServer: read-only prompt-free, unannotated
                                      # prompts + executes (marker written by the child process),
                                      # local-tool shadowing ignored with a warning while the local
-                                     # read_file still runs, unstartable server fails open
+                                     # read_file still runs, unstartable server fails open, and the
+                                     # launch contract (issues #74/#14): the child runs in the
+                                     # session cwd while the agent itself runs elsewhere and sees
+                                     # no agent secret (probe marker)
         E2eMcpSseTransportTest.kt    # classic SSE transport end-to-end (issue #69) over
                                      # MockMcpSseServer: read-only prompt-free, unannotated
                                      # prompts + executes, McpServer.Sse.headers forwarded
@@ -409,6 +418,24 @@ Config comes from environment variables:
 
 ## Features
 
+- **Session cwd gate** (issue #74): the `cwd` of `session/new`/`session/load`/`session/resume`
+  is validated by `sessionCwdProblem` (`agent/SessionCwd.kt`: absolute, existing, a directory -
+  an unparseable path is a clean refusal, not a throw) and refused with `-32602` before a
+  session exists, in `AgentSupportImpl` (the same layer that already answers invalid ids and
+  the load/resume cwd mismatch; on load/resume the check runs *after* the record lookup, so an
+  unknown id keeps its own refusal text). The cwd *is* the session's file context - every path-scoped
+  tool resolves against it, and `bash`/`run` and stdio MCP children start there - so without
+  the gate a session came into existence and failed per tool call, while a stdio MCP server
+  silently inherited the agent's own directory. Only a gate, no canonicalization: the value
+  stays the session's identity (persisted and compared verbatim), so symlinked or
+  differently-spelled paths are deliberately not folded. Consequence, deliberately accepted:
+  a session whose project directory is gone can no longer be loaded/resumed (`session/list`
+  and `session/delete` still work, so cleanup stays possible). `AgentSupportImpl` takes the
+  check as a constructor seam (`cwdProblem`, default `::sessionCwdProblem`) so lifecycle
+  tests can drive synthetic cwds; production always checks the filesystem. Pinned by
+  `SessionCwdTest` (unit), `SessionLifecycleTest` (`createSession`, `loadSession` and
+  `resumeSession` refuse, the record survives a refusal) and `E2eSessionPersistenceTest`
+  (black-box `-32602`, no record left behind).
 - **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
   `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
   record); `session/cancel` is coroutine cancellation. **An ended session refuses work**
@@ -998,7 +1025,27 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   responses, `POST /messages` answers 202 - both required by `SseClientTransport`). The
   transport-specific scenarios pin one thing beyond the shared permission behavior each:
   `McpServer.Stdio.env` reaching the child environment (stdio) and
-  `McpServer.Sse.headers` reaching the server on the SSE request (SSE).
+  `McpServer.Sse.headers` reaching the server on the SSE request (SSE). **A stdio child is started like every other
+  session-scoped child** (issues #74, #14):
+  its working directory is the session `cwd` (`ProcessBuilder.directory`, the same
+  workspace `bash`/`run` get - never the directory the IDE happened to spawn the agent in,
+  which only coincides in the single-project case), and its environment is **built, not
+  inherited**: `mcpChildEnvironment` (`mcp/McpConnector.kt`) keeps an allowlist of process
+  basics (`PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LC_ALL`/`LC_CTYPE`, `TERM`, `TZ`,
+  `USER`, `LOGNAME`) and applies the client's `McpServer.Stdio.env` entries last, so a
+  server declaration can set anything (that per-server `env` is the deliberate escape
+  hatch, mirroring how the docker launcher keeps `OPENROUTER_API_KEY` out of the agent env
+  in the first place - there is no process-wide passthrough knob, which would be a second
+  allowlist to keep in sync and a session-wide grant). Everything else the agent env
+  carries - secrets, `OPENROUTER_*`, `ACP_*`, `DDR_ACP_*`, IDE internals - stays out: a
+  server is spawned automatically at `session/new`, before any permission decision, so an
+  inherited environment is an unreviewed grant. `bash`/`run` deliberately keep the inherited
+  env (they are permission-gated per command and are the user's own shell). Pinned by
+  `McpConnectorTest` (allowlist, secrets excluded, client entries added and winning) and
+  black-box by the `E2eMcpStdioTransportTest` launch scenario, which starts the *agent*
+  from a different directory than the session `cwd` and reads the child's reported cwd +
+  key presence back out of the marker file (without the different agent directory the pin
+  would hold trivially).
   The advertised tool schema is the server's `inputSchema` serialized **verbatim**
   via the SDK's own `McpJson` (`mcp/McpBridge.kt`), so `required`, `$defs` and
   `$schema` round-trip losslessly and the LLM knows which MCP arguments are
@@ -1300,6 +1347,13 @@ stays a task input instead of a stale constant.
   an unknown tool call, then `session/load` pins both replayed `tool_call_update`s
   as FAILED with their denial text (was the issue #5 blanket-COMPLETED bug) and
   the `update_plan` scenario pins the successful call replaying COMPLETED.
+  The **cwd gate** (issue #74) is pinned at the unit level (`SessionCwdTest`:
+  absolute/existing/directory, plus the unparseable-path refusal;
+  `SessionLifecycleTest`: `createSession` refuses and leaves no record; `loadSession`/
+  `resumeSession` refuse while the record survives, and an unknown id keeps its own
+  refusal) and
+  black-box in `E2eSessionPersistenceTest` (`session/new` with a missing path and
+  with a regular file as cwd both fail with invalid params, no record appears).
   The `session/list` `updatedAt` shape is pinned twice: unit-level in
   `SessionLifecycleTest` (a fixed `Europe/Berlin` zone renders summer/winter offsets,
   `+00:00` on a UTC zone, the parsed instant always round-trips - issue #22) and
@@ -1377,7 +1431,8 @@ the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
 `DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
 per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`; issue #55's
 absent-vs-unreadable split is pinned in `WriteFileToolTest`, the store's regular-files-only
-guard in `FileStoreTest`. The
+guard in `FileStoreTest`, and the stdio MCP launch contract (env allowlist + client entries
+winning) in `McpConnectorTest`. The
 client fs-proxy windowing contract (issue #6: no phantom footer past EOF, whole-file
 fallback for limit-ignoring clients, EOF-probe arguments + conservative probe-failure
 fallback) is pinned in `PermissionAndFileStoreTest` (strict `SlicingFsClient` /

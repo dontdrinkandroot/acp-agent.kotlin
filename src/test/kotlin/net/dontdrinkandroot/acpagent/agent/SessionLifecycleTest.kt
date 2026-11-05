@@ -41,11 +41,20 @@ class SessionLifecycleTest {
         title: String = "Fix the bug",
     ) = SessionRecord(sessionId = sessionId, cwd = cwd, mode = mode, title = title, updatedAt = 1_700_000_000_000)
 
-    private fun support(zoneId: ZoneId = ZoneId.of("UTC")): Pair<AgentSupportImpl, DelegatingSessionFactory> {
+    /**
+     * The lifecycle scenarios drive sessions with synthetic working directories
+     * (`/project`), so the cwd gate is defaulted off here; the gate itself is
+     * pinned by `SessionCwdTest` and by the `createSession rejects a cwd` test
+     * below, which passes the real check.
+     */
+    private fun support(
+        zoneId: ZoneId = ZoneId.of("UTC"),
+        cwdProblem: (String) -> String? = { null },
+    ): Pair<AgentSupportImpl, DelegatingSessionFactory> {
         val factory = DelegatingSessionFactory { sessionId, cwd, restored, replay ->
             session(sessionId, cwd, restored, replay)
         }
-        return AgentSupportImpl(factory, store, zoneId) to factory
+        return AgentSupportImpl(factory, store, zoneId, cwdProblem) to factory
     }
 
     @Test
@@ -393,8 +402,59 @@ class SessionLifecycleTest {
         val support = AgentSupportImpl(
             DelegatingSessionFactory { sessionId, cwd, restored, replay -> session(sessionId, cwd, restored, replay) },
             emptyStore,
+            cwdProblem = { null },
         )
         assertTrue(support.listSessions(null, null, null).toList().isEmpty())
+    }
+
+    @Test
+    fun `loadSession and resumeSession refuse an unusable cwd`() = runBlocking {
+        val (support, _) = support(cwdProblem = ::sessionCwdProblem)
+        store.save(record())
+        val missing = Files.createTempDirectory("acp-agent-lifecycle-test").resolve("gone").toFile().absolutePath
+
+        for (block in listOf<suspend () -> Unit>(
+            {
+                support.loadSession(
+                    SessionId("sess_0000000000000001"),
+                    SessionCreationParameters(missing, emptyList())
+                )
+            },
+            {
+                support.resumeSession(
+                    SessionId("sess_0000000000000001"),
+                    SessionCreationParameters(missing, emptyList())
+                )
+            },
+        )) {
+            val error = assertFailsWith<JsonRpcException> { block() }
+            assertEquals(JsonRpcErrorCode.INVALID_PARAMS.code, error.code)
+            assertTrue(
+                error.message.orEmpty().contains("does not exist"),
+                "the refusal must name the cwd, got: ${error.message}",
+            )
+        }
+        assertTrue(support.listSessions(null, null, null).toList().size == 1, "the record must survive a refusal")
+
+        // An unknown id keeps its own refusal instead of reporting a cwd problem.
+        val unknown = assertFailsWith<JsonRpcException> {
+            support.loadSession(SessionId("sess_9999999999999999"), SessionCreationParameters(missing, emptyList()))
+        }
+        assertTrue(unknown.message.orEmpty().contains("unknown session"), unknown.message)
+    }
+
+    @Test
+    fun `createSession rejects a cwd that is not an existing directory`() = runBlocking {
+        val (support, _) = support(cwdProblem = ::sessionCwdProblem)
+        val missing = Files.createTempDirectory("acp-agent-lifecycle-test").resolve("gone").toFile().absolutePath
+
+        for (cwd in listOf("", "relative/project", missing)) {
+            val error = assertFailsWith<JsonRpcException> {
+                support.createSession(SessionCreationParameters(cwd = cwd, mcpServers = emptyList()))
+            }
+            assertEquals(JsonRpcErrorCode.INVALID_PARAMS.code, error.code, "cwd \"$cwd\" must be refused")
+        }
+        assertTrue(support.listSessions(null, null, null).toList().isEmpty(), "a refused cwd must not create a record")
     }
 }
 

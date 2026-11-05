@@ -76,8 +76,8 @@ abstract class E2eAgentTest {
         val stateHome: File get() = stateDir.toFile()
         val sessionsStoreDir: Path = stateDir.resolve("ddr-acp-agent").resolve("sessions")
 
-        suspend fun connect(extraEnv: Map<String, String> = emptyMap()): AgentConnection =
-            startConnectedAgent(llmMock.port, stateHome, extraEnv)
+        suspend fun connect(extraEnv: Map<String, String> = emptyMap(), workingDir: File? = null): AgentConnection =
+            startConnectedAgent(llmMock.port, stateHome, extraEnv, workingDir)
     }
 
     /**
@@ -117,10 +117,18 @@ abstract class E2eAgentTest {
     internal fun startAgent(
         llmPort: Int,
         xdgStateHome: File? = null,
-        extraEnv: Map<String, String> = emptyMap()
+        extraEnv: Map<String, String> = emptyMap(),
+        /**
+         * The agent process's own working directory. Scenarios that pin a
+         * session-scoped child process (stdio MCP servers, issue #74) must set
+         * this to a directory other than the session `cwd`, otherwise the
+         * assertion holds trivially.
+         */
+        workingDir: File? = null,
     ): Process {
         return ProcessBuilder(binaryPath)
             .apply {
+                workingDir?.let { directory(it) }
                 environment()["OPENROUTER_API_KEY"] = "sk-test-phase4"
                 environment()["OPENROUTER_BASE_URL"] = "http://127.0.0.1:$llmPort"
                 environment()["OPENROUTER_MODEL"] = "test-model"
@@ -145,7 +153,8 @@ abstract class E2eAgentTest {
         llmPort: Int,
         xdgStateHome: File,
         extraEnv: Map<String, String> = emptyMap(),
-    ): AgentConnection = connectProcess(startAgent(llmPort, xdgStateHome, extraEnv))
+        workingDir: File? = null,
+    ): AgentConnection = connectProcess(startAgent(llmPort, xdgStateHome, extraEnv, workingDir))
 
     /**
      * Wraps an already started agent [process] in the real ACP client. Split out

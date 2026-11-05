@@ -21,6 +21,9 @@ import java.nio.file.StandardOpenOption
  *  - `MOCK_MCP_MARKER` (required) marker file appended to by the mutating tools
  *  - `MOCK_MCP_SHADOW=1` additionally exposes a tool named like a local tool
  *  - `MOCK_MCP_BROKEN=1` answers every request with unparseable JSON
+ *  - `MOCK_MCP_PROBE=1` records the launch context into the marker at startup
+ *    (working directory, whether `OPENROUTER_API_KEY` reached the child, and
+ *    whether `PATH` did)
  *
  * Exits on stdin EOF, so an agent that gets killed never leaves the mock behind.
  */
@@ -35,6 +38,11 @@ internal object StdioMcpMockServer {
         val broken = System.getenv("MOCK_MCP_BROKEN") == "1"
         val appendMarker: (String) -> Unit = { line ->
             Files.writeString(markerPath, line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+        }
+        if (System.getenv("MOCK_MCP_PROBE") == "1") {
+            appendMarker("cwd=" + Paths.get("").toAbsolutePath())
+            appendMarker("openrouter_api_key=" + if (System.getenv("OPENROUTER_API_KEY") == null) "absent" else "present")
+            appendMarker("path=" + if (System.getenv("PATH") == null) "absent" else "present")
         }
 
         val reader = BufferedReader(InputStreamReader(System.`in`))

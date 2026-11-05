@@ -141,7 +141,15 @@ Tips:
 - `FS_PROXY_ENABLED: 0` disables the editor fs proxy (useful when the proxy
   misbehaves in your client); the agent then reads/writes files directly.
 - The project working directory is whatever the IDE/editor passes as `cwd` —
-  normally the opened project root.
+  normally the opened project root. It must be an existing directory: a session
+  whose `cwd` is missing or is not a directory is refused instead of running
+  tools against the wrong tree.
+- stdio MCP servers declared in the session start **in that project directory**
+  and only see a small, fixed set of environment variables (`PATH`, `HOME`,
+  `TMPDIR`, locale, `TERM`, `TZ`, `USER`). Anything else a server needs — a token,
+  a project path — belongs in its own `env` entry in the MCP server
+  configuration; secrets from the agent's environment are deliberately not
+  inherited.
 
 ## Configuration
 

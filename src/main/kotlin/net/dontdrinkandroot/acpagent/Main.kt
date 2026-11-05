@@ -53,14 +53,16 @@ public fun runAgent() {
         // refuses the session (issue #10), so the trust domain is never widened
         // silently and never silently narrowed.
         val scratchDir = prepareScratchDirectory(config.scratchDir)
+        // The session's workspace: the base for every path-scoped tool, the
+        // working directory of `bash`/`run` and of stdio MCP servers (issue #74).
+        val sessionCwd = restored?.cwd ?: parameters.cwd
         val registry = ToolRegistry().apply {
             registerAll(localRegistry.all())
-            val cwd = restored?.cwd ?: parameters.cwd
-            registerAll(sessionTools(cwd))
+            registerAll(sessionTools(sessionCwd))
         }
         val connections = mutableListOf<McpServerConnection>()
         suspend fun connect(server: McpServer) {
-            val connection = connectMcpServer(server, createMcpClientInfo())
+            val connection = connectMcpServer(server, createMcpClientInfo(), sessionCwd)
             runCatching { connection.listTools() }
                 .onSuccess { tools ->
                     tools.forEach { tool ->
@@ -107,7 +109,7 @@ public fun runAgent() {
         val initialProviderOptions = providerRouting.providersFor(initialModelId(restored, config))
         return AgentSessionImpl(
             sessionId = sessionId,
-            cwd = restored?.cwd ?: parameters.cwd,
+            cwd = sessionCwd,
             toolRegistry = registry,
             config = config,
             scratchDir = scratchDir,

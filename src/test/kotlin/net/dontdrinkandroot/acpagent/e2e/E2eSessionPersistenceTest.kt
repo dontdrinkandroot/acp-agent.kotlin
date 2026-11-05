@@ -487,6 +487,41 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
     }
 
     /**
+     * The session cwd is the workspace of every tool and of every stdio MCP
+     * child, so `session/new` refuses a cwd that does not name an existing
+     * directory instead of producing a session that fails per call (issue #74).
+     */
+    @Test
+    fun `e2e session creation refuses a cwd that is not an existing directory`() = runBlocking {
+        withE2eAgent("cwd-gate", { MockOpenAiServer("unused", textOnly = true) }) {
+            val connection = connect()
+            try {
+                connection.client.initialize(testClientInfo())
+                val notADirectory = projectDir.resolve("marker.txt").also { it.writeText("not a directory") }
+                for (cwd in listOf(projectDir.resolve("does-not-exist").absolutePath, notADirectory.absolutePath)) {
+                    val error = assertFailsWith<AcpExpectedError>("cwd '$cwd' must be refused") {
+                        connection.client.newSession(
+                            SessionCreationParameters(cwd = cwd, mcpServers = emptyList()),
+                            ClientOperationsFactory { _, _ -> TestClientOperations() },
+                        )
+                    }
+                    assertTrue(
+                        error.message.orEmpty().contains("cwd"),
+                        "the refusal must name the cwd, got: ${error.message}",
+                    )
+                }
+                assertTrue(
+                    connection.client.listSessions().toList().isEmpty(),
+                    "a refused cwd must not leave a session record",
+                )
+                println("[ok] an unusable session cwd is refused with invalid params")
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    /**
      * Pins the spec MUST on the raw wire (issue #59): for the `session/load` the
      * agent answered last on [connection], every `session/update` notification of
      * [sessionId] must appear *before* the response line carrying the `session/load`
