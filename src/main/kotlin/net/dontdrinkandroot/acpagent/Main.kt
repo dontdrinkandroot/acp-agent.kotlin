@@ -24,6 +24,7 @@ import net.dontdrinkandroot.acpagent.mcp.createMcpClientInfo
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.localTools
+import net.dontdrinkandroot.acpagent.tools.prepareScratchDirectory
 import net.dontdrinkandroot.acpagent.tools.sessionTools
 import java.time.LocalDate
 
@@ -47,6 +48,11 @@ public fun runAgent() {
         parameters: SessionCreationParameters,
         replay: Boolean,
     ): AgentSessionImpl {
+        // Prepare (create + verify) the read-trusted scratch directory before
+        // anything else: a scratch directory that cannot be created or verified
+        // refuses the session (issue #10), so the trust domain is never widened
+        // silently and never silently narrowed.
+        val scratchDir = prepareScratchDirectory(config.scratchDir)
         val registry = ToolRegistry().apply {
             registerAll(localRegistry.all())
             val cwd = restored?.cwd ?: parameters.cwd
@@ -104,6 +110,7 @@ public fun runAgent() {
             cwd = restored?.cwd ?: parameters.cwd,
             toolRegistry = registry,
             config = config,
+            scratchDir = scratchDir,
             llm = llm,
             providerRouting = providerRouting,
             initialProviderOptions = initialProviderOptions,

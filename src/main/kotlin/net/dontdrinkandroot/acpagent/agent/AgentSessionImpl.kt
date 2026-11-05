@@ -30,6 +30,14 @@ internal class AgentSessionImpl(
     private val cwd: String,
     private val toolRegistry: ToolRegistry,
     private val config: Config,
+    /**
+     * The prepared (created + verified) scratch directory, read-trusted like
+     * [Config.extraMounts] but kept separate: the two lists are merged only
+     * where the trust roots are consumed (permission decision and system
+     * prompt), never in the config surface. Callers pass the *prepared* path
+     * (`prepareScratchDirectory`), not the configured one.
+     */
+    private val scratchDir: String? = null,
     private val llm: LlmClient,
     private val providerRouting: ProviderRouting? = null,
     private val initialProviderOptions: List<ProviderOption>? = null,
@@ -93,11 +101,23 @@ internal class AgentSessionImpl(
         closeResources = { runBlocking { closeResources() } },
     )
 
+    /**
+     * Every read-trust root of this session: the user-configured
+     * `ACP_EXTRA_MOUNTS` plus the agent's own scratch directory (issue #10).
+     * The single merge point - [permissionNeeded] and the system prompt both
+     * consume this, so the two lists cannot drift apart.
+     *
+     * Merged here (not at the call sites) so a session that was never handed a
+     * prepared scratch directory still trusts `extraMounts`; forgetting the
+     * parameter narrows the trust domain instead of widening it.
+     */
+    private val trustedReadPaths: List<String> = config.extraMounts + listOfNotNull(scratchDir)
+
     private val systemPrompt = SystemPromptBuilder(
         cwd,
         todayProvider,
         runConfigsProvider = { loadRunConfigs(cwd) },
-        trustedReadPaths = config.extraMounts,
+        trustedReadPaths = trustedReadPaths,
         excludedFileGlobs = FileAccessExclusions.DEFAULT.globs(),
     )
 
@@ -115,7 +135,7 @@ internal class AgentSessionImpl(
         initialProviderOptions = initialProviderOptions,
     )
 
-    private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, config.extraMounts)
+    private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, trustedReadPaths)
 
     private val promptRunner = PromptRunner(
         state = state,

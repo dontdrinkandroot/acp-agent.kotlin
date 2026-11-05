@@ -17,9 +17,10 @@ internal class SystemPromptBuilder(
     private val todayProvider: () -> String,
     private val runConfigsProvider: () -> List<RunConfig> = { emptyList() },
     /**
-     * Absolute read-trusted paths (`ACP_EXTRA_MOUNTS`, e.g. the extra docker
-     * mounts): reads under them never prompt. Static for the process lifetime,
-     * so the prompt can state them once.
+     * Absolute read-trusted paths: the user-configured `ACP_EXTRA_MOUNTS` (e.g.
+     * the extra docker mounts) plus the agent's own scratch directory. Reads
+     * under them never prompt. Static for the process lifetime, so the prompt
+     * can state them once.
      */
     private val trustedReadPaths: List<String> = emptyList(),
     /**
@@ -143,9 +144,10 @@ internal class SystemPromptBuilder(
     }
 
     /**
-     * Static section naming the read-trusted paths (`ACP_EXTRA_MOUNTS`): reads
-     * under them run without a permission prompt, writes and mutations do not,
-     * so the model does not have to discover that asymmetry per call.
+     * Static section naming the read-trusted paths (`ACP_EXTRA_MOUNTS` and the
+     * agent's scratch directory): reads under them run without a permission
+     * prompt, writes and mutations do not, so the model does not have to
+     * discover that asymmetry per call.
      */
     private fun trustedReadPathsSection(paths: List<String>): String {
         if (paths.isEmpty()) return ""

@@ -20,11 +20,31 @@ public data class Config(
      * prompt outside the cwd.
      */
     val extraMounts: List<String> = emptyList(),
+    /**
+     * The agent's own scratch directory (env `DDR_ACP_AGENT_SCRATCH_DIR`,
+     * default `/tmp/ddr-acp-agent`): read-trusted like [extraMounts], so the
+     * non-mutating path tools run there without a permission prompt in every
+     * mode. Deliberately *not* part of [extraMounts] - that list is the
+     * user-configured one; the two are merged only where the trust roots are
+     * consumed (see `Main.runAgent`).
+     *
+     * This is the *configured* value. Session assembly prepares it (creates +
+     * verifies it) and passes the resulting real path separately, so this field
+     * never becomes a trust root unverified.
+     */
+    val scratchDir: String = DEFAULT_SCRATCH_DIR,
 ) {
     public companion object {
         private const val DEFAULT_MODEL = "openrouter/auto"
         private const val DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
         private const val DEFAULT_BASH_TIMEOUT_SECONDS = 600
+
+        /**
+         * Default scratch directory. A literal, not derived from
+         * `java.io.tmpdir`, so the documented path is stable; the env var
+         * overrides it (e2e scenarios point it at their own fixture).
+         */
+        internal const val DEFAULT_SCRATCH_DIR = "/tmp/ddr-acp-agent"
 
         /**
          * Upper bound for [bashTimeoutSeconds]: a configured value is clamped so
@@ -58,7 +78,29 @@ public data class Config(
                 maxTurnRequests = env.positiveInt("ACP_MAX_TURN_REQUESTS", DEFAULT_MAX_TURN_REQUESTS),
                 webFetchAllowPrivate = env["ACP_WEB_FETCH_ALLOW_PRIVATE"] == "1",
                 extraMounts = parseExtraMounts(env["ACP_EXTRA_MOUNTS"]),
+                scratchDir = scratchDir(env["DDR_ACP_AGENT_SCRATCH_DIR"]),
             )
+        }
+
+        /**
+         * Resolves the scratch directory: the default when unset/blank, else
+         * the configured value. Shape-strict only - it must be absolute and
+         * must not be the filesystem root; the trust check against the
+         * directory's actual type/owner happens when it is prepared.
+         */
+        internal fun scratchDir(raw: String?): String {
+            val value = raw?.trim().orEmpty()
+            if (value.isEmpty()) return DEFAULT_SCRATCH_DIR
+            require(value.startsWith("/")) {
+                "DDR_ACP_AGENT_SCRATCH_DIR must be an absolute path, got '$value'"
+            }
+            // Normalized before the root check, so a "/tmp/.." spelling cannot
+            // slip past it and turn the whole filesystem into a trust root.
+            val normalized = java.nio.file.Path.of(value).normalize().toString()
+            require(normalized != "/") {
+                "DDR_ACP_AGENT_SCRATCH_DIR must not be the filesystem root"
+            }
+            return normalized
         }
 
         /**

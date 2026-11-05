@@ -271,4 +271,65 @@ class ConfigParseTest {
                 .extraMounts,
         )
     }
+
+    @Test
+    fun `scratch directory defaults to the literal path and is overridable`() {
+        assertEquals(
+            "/tmp/ddr-acp-agent",
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).scratchDir,
+        )
+        assertEquals(
+            "/tmp/ddr-acp-agent",
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "   ")).scratchDir,
+        )
+        assertEquals(
+            "/var/scratch",
+            Config.fromEnv(
+                mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch/")
+            ).scratchDir,
+        )
+    }
+
+    @Test
+    fun `scratch directory override must be absolute and must not be the root`() {
+        val relative = assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "scratch"))
+        }
+        assertEquals(
+            "DDR_ACP_AGENT_SCRATCH_DIR must be an absolute path, got 'scratch'",
+            relative.message,
+        )
+        // Normalized before the root check, so a dot-segment spelling cannot
+        // turn the whole filesystem into a trust root.
+        for (root in listOf("/", "/tmp/..", "//")) {
+            assertFailsWith<IllegalArgumentException>("expected '$root' to be refused") {
+                Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to root))
+            }
+        }
+    }
+
+    @Test
+    fun `scratch directory is normalized before the root check`() {
+        // A dot-segment spelling must not survive into the trust root: it is
+        // normalized, so "/tmp/x/../y" becomes "/tmp/y" and trailing slashes go.
+        assertEquals(
+            "/tmp/y",
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/x/../y/"))
+                .scratchDir,
+        )
+        assertEquals(
+            "/tmp/ddr-acp-agent",
+            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/ddr-acp-agent/."))
+                .scratchDir,
+        )
+    }
+
+    @Test
+    fun `scratch directory is not part of the extra mounts`() {
+        val config = Config.fromEnv(
+            mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch")
+        )
+        assertEquals(emptyList(), config.extraMounts)
+        assertEquals("/var/scratch", config.scratchDir)
+    }
 }

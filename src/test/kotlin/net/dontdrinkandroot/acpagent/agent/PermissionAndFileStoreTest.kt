@@ -116,6 +116,55 @@ class PermissionAndFileStoreTest {
     }
 
     @Test
+    fun `scratch directory is a read-trust root in every mode and writes still prompt`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val scratch = prepareScratchDirectory(Files.createTempDirectory("acp-scratch").resolve("agent").toString())
+        val file = java.nio.file.Path.of(scratch).resolve("notes.txt")
+        Files.writeString(file, "scratch")
+        val trustedPaths = listOf(scratch)
+        // Issue #10: reads/searches are prompt-free there, writes are not.
+        assertEquals(false, permissionNeeded(dir.toString(), ReadFileTool(), pathArgs(file.toString()), trustedPaths))
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                ListDirTool(),
+                pathArgs(file.parent.toString()),
+                trustedPaths,
+            ),
+        )
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GrepTool(),
+                buildJsonObject { put("pattern", "scratch"); put("path", file.toString()) },
+                trustedPaths,
+            ),
+        )
+        assertEquals(
+            false,
+            permissionNeeded(
+                dir.toString(),
+                GlobTool(),
+                buildJsonObject { put("pattern", "*.txt"); put("path", file.parent.toString()) },
+                trustedPaths,
+            ),
+        )
+        assertEquals(true, permissionNeeded(dir.toString(), WriteFileTool(), pathArgs(file.toString()), trustedPaths))
+        // The trust is confined to the directory: a sibling of it is not covered.
+        assertEquals(
+            true,
+            permissionNeeded(
+                dir.toString(),
+                ReadFileTool(),
+                pathArgs(java.nio.file.Path.of(scratch).resolveSibling("elsewhere.txt").toString()),
+                trustedPaths,
+            ),
+        )
+    }
+
+    @Test
     fun `symlink inside the session cwd pointing into a trusted read path is prompt-free`() {
         val dir = Files.createTempDirectory("acp-perm")
         val trusted = Files.createTempDirectory("acp-trusted")

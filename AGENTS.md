@@ -207,6 +207,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
+  tools/ScratchDirectory.kt        # prepareScratchDirectory: creates/verifies the read-trusted
+                                     # scratch directory (0700, symlink/type/owner checks, mode repair)
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
     tools/ToolCatalog.kt             # localTools() + sessionTools(cwd): the production tool list
                                      # (Main.kt assembles the registries from it; iterated by the
@@ -311,8 +313,11 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + allow_always session grant (one prompt for two prompts'
                                      # out-of-project reads, issue #65) + trusted read paths
                                      # (ACP_EXTRA_MOUNTS: read prompt-free, write
-                                     # still prompts) + move/delete tools (in-project without prompt,
-                                     # out-of-project move destination prompts)
+                                     # still prompts) + the scratch directory (plan-mode
+                                     # grep prompt-free, a symlinked scratch dir refusing
+                                     # session creation, issue #10) + move/delete tools
+                                     # (in-project without prompt, out-of-project move
+                                     # destination prompts)
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry,
                                      # the .ai/run.json rule is hidden too (issue #70)
@@ -393,6 +398,14 @@ Config comes from environment variables:
   prompt even though they lie outside the cwd; writes/moves/deletes still prompt. The
   docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`; see Features /
   Permissions)
+- `DDR_ACP_AGENT_SCRATCH_DIR` (default `/tmp/ddr-acp-agent`; the agent's own scratch
+  directory, read-trusted like the extra mounts but a separate config field - it is never
+  part of `ACP_EXTRA_MOUNTS`. Must be absolute and must not be `/`. Created `0700` and
+  verified at session assembly: a symlink, a non-directory or a foreign-owned directory
+  fails session creation, a wider mode is repaired to `0700`. Never cleaned up. The docker
+  launcher forwards it verbatim and never mounts it - inside the container the path lives
+  on the ephemeral `/tmp` tmpfs, so scratch content is per-container-session. See
+  Features / Permissions)
 
 ## Features
 
@@ -861,7 +874,26 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
   targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
   against the session cwd so a symlink escape still gates); writes/moves/deletes under them
-  always prompt. The paths are also surfaced as a static "Trusted read paths" system-prompt
+  always prompt. **The agent's own scratch directory is read-trusted the same way**
+  (`Config.scratchDir`, env `DDR_ACP_AGENT_SCRATCH_DIR`, default `/tmp/ddr-acp-agent`,
+  issue #10): `AgentSessionImpl` merges `config.extraMounts + scratchDir` into one
+  `trustedReadPaths` list - the single merge point, consumed by `permissionNeeded` and the
+  system prompt - so the config surface keeps the two apart (the scratch dir is never part of
+  `extraMounts`). It is prepared by `prepareScratchDirectory` (`tools/ScratchDirectory.kt`)
+  at session assembly: created `0700`, and an existing path is verified rather than assumed
+  because `isWithinAnyRoot` resolves the root *through* symlinks - a symlink, a
+  non-directory or a foreign-owned directory fails session creation, a directory we own with
+  a wider mode is repaired to `0700`. The owner check compares `UserPrincipal`s (a probe file
+  in the temp dir is created and its owner read back), never `user.name`, which resolves to
+  `?` in some containers. The directory is never cleaned up; writes there still prompt, so
+  plan mode stays read-only. Preparation requires a POSIX filesystem (mode + ownership are
+  POSIX concepts) and resolves the directory's real path, so a symlinked *parent* cannot
+  smuggle the trust root elsewhere. Pinned by `ScratchDirectoryTest`, `ConfigTest` (default,
+  override, absolute/non-root validation, normalization, "not part of extraMounts"),
+  `PermissionAndFileStoreTest` (read/grep prompt-free, write still prompts, siblings not
+  covered) and `E2eFileStoreTest` (plan-mode grep prompt-free, path surfaced in the prompt,
+  a symlinked scratch directory refusing `session/new`).
+  The paths are also surfaced as a static "Trusted read paths" system-prompt
   section (`SystemPromptBuilder`, a `## Trusted read paths` heading + one bullet per path)
   so the model knows reads there are prompt-free. MCP tools
   always prompt **unless** the server annotates the
@@ -1169,7 +1201,8 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
   `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-    `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE`/`TZ` forwarded (the API key
+    `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE`/
+    `DDR_ACP_AGENT_SCRATCH_DIR`/`TZ` forwarded (the API key
     excepted: it
   is staged as a `0600` file or taken from
   `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
@@ -1427,7 +1460,8 @@ Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher
 (sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
 OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
 `OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
-identity, pull fallback, `--network host` as the default + `--add-host=host.docker.internal:(127.0.0.1|host-gateway)`
+identity, pull fallback, `DDR_ACP_AGENT_SCRATCH_DIR` forwarded verbatim without a mount,
+`--network host` as the default + `--add-host=host.docker.internal:(127.0.0.1|host-gateway)`
 depending on the network mode (always present)
 
 + `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, Gradle
@@ -1435,7 +1469,6 @@ depending on the network mode (always present)
   version-bound `transforms`/`generated-gradle-jars` incl. wrapper-dist-derived
   versions, per-version tmpfs, #67), cache sharing (issue #51): explicit
   cache dir identity-mounted
-
 + env forwarded verbatim, forwarded without a mount when inside the project dir,
   `UV_LINK_MODE` forwarding, `TZ` forwarding (the agent's rendered timestamps follow
   the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/

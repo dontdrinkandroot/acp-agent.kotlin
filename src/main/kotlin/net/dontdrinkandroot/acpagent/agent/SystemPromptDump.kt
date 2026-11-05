@@ -7,7 +7,7 @@ import net.dontdrinkandroot.acpagent.tools.RunConfig
 /** Example working directory of the dump - deliberately not the real one. */
 private const val EXAMPLE_CWD = "/home/dev/projects/example-project"
 
-private val exampleTrustedReadPaths = listOf("/srv/data", "/mnt/scratch")
+private val exampleTrustedReadPaths = listOf("/srv/data", "/mnt/scratch", "/tmp/ddr-acp-agent")
 
 private val exampleExcludedFileGlobs = listOf(".env*.local", ".ai/run.json", "secrets/**")
 

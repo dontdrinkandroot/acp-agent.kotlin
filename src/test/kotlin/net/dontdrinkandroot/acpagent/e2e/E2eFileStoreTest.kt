@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.model.*
+import com.agentclientprotocol.protocol.JsonRpcException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -10,10 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Black-box path-aware permissions and the client fs proxy: in-project
@@ -23,6 +21,89 @@ import kotlin.test.assertTrue
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eFileStoreTest : E2eAgentTest() {
+
+    @Test
+    fun `e2e an untrusted scratch directory refuses session creation`() = runBlocking {
+        val fixtureDir = Files.createTempDirectory("acp-agent-e2e-scratch-refused").toFile()
+        try {
+            val target = fixtureDir.resolve("target").apply { mkdirs() }
+            val link = fixtureDir.resolve("scratch")
+            Files.createSymbolicLink(link.toPath(), target.toPath())
+            withE2eAgent("scratch-refused", MockOpenAiServer("unused")) {
+                val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to link.absolutePath))
+                try {
+                    connection.client.initialize(testClientInfo())
+                    // Issue #10: the scratch directory is a read-trust root, so an
+                    // unverifiable one refuses the session instead of being trusted.
+                    val error =
+                        assertFailsWith<JsonRpcException>("a symlinked scratch directory must refuse the session") {
+                            newSession(connection.client, projectDir, TestClientOperations())
+                        }
+                    assertTrue(
+                        error.message.contains("is a symbolic link"),
+                        "the refusal must name the cause: ${error.message}",
+                    )
+                    println("[ok] a symlinked scratch directory refused session creation")
+                } finally {
+                    connection.close()
+                }
+            }
+        } finally {
+            fixtureDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `e2e read and grep inside the scratch directory run prompt-free in plan mode`() = runBlocking {
+        val scratchDir = Files.createTempDirectory("acp-agent-e2e-scratch").toFile()
+        try {
+            val notes = scratchDir.resolve("notes.txt")
+            notes.writeText("scratch evidence")
+            withE2eAgent(
+                "scratch-read",
+                MockOpenAiServer(
+                    "unused",
+                    toolCall = MockToolCall(
+                        "grep",
+                        buildJsonObject {
+                            put("pattern", "evidence")
+                            put("path", notes.absolutePath)
+                        },
+                    ),
+                ),
+            ) {
+                val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to scratchDir.absolutePath))
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations()
+                    val session = newSession(connection.client, projectDir, ops)
+                    // Plan mode is the default: the scratch directory is read-trusted there too.
+                    val events = collectPrompt(session, listOf(ContentBlock.Text("Search the scratch notes")))
+                    assertEndTurn(events)
+                    assertTrue(
+                        ops.permissionRequests.isEmpty(),
+                        "a search inside the scratch directory must not ask permission",
+                    )
+                    assertTrue(llmMock.requestBodies.size >= 2, "the turn must continue after the search")
+                    assertTrue(
+                        llmMock.requestBodies[1].contains("scratch evidence"),
+                        "the scratch search must have executed and fed the LLM",
+                    )
+                    // The system prompt surfaces the scratch directory as a trusted read path.
+                    assertTrue(
+                        llmMock.requestBodies[0].contains("Trusted read paths") &&
+                                llmMock.requestBodies[0].contains(scratchDir.absolutePath),
+                        "the system prompt must surface the scratch directory",
+                    )
+                    println("[ok] grep inside the scratch directory ran prompt-free in plan mode")
+                } finally {
+                    connection.close()
+                }
+            }
+        } finally {
+            scratchDir.deleteRecursively()
+        }
+    }
 
     @Test
     fun `e2e read_file uses the client fs proxy in project`() = runBlocking {

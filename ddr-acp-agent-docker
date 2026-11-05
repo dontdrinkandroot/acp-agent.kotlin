@@ -591,7 +591,12 @@ forwarded_env=(--env "OPENROUTER_API_KEY_FILE=/tmp/openrouter-api-key")
 # TZ keeps the container's wall clock on the host's zone: the agent renders
 # local-offset timestamps (session/list updatedAt, issue #22) and a read-only
 # rootfs means there is no /etc/localtime to fall back on.
-for var_name in TZ OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS ACP_WEB_FETCH_ALLOW_PRIVATE; do
+# DDR_ACP_AGENT_SCRATCH_DIR is forwarded verbatim and never mounted: its value
+# is a *container* path (the agent creates and verifies it itself). Pointing it
+# at a host path is meaningless here - the container's /tmp is a private tmpfs,
+# so scratch content does not outlive the container. No runtime check: the
+# agent fails session creation loudly if the path cannot be created/verified.
+for var_name in TZ OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS ACP_WEB_FETCH_ALLOW_PRIVATE DDR_ACP_AGENT_SCRATCH_DIR; do
     if [ -n "${!var_name:-}" ]; then
         forwarded_env+=(--env "$var_name=${!var_name}")
     fi

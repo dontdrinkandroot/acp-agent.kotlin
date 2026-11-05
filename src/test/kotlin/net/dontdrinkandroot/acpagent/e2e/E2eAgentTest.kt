@@ -133,6 +133,9 @@ abstract class E2eAgentTest {
                 // in the host env): together with the harness key below it fails Config.fromEnv
                 // loudly at agent startup, hanging the client-side initialize.
                 environment().remove("OPENROUTER_API_KEY_FILE")
+                // Same for a leaked scratch-directory override: scenarios that care set it via
+                // extraEnv, and an ambient value would make the default-path pins meaningless.
+                environment().remove("DDR_ACP_AGENT_SCRATCH_DIR")
                 extraEnv.forEach { (key, value) -> environment()[key] = value }
             }
             .start()
