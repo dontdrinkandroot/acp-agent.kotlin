@@ -1,12 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Temporary files created by this launcher (masked .env.local, staged API key)
-# are removed on any exit path; cleanup must therefore survive being `exec`ed
-# into docker, which is why the final command is a plain invocation.
+# The masked .env.local file is removed on any exit path; cleanup must therefore
+# survive being `exec`ed into docker, which is why the final command is a plain
+# invocation.
 cleanup() {
     [ -n "${env_local_mask_file:-}" ] && rm -f "$env_local_mask_file"
-    [ -n "${api_key_stage_file:-}" ] && rm -f "$api_key_stage_file"
     return 0
 }
 trap cleanup EXIT
@@ -22,8 +21,11 @@ container_data_dir=$container_home/.local/share
 # a bridge-networked container times out after ~60s instead of handing over.
 # With the host namespace the container also reaches host loopback services
 # (MCP servers bound to 127.0.0.1) and the host's compose services directly.
-# ACP_DOCKER_NETWORK restores isolation (e.g. 'development' for compose DNS).
-network="${ACP_DOCKER_NETWORK:-host}"
+# DDR_ACP_AGENT_DOCKER_NETWORK restores isolation (e.g. 'development' for
+# compose DNS). These knobs follow the agent's naming scheme but are host-side
+# only: the forwarding loop below carves them out of the agent env, and the
+# legacy ACP_DOCKER_* spellings are not read at all.
+network="${DDR_ACP_AGENT_DOCKER_NETWORK:-host}"
 host_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 host_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 host_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -48,45 +50,11 @@ if [ -z "$docker_bin" ]; then
     exit 127
 fi
 
-# The API key must never travel through the environment (a leaked `set -x`
-# trace, `env` dump or /proc/*/environ read inside the agent sandbox would
-# disclose it). It is handed to the container as a read-only file at
-# /tmp/openrouter-api-key and the agent env only carries the path:
-# - OPENROUTER_API_KEY set  -> a 0600 copy is staged in /dev/shm, mounted, and
-#   removed by the EXIT trap (the host env never becomes the container's).
-# - OPENROUTER_API_KEY_FILE set -> that host file is mounted directly.
-api_key_mounts=()
-api_key_stage_file=
-if [ -n "${OPENROUTER_API_KEY:-}" ] && [ -n "${OPENROUTER_API_KEY_FILE:-}" ]; then
-    printf '%s\n' 'Set either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE, not both.' >&2
-    exit 1
-fi
-if [ -n "${OPENROUTER_API_KEY:-}" ]; then
-    # /dev/shm is tmpfs-backed on every docker host; fall back to /tmp there.
-    api_key_stage_file=$(mktemp /dev/shm/openrouter-api-key.XXXXXX 2>/dev/null ||
-        mktemp /tmp/openrouter-api-key.XXXXXX)
-    trap cleanup EXIT
-    old_umask=$(umask)
-    umask 077
-    printf '%s\n' "$OPENROUTER_API_KEY" >"$api_key_stage_file"
-    umask "$old_umask"
-    api_key_mounts=(--mount "type=bind,src=$api_key_stage_file,dst=/tmp/openrouter-api-key,ro")
-elif [ -n "${OPENROUTER_API_KEY_FILE:-}" ]; then
-    # A relative path would be resolved inside the container, not on the host:
-    # absolutize against the launcher's cwd so the mount points at the file.
-    case $OPENROUTER_API_KEY_FILE in
-        /*) key_file=$OPENROUTER_API_KEY_FILE ;;
-        *) key_file=$(CDPATH='' cd -- "$(dirname -- "$OPENROUTER_API_KEY_FILE")" && pwd)/$(basename -- "$OPENROUTER_API_KEY_FILE") ;;
-    esac
-    if [ ! -f "$key_file" ]; then
-        printf 'OPENROUTER_API_KEY_FILE %s is not a readable file.\n' "$key_file" >&2
-        exit 1
-    fi
-    api_key_mounts=(--mount "type=bind,src=$key_file,dst=/tmp/openrouter-api-key,ro")
-else
-    printf '%s\n' 'Either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE must be set in the environment.' >&2
-    exit 1
-fi
+# The API key is never handled by this launcher: it lives in the agent's config
+# directory (~/.config/ddr-acp-agent/openrouter.key or the file named by
+# openRouter.apiKeyFile) and travels in with that read-only mount. The agent
+# resolves and validates it (owner-only, issue #50) and fails loudly at startup
+# when there is none.
 
 skip_pull=false
 agent_args=()
@@ -232,13 +200,13 @@ add_tool_cache() {
     fi
 }
 
-if [ "${ACP_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
+if [ "${DDR_ACP_AGENT_DOCKER_MOUNT_CACHES:-1}" != 0 ]; then
     # The Android SDK is shared from the host (see the cache mounts below). A
     # set but unusable ANDROID_HOME/ANDROID_SDK_ROOT (relative path, missing
     # directory, /) would bind-mount a nonexistent source or resolve a
     # relative path inside the container - fail loudly before any docker run.
     # The first one set wins; ANDROID_HOME is the name Android tooling
-    # prefers. Under ACP_DOCKER_MOUNT_CACHES=0 the whole cache/SDK config is
+    # prefers. Under DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 the whole cache/SDK config is
     # ignored wholesale - not even validated (issue #51).
     android_sdk_env=
     android_sdk_dir=
@@ -471,11 +439,11 @@ fi
 # Session state is always persisted on the host so conversations survive the
 # ephemeral tmpfs home. The host side mirrors container XDG_STATE_HOME, so
 # agent-side session/persist writes land in ~/.local/state/ddr-acp-agent.
-# ACP_DOCKER_STATE_DIR relocates the host side (e.g. out of an fscrypt v1
+# DDR_ACP_AGENT_DOCKER_STATE_DIR relocates the host side (e.g. out of an fscrypt v1
 # encrypted home, whose key no container can access: writes would fail with
 # "Required key not available").
 state_mounts=()
-state_host_dir=${ACP_DOCKER_STATE_DIR:-$host_state_home/ddr-acp-agent}
+state_host_dir=${DDR_ACP_AGENT_DOCKER_STATE_DIR:-$host_state_home/ddr-acp-agent}
 case "$state_host_dir" in
     /*) ;;
     *) state_host_dir=$host_state_home/ddr-acp-agent ;;
@@ -490,104 +458,138 @@ if [ ${#state_mounts[@]} -gt 0 ]; then
     printf 'Mounting session state: %s\n' "$state_host_dir" >&2
 fi
 
-# Optional extra host paths (ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw)
-# mounted at the identical in-container path. The mode suffix defaults to ro;
-# dirs and single files are allowed. Extras are emitted before every built-in
-# mount and sorted shallowest-first, so built-ins and deeper extras shadow
-# shallower ones (docker applies the last mount at a path on top).
-extra_mount_args=()
-extra_trusted_reads=
-if [ -n "${ACP_DOCKER_EXTRA_MOUNTS:-}" ]; then
-    extra_paths=()
-    extra_modes=()
-    extra_fail=false
-    IFS=',' read -ra extra_entries <<<"${ACP_DOCKER_EXTRA_MOUNTS}"
-    for entry in "${extra_entries[@]}"; do
-        [ -n "$entry" ] || continue
-        mode=ro
-        path=$entry
-        case $entry in
-            *:ro) path=${entry%:ro} ;;
-            *:rw) mode=rw; path=${entry%:rw} ;;
-            *:*)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: invalid entry %s (expected path, path:ro or path:rw).\n' "$entry" >&2
-                extra_fail=true
-                continue
-                ;;
-        esac
-        case $path in
-            /*) ;;
-            *)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: %s is not an absolute host path.\n' "$path" >&2
-                extra_fail=true
-                continue
-                ;;
-        esac
-        if [ "$path" = / ]; then
-            printf 'ACP_DOCKER_EXTRA_MOUNTS: / cannot be mounted.\n' >&2
-            extra_fail=true
-            continue
+# The agent's config directory ($XDG_CONFIG_HOME/ddr-acp-agent, issue #50):
+# config.json and the default openrouter.key live there, and the container home
+# is an ephemeral tmpfs, so the host directory is mounted at the container's own
+# config directory. A missing host directory is fine - the agent then runs on
+# built-in defaults. A host-configured DDR_ACP_AGENT_CONFIG_FILE is a bare file
+# name and is forwarded verbatim, so it resolves inside this mount.
+host_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+config_host_dir=$host_config_home/ddr-acp-agent
+config_mounts=()
+if [ -d "$config_host_dir" ] &&
+   [[ "$config_host_dir" != "$project_dir" && "$config_host_dir" != "$project_dir"/* ]] &&
+   ! [[ " $mounted_dsts " == *" $container_home/.config/ddr-acp-agent "* ]]; then
+    config_mounts=(--mount "type=bind,src=$config_host_dir,dst=$container_home/.config/ddr-acp-agent,ro")
+    printf 'Mounting agent config: %s\n' "$config_host_dir" >&2
+fi
+
+# The permission directory lists ARE the mount list (issue #50): a path is
+# mounted exactly because the agent is allowed to use it, and the mount mode is
+# the tier - readable mounts read-only, writable mounts read-write. One list,
+# two consumers, so the trust domain and the mounts can never drift apart.
+#
+#   DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES=/srv/data,/mnt/scratch
+#   DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES=/srv/scratch
+#
+# Paths are mounted at the identical in-container path. The variables are
+# forwarded to the agent unchanged (prefix loop below), so it trusts exactly
+# what is mounted. `config.json`'s `permissions.*` are therefore a direct-run
+# concern: a host-side entry the launcher cannot mount must not be trusted
+# inside the container, which is why the env layer overrides the file layer.
+#
+# Mounts are emitted before every built-in mount and sorted shallowest-first,
+# so built-ins and deeper mounts shadow shallower ones (docker applies the last
+# mount at a path on top).
+permission_mount_args=()
+if [ -n "${DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES:-}" ] ||
+   [ -n "${DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES:-}" ]; then
+    # "path|mode" pairs, kept in input order; a path listed in both tiers is
+    # mounted rw once (writable wins).
+    permission_entries=()
+    mount_fail=false
+    for tier in read write; do
+        if [ "$tier" = read ]; then
+            list=${DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES:-}
+            tier_label=READABLE
+            mode=ro
+        else
+            list=${DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES:-}
+            tier_label=WRITABLE
+            mode=rw
         fi
-        # Covered entries are shadowed by the covering mount at the identical
-        # path - skipped with a warning regardless of host existence. Host
-        # existence is only validated for entries that actually get mounted.
-        case $path in
-            "$project_dir"|"$project_dir"/*)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - inside the project directory, which is always mounted rw.\n' "$path" >&2
+        [ -n "$list" ] || continue
+        IFS=',' read -ra entries <<<"$list"
+        for path in "${entries[@]}"; do
+            path=$(printf '%s' "$path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [ -n "$path" ] || continue
+            case $path in
+                /*) ;;
+                *)
+                    printf 'DDR_ACP_AGENT_PERMISSIONS_%s_DIRECTORIES: %s is not an absolute host path.\n' \
+                        "$tier_label" "$path" >&2
+                    mount_fail=true
+                    continue
+                    ;;
+            esac
+            if [ "$path" = / ]; then
+                printf 'DDR_ACP_AGENT_PERMISSIONS_%s_DIRECTORIES: / cannot be mounted.\n' "$tier_label" >&2
+                mount_fail=true
                 continue
-                ;;
-            "$container_home"|"$container_home"/*)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - covered by the container home.\n' "$path" >&2
+            fi
+            # Covered paths are shadowed by the covering mount at the identical
+            # path - skipped with a warning regardless of host existence. Host
+            # existence is only validated for paths that actually get mounted.
+            case $path in
+                "$project_dir"|"$project_dir"/*)
+                    printf 'Permissions: skipping %s - inside the project directory, which is always mounted rw.\n' "$path" >&2
+                    continue
+                    ;;
+                "$container_home"|"$container_home"/*)
+                    printf 'Permissions: skipping %s - covered by the container home.\n' "$path" >&2
+                    continue
+                    ;;
+                /tmp|/tmp/*)
+                    printf 'Permissions: skipping %s - covered by the container tmpfs.\n' "$path" >&2
+                    continue
+                    ;;
+            esac
+            if [ ! -e "$path" ]; then
+                printf 'Permissions: %s does not exist on the host.\n' "$path" >&2
+                mount_fail=true
                 continue
-                ;;
-            /tmp|/tmp/*)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping %s - covered by the container tmpfs.\n' "$path" >&2
-                continue
-                ;;
-        esac
-        if [ ! -e "$path" ]; then
-            printf 'ACP_DOCKER_EXTRA_MOUNTS: %s does not exist on the host.\n' "$path" >&2
-            extra_fail=true
-            continue
-        fi
-        case " ${extra_paths[*]} " in
-            *" $path "*)
-                printf 'ACP_DOCKER_EXTRA_MOUNTS: skipping duplicate %s.\n' "$path" >&2
-                continue
-                ;;
-        esac
-        extra_paths+=("$path")
-        extra_modes+=("$mode")
+            fi
+            if [ "$mode" = rw ]; then
+                # Drop a previous read-only entry for the same path, then add rw.
+                remaining=()
+                for entry in "${permission_entries[@]}"; do
+                    [ "${entry%%|*}" = "$path" ] || remaining+=("$entry")
+                done
+                permission_entries=("${remaining[@]}" "$path|rw")
+            else
+                duplicate=false
+                for entry in "${permission_entries[@]}"; do
+                    [ "${entry%%|*}" = "$path" ] && duplicate=true
+                done
+                [ "$duplicate" = true ] || permission_entries+=("$path|ro")
+            fi
+        done
     done
-    if [ ${#extra_paths[@]} -gt 0 ]; then
-        extra_trusted_reads=$(IFS=,; printf '%s' "${extra_paths[*]}")
-    fi
-    if [ "$extra_fail" = true ]; then
+    if [ "$mount_fail" = true ]; then
         exit 1
     fi
-    if [ ${#extra_paths[@]} -gt 0 ]; then
-        declare -A extra_mode_by_path=()
-        for i in "${!extra_paths[@]}"; do
-            extra_mode_by_path[${extra_paths[$i]}]=${extra_modes[$i]}
-        done
-        mounted_extras=
+    if [ ${#permission_entries[@]} -gt 0 ]; then
+        mounted_permissions=
         while IFS=$'\t' read -r path; do
             [ -n "$path" ] || continue
-            mode=${extra_mode_by_path[$path]}
-            if [ "$mode" = ro ]; then
-                extra_mount_args+=(--mount "type=bind,src=$path,dst=$path,ro")
-            else
-                extra_mount_args+=(--mount "type=bind,src=$path,dst=$path")
-            fi
-            mounted_extras="$mounted_extras $path($mode)"
-        done < <(for path in "${extra_paths[@]}"; do
-                     printf '%s\t%s\n' "$(printf '%s' "$path" | tr -cd / | wc -c)" "$path"
+            for entry in "${permission_entries[@]}"; do
+                [ "${entry%%|*}" = "$path" ] || continue
+                mode=${entry##*|}
+                if [ "$mode" = ro ]; then
+                    permission_mount_args+=(--mount "type=bind,src=$path,dst=$path,ro")
+                else
+                    permission_mount_args+=(--mount "type=bind,src=$path,dst=$path")
+                fi
+                mounted_permissions="$mounted_permissions $path($mode)"
+            done
+        done < <(for entry in "${permission_entries[@]}"; do
+                     printf '%s\t%s\n' "$(printf '%s' "${entry%%|*}" | tr -cd / | wc -c)" "${entry%%|*}"
                  done | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -s | cut -f2)
-        printf 'Mounting extra mounts:%s\n' "$mounted_extras" >&2
+        printf 'Mounting permission directories:%s\n' "$mounted_permissions" >&2
     fi
 fi
 
-forwarded_env=(--env "OPENROUTER_API_KEY_FILE=/tmp/openrouter-api-key")
+forwarded_env=()
 # TZ keeps the container's wall clock on the host's zone: the agent renders
 # local-offset timestamps (session/list updatedAt, issue #22) and a read-only
 # rootfs means there is no /etc/localtime to fall back on.
@@ -596,7 +598,19 @@ forwarded_env=(--env "OPENROUTER_API_KEY_FILE=/tmp/openrouter-api-key")
 # at a host path is meaningless here - the container's /tmp is a private tmpfs,
 # so scratch content does not outlive the container. No runtime check: the
 # agent fails session creation loudly if the path cannot be created/verified.
-for var_name in TZ OPENROUTER_MODEL OPENROUTER_BASE_URL OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED FS_PROXY_ENABLED MCP_TRUST_ANNOTATIONS ACP_BASH_TIMEOUT_SECONDS ACP_MAX_TURN_REQUESTS ACP_WEB_FETCH_ALLOW_PRIVATE DDR_ACP_AGENT_SCRATCH_DIR; do
+# The whole DDR_ACP_AGENT_* family (issue #50) is forwarded as a single prefix
+# family, so a new agent config option needs no launcher change. A config-file
+# *name* therefore travels verbatim and resolves inside the mounted config
+# directory - that is exactly why it is a name and not a path.
+# The launcher's own knobs (DDR_ACP_AGENT_DOCKER_*) are carved out of that
+# family explicitly: they are host-side decisions (network mode, state dir,
+# cache sharing, ...) that mean nothing inside the container, and silently
+# handing them to the agent would let a host-only value look like agent config.
+# Agent config values that name a *host* path are not special-cased: the
+# permissions lists are the mount list (see above), and a key file outside the
+# config directory is not mounted, so point
+# DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE at the config directory.
+for var_name in TZ $(compgen -e | grep -E '^DDR_ACP_AGENT_' | grep -v -E '^DDR_ACP_AGENT_DOCKER_'); do
     if [ -n "${!var_name:-}" ]; then
         forwarded_env+=(--env "$var_name=${!var_name}")
     fi
@@ -604,26 +618,18 @@ done
 # GRADLE_USER_HOME is always pinned to the container-private .gradle root
 # (tmpfs): the host value must never leak in, and Gradle must resolve its
 # daemon/process state to the private tmpfs regardless of the base image's
-# default and of ACP_DOCKER_MOUNT_CACHES (which only gates the shared leaf
+# default and of DDR_ACP_AGENT_DOCKER_MOUNT_CACHES (which only gates the shared leaf
 # binds, see the gradle leaf mounts above).
 forwarded_env+=(--env "GRADLE_USER_HOME=$container_home/.gradle")
 
 rootfs_args=(--read-only)
-if [ "${ACP_DOCKER_RW_ROOTFS:-}" = 1 ]; then
+if [ "${DDR_ACP_AGENT_DOCKER_RW_ROOTFS:-}" = 1 ]; then
     rootfs_args=()
 fi
 
-# Effective extra mounts are read-trusted inside the agent (ACP_EXTRA_MOUNTS,
-# see the ACP_EXTRA_MOUNTS docs): reads under them never prompt. Derived from
-# the mounted extras, so skipped entries (inside the project dir / home / tmpfs)
-# never widen the agent's trust domain.
-if [ -n "$extra_trusted_reads" ]; then
-    forwarded_env+=(--env "ACP_EXTRA_MOUNTS=$extra_trusted_reads")
-fi
-
 cap_add_args=()
-if [ -n "${ACP_DOCKER_CAP_ADD:-}" ]; then
-    IFS=',' read -ra caps <<<"${ACP_DOCKER_CAP_ADD}"
+if [ -n "${DDR_ACP_AGENT_DOCKER_CAP_ADD:-}" ]; then
+    IFS=',' read -ra caps <<<"${DDR_ACP_AGENT_DOCKER_CAP_ADD}"
     for cap in "${caps[@]}"; do
         cap=${cap//[[:space:]]/}
         if [ -n "$cap" ]; then
@@ -632,8 +638,8 @@ if [ -n "${ACP_DOCKER_CAP_ADD:-}" ]; then
     done
 fi
 
-if [ -n "${ACP_DOCKER_HOME_VOLUME:-}" ]; then
-    home_args=(--mount "type=volume,src=$ACP_DOCKER_HOME_VOLUME,dst=$container_home")
+if [ -n "${DDR_ACP_AGENT_DOCKER_HOME_VOLUME:-}" ]; then
+    home_args=(--mount "type=volume,src=$DDR_ACP_AGENT_DOCKER_HOME_VOLUME,dst=$container_home")
 else
     # exec is required: toolchains execute native binaries extracted into
     # $HOME (Kotlin/Native under ~/.konan, AGP's AAPT2 from Maven under
@@ -649,7 +655,7 @@ cache_args=(--tmpfs "$container_cache_dir:uid=$uid,gid=$gid,mode=700,size=1g")
 # per-version caches/<ver>/ state, which must never be shared with the host
 # (see the gradle leaf mounts above). The shared content-addressed leaf binds
 # land on top of this tmpfs; daemon state is therefore always ephemeral per
-# container session, and the tmpfs stays even under ACP_DOCKER_MOUNT_CACHES=0
+# container session, and the tmpfs stays even under DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0
 # (like the ~/.cache and ~/.local tmpfs mounts). The caches/ and wrapper/
 # intermediate depths get their own per-depth uid-mapped tmpfs for the same
 # reason the ~/.local depths do: runc creates the missing parents of the
@@ -682,13 +688,22 @@ local_args=(
     --tmpfs "$container_home/.local/state:uid=$uid,gid=$gid,mode=700,size=1g"
 )
 
+# ~/.config gets the same treatment as ~/.local: the config bind mount is a
+# child of it ($container_home/.config/ddr-acp-agent), and runc would create the
+# missing parent root-owned inside the container, leaving it unwritable.
+if [ ${#config_mounts[@]} -gt 0 ]; then
+    config_home_args=(--tmpfs "$container_home/.config:uid=$uid,gid=$gid,mode=700,size=64m")
+else
+    config_home_args=()
+fi
+
 extra_args=()
-if [ -n "${ACP_DOCKER_EXTRA_ARGS:-}" ]; then
-    IFS=' ' read -ra extra_args <<<"${ACP_DOCKER_EXTRA_ARGS}"
+if [ -n "${DDR_ACP_AGENT_DOCKER_EXTRA_ARGS:-}" ]; then
+    IFS=' ' read -ra extra_args <<<"${DDR_ACP_AGENT_DOCKER_EXTRA_ARGS}"
 fi
 
 # Not exec'd: the EXIT trap must run after docker returns to remove the
-# staged API key file and the .env.local mask file.
+# .env.local mask file.
 # --add-host=host.docker.internal:...: plain Linux docker daemons do not
 # resolve host.docker.internal, so the mapping lets the container reach MCP
 # servers running on the host (e.g. the PhpStorm MCP server at
@@ -705,8 +720,7 @@ fi
     --network "$network" \
     --add-host="host.docker.internal:$host_docker_internal_target" \
     --user "$uid:$gid" \
-    "${api_key_mounts[@]}" \
-    "${extra_mount_args[@]}" \
+    "${permission_mount_args[@]}" \
     --workdir "$project_dir" \
     --mount "type=bind,src=$project_dir,dst=$project_dir" \
     "${env_local_mounts[@]}" \
@@ -717,6 +731,8 @@ fi
     "${local_args[@]}" \
     "${cache_mounts[@]}" \
     "${state_mounts[@]}" \
+    "${config_home_args[@]}" \
+    "${config_mounts[@]}" \
     "${rootfs_args[@]}" \
     --cap-drop=ALL \
     "${cap_add_args[@]}" \

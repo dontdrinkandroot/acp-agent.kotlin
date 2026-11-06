@@ -11,8 +11,9 @@ class SystemPromptDumpTest {
         assertTrue(prompt.contains("Session working directory: /home/dev/projects/example-project"), prompt)
         assertTrue(prompt.contains("* plan: read-only"), prompt)
         // The example data is invented, so every optional section renders.
-        assertTrue(prompt.contains("## Trusted read paths"), prompt)
+        assertTrue(prompt.contains("## Trusted paths"), prompt)
         assertTrue(prompt.contains("* /srv/data"), prompt)
+        assertTrue(prompt.contains("* /srv/scratch"), prompt)
         assertTrue(prompt.contains("## Excluded files"), prompt)
         assertTrue(prompt.contains("secrets/**"), prompt)
         assertTrue(prompt.contains("## Available run configurations"), prompt)

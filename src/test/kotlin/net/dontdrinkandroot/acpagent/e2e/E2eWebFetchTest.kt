@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  * Black-box web_fetch: available and prompt-free in plan mode (read-only, no
  * filesystem targets), fetches an HTTP page and returns it as numbered text,
  * with the SSRF guard blocking loopback unless the agent runs with
- * ACP_WEB_FETCH_ALLOW_PRIVATE=1 (the local mock server is the fixture here).
+ * `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1` (the local mock server is the fixture here).
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eWebFetchTest : E2eAgentTest() {
@@ -56,7 +56,9 @@ class E2eWebFetchTest : E2eAgentTest() {
                     ),
                 )
             }) {
-                val connection = connect(extraEnv = mapOf("ACP_WEB_FETCH_ALLOW_PRIVATE" to "1"))
+                val connection = connect(
+                    extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE" to "1")
+                )
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()
@@ -122,7 +124,7 @@ class E2eWebFetchTest : E2eAgentTest() {
                         "the SSRF guard must refuse the loopback host: $output",
                     )
                     assertTrue(
-                        output.contains("ACP_WEB_FETCH_ALLOW_PRIVATE"),
+                        output.contains("tools.webFetch.allowPrivate"),
                         "the error must name the opt-out: $output",
                     )
                     println("[ok] web_fetch refused the loopback host without the opt-out")

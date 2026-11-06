@@ -159,7 +159,7 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                 // bash mode: write_file executes prompt-free (local store,
                 // fs proxy off), the bash call always prompts - the batch
                 // then suspends between call 2's append and its result.
-                val first = connect(extraEnv = mapOf("FS_PROXY_ENABLED" to "0"))
+                val first = connect(extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to "0"))
                 try {
                     first.client.initialize(testClientInfo())
                     val ops = SuspendingPermissionOperations()

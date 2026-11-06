@@ -10,15 +10,7 @@ import com.agentclientprotocol.model.SessionUpdate
 import com.agentclientprotocol.model.ToolCallStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -26,7 +18,7 @@ import kotlin.test.assertTrue
 /**
  * Black-box MCP tool permissions: a server-annotated `readOnlyHint: true` tool
  * runs without a permission prompt (annotations trusted by default), while
- * unannotated tools keep prompting and `MCP_TRUST_ANNOTATIONS=0` restores the
+ * unannotated tools keep prompting and `DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS=0` restores the
  * pessimistic always-prompt default. Backed by an in-process streamable-HTTP
  * MCP mock, which also pins the `mcpCapabilities.http` advertisement.
  */
@@ -134,7 +126,7 @@ class E2eMcpToolPermissionTest : E2eAgentTest() {
             val mcpMock = MockMcpServer(markerFile)
             mcpMock.start()
             try {
-                val connection = connect(extraEnv = mapOf("MCP_TRUST_ANNOTATIONS" to "0"))
+                val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS" to "0"))
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()
@@ -158,7 +150,7 @@ class E2eMcpToolPermissionTest : E2eAgentTest() {
                     val resultUpdates = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>()
                     assertTrue(resultUpdates.isNotEmpty(), "expected a ToolCallUpdate result")
                     assertEquals(ToolCallStatus.COMPLETED, resultUpdates.last().status)
-                    println("[ok] MCP_TRUST_ANNOTATIONS=0 kept the pessimistic permission prompt")
+                    println("[ok] DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS=0 kept the pessimistic permission prompt")
                 } finally {
                     connection.close()
                 }

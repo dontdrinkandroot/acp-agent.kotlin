@@ -1,335 +1,384 @@
 package net.dontdrinkandroot.acpagent.config
 
-import java.io.File
 import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
+import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
+import kotlin.io.path.createDirectories
+import kotlin.io.path.writeText
+import kotlin.test.*
 
-class ConfigParseTest {
+class ConfigTest {
 
-    @Test
-    fun `fromEnv requires api key`() {
-        val e = assertFailsWith<IllegalArgumentException> { Config.fromEnv(emptyMap()) }
-        assertEquals("OPENROUTER_API_KEY is not set", e.message)
-        assertEquals("sk-x", Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "sk-x")).openRouterApiKey)
+    private val home: Path = Files.createTempDirectory("acp-home")
+
+    /** A `Config.load` call with an isolated HOME and a key file in the config dir. */
+    private fun load(
+        env: Map<String, String> = emptyMap(),
+        configJson: String? = null,
+        warnings: MutableList<String> = mutableListOf(),
+    ): Config {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        if (configJson != null) configDir.resolve(Config.CONFIG_FILE_NAME).writeText(configJson)
+        writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-default")
+        return Config.load(env = env, home = home, warnings = { warnings += it })
+    }
+
+    private fun writeKeyFile(path: Path, content: String) {
+        path.writeText(content)
+        Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
     }
 
     @Test
-    fun `api key file is read and trimmed`() {
-        val keyFile = File.createTempFile("acp-key", ".txt").apply {
-            writeText("  sk-file-key\n")
-            deleteOnExit()
-        }
+    fun `a missing key is reported with the tried sources`() {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        val e = assertFailsWith<IllegalArgumentException> { Config.load(env = emptyMap(), home = home) }
         assertEquals(
-            "sk-file-key",
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to keyFile.absolutePath)).openRouterApiKey,
+            "No OpenRouter API key configured. Set DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE, " +
+                    "openRouter.apiKeyFile in config.json, or create '${configDir.resolve("openrouter.key")}'.",
+            e.message,
         )
     }
 
     @Test
-    fun `setting both api key and api key file is an error`() {
-        val e = assertFailsWith<IllegalArgumentException> {
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "sk-x", "OPENROUTER_API_KEY_FILE" to "/tmp/key"))
-        }
-        assertEquals("Set either OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE, not both", e.message)
+    fun `the api key is read from the default location and trimmed`() {
+        assertEquals("sk-default", load().openRouterApiKey)
     }
 
     @Test
-    fun `api key file problems fail loudly with the path`() {
-        assertEquals(
-            "OPENROUTER_API_KEY_FILE /does/not/exist is not a readable file",
-            assertFailsWith<IllegalArgumentException> {
-                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to "/does/not/exist"))
-            }.message,
-        )
-        val dir = Files.createTempDirectory("acp-keydir").toFile()
-        assertEquals(
-            "OPENROUTER_API_KEY_FILE ${dir.absolutePath} is not a readable file",
-            assertFailsWith<IllegalArgumentException> {
-                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to dir.absolutePath))
-            }.message,
-        )
-        val empty = File.createTempFile("acp-key-empty", ".txt").apply { deleteOnExit() }
-        assertEquals(
-            "OPENROUTER_API_KEY_FILE ${empty.absolutePath} is empty",
-            assertFailsWith<IllegalArgumentException> {
-                Config.fromEnv(mapOf("OPENROUTER_API_KEY_FILE" to empty.absolutePath))
-            }.message,
-        )
+    fun `a key file readable by group or others is refused`() {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        val keyFile = configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME)
+        keyFile.writeText("sk-leaky")
+        Files.setPosixFilePermissions(keyFile, PosixFilePermissions.fromString("rw-r--r--"))
+        val e = assertFailsWith<IllegalArgumentException> { Config.load(env = emptyMap(), home = home) }
+        assertTrue(e.message!!.startsWith("API key file '$keyFile' (default location '$keyFile') must be owner-only"))
     }
 
     @Test
-    fun `fromEnv applies defaults for model and baseUrl`() {
-        val config = Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "sk-x"))
+    fun `the env key file wins over the file key file`() {
+        val envKey = Files.createTempFile("acp-env-key", ".txt")
+        writeKeyFile(envKey, "sk-env")
+        val config = load(
+            env = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to envKey.toString()),
+            configJson = """{"openRouter": {"apiKeyFile": "/does/not/matter"}}""",
+        )
+        assertEquals("sk-env", config.openRouterApiKey)
+    }
+
+    @Test
+    fun `the file key file wins over the default location`() {
+        val fileKey = Files.createTempFile("acp-file-key", ".txt")
+        writeKeyFile(fileKey, "sk-file")
+        val config = load(configJson = """{"openRouter": {"apiKeyFile": "$fileKey"}}""")
+        assertEquals("sk-file", config.openRouterApiKey)
+    }
+
+    @Test
+    fun `defaults apply without a config file`() {
+        val config = load()
         assertEquals("openrouter/auto", config.openRouterModel)
         assertEquals("https://openrouter.ai/api/v1", config.openRouterBaseUrl)
-        assertTrue(config.autoThroughputSortingEnabled, "auto throughput sorting must default to enabled")
-        assertTrue(config.fsProxyEnabled, "fs proxy must default to enabled")
+        assertTrue(config.autoThroughputSortingEnabled)
+        assertTrue(config.fsProxyEnabled)
+        assertTrue(config.mcpTrustAnnotations)
+        assertEquals(600, config.bashTimeoutSeconds)
+        assertEquals(100, config.maxTurnRequests)
+        assertFalse(config.webFetchAllowPrivate)
+        assertEquals(emptyList(), config.readableDirectories)
+        assertEquals(emptyList(), config.writableDirectories)
+        assertEquals(UnlistedPaths.PROMPT, config.unlistedPaths)
+        assertEquals("/tmp/ddr-acp-agent", config.scratchDir)
     }
 
     @Test
-    fun `auto throughput sorting parsing honours the zero toggle`() {
-        assertTrue(
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED" to "1"))
-                .autoThroughputSortingEnabled,
-        )
-        assertTrue(
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).autoThroughputSortingEnabled,
-        )
-        assertTrue(
-            Config.fromEnv(
-                mapOf(
-                    "OPENROUTER_API_KEY" to "k",
-                    "OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED" to "garbage"
-                )
-            )
-                .autoThroughputSortingEnabled,
-        )
-        assertEquals(
-            false,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED" to "0"))
-                .autoThroughputSortingEnabled,
-        )
-    }
-
-    @Test
-    fun `fromEnv overrides model and baseUrl`() {
-        val config = Config.fromEnv(
-            mapOf(
-                "OPENROUTER_API_KEY" to "sk-x",
-                "OPENROUTER_MODEL" to "m/n",
-                "OPENROUTER_BASE_URL" to "http://localhost:9/v1",
-            )
+    fun `the config file overrides the defaults`() {
+        val config = load(
+            configJson = """
+                {
+                  "openRouter": {
+                    "defaultModel": "m/n",
+                    "baseUrl": "http://localhost:9/v1",
+                    "autoThroughputSorting": false
+                  },
+                  "tools": {
+                    "maxTurnRequests": 7,
+                    "fsProxy": false,
+                    "bash": {"timeoutSeconds": 42},
+                    "webFetch": {"allowPrivate": true}
+                  },
+                  "mcp": {"trustAnnotations": false},
+                  "permissions": {"unlistedPaths": "deny"},
+                  "scratchDir": "/var/scratch"
+                }
+            """.trimIndent()
         )
         assertEquals("m/n", config.openRouterModel)
         assertEquals("http://localhost:9/v1", config.openRouterBaseUrl)
+        assertFalse(config.autoThroughputSortingEnabled)
+        assertFalse(config.fsProxyEnabled)
+        assertFalse(config.mcpTrustAnnotations)
+        assertEquals(42, config.bashTimeoutSeconds)
+        assertEquals(7, config.maxTurnRequests)
+        assertTrue(config.webFetchAllowPrivate)
+        assertEquals(UnlistedPaths.DENY, config.unlistedPaths)
+        assertEquals("/var/scratch", config.scratchDir)
     }
 
     @Test
-    fun `fs proxy parsing honours the zero toggle`() {
-        assertTrue(Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).fsProxyEnabled)
-        assertTrue(
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "FS_PROXY_ENABLED" to "garbage"))
-                .fsProxyEnabled,
+    fun `the env layer wins over the config file`() {
+        val config = load(
+            configJson = """
+                {
+                  "openRouter": {"defaultModel": "file-model", "baseUrl": "http://file/v1", "autoThroughputSorting": false},
+                  "tools": {"maxTurnRequests": 7, "fsProxy": false, "bash": {"timeoutSeconds": 42}},
+                  "mcp": {"trustAnnotations": false},
+                  "permissions": {"unlistedPaths": "deny"},
+                  "scratchDir": "/var/scratch"
+                }
+            """.trimIndent(),
+            env = mapOf(
+                "DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL" to "env-model",
+                "DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL" to "http://env/v1",
+                "DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING" to "yes",
+                "DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "9",
+                "DDR_ACP_AGENT_TOOLS_FS_PROXY" to "on",
+                "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "99",
+                "DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE" to "true",
+                "DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS" to "1",
+                "DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS" to "prompt",
+                "DDR_ACP_AGENT_SCRATCH_DIR" to "/env/scratch",
+            ),
         )
-        assertEquals(
-            false,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "FS_PROXY_ENABLED" to "0"))
-                .fsProxyEnabled,
-        )
+        assertEquals("env-model", config.openRouterModel)
+        assertEquals("http://env/v1", config.openRouterBaseUrl)
+        assertTrue(config.autoThroughputSortingEnabled)
+        assertEquals(9, config.maxTurnRequests)
+        assertTrue(config.fsProxyEnabled)
+        assertEquals(99, config.bashTimeoutSeconds)
+        assertTrue(config.webFetchAllowPrivate)
+        assertTrue(config.mcpTrustAnnotations)
+        assertEquals(UnlistedPaths.PROMPT, config.unlistedPaths)
+        assertEquals("/env/scratch", config.scratchDir)
     }
 
     @Test
-    fun `mcp trust annotations parsing honours the zero toggle`() {
-        assertTrue(Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).mcpTrustAnnotations)
-        assertTrue(
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "MCP_TRUST_ANNOTATIONS" to "garbage"))
-                .mcpTrustAnnotations,
-        )
-        assertEquals(
-            false,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "MCP_TRUST_ANNOTATIONS" to "0"))
-                .mcpTrustAnnotations,
-        )
+    fun `env names are derived from the config paths`() {
+        assertEquals("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE", EnvValues.name("openRouter.apiKeyFile"))
+        assertEquals("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS", EnvValues.name("tools.bash.timeoutSeconds"))
+        assertEquals("DDR_ACP_AGENT_TOOLS_FS_PROXY", EnvValues.name("tools.fsProxy"))
+        assertEquals("DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE", EnvValues.name("tools.webFetch.allowPrivate"))
+        assertEquals("DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS", EnvValues.name("mcp.trustAnnotations"))
+        assertEquals("DDR_ACP_AGENT_SCRATCH_DIR", EnvValues.name("scratchDir"))
     }
 
     @Test
-    fun `bash timeout defaults to 600 seconds`() {
-        assertEquals(
-            600,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).bashTimeoutSeconds,
+    fun `legacy env names are not read`() {
+        val config = load(
+            env = mapOf(
+                "OPENROUTER_MODEL" to "legacy",
+                "FS_PROXY_ENABLED" to "0",
+                "MCP_TRUST_ANNOTATIONS" to "0",
+                "ACP_BASH_TIMEOUT_SECONDS" to "5",
+                "ACP_MAX_TURN_REQUESTS" to "5",
+                "ACP_WEB_FETCH_ALLOW_PRIVATE" to "1",
+                "ACP_EXTRA_MOUNTS" to "/srv/legacy",
+            )
         )
-        assertEquals(
-            42,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "42"))
-                .bashTimeoutSeconds,
-        )
+        assertEquals("openrouter/auto", config.openRouterModel)
+        assertTrue(config.fsProxyEnabled)
+        assertTrue(config.mcpTrustAnnotations)
+        assertEquals(600, config.bashTimeoutSeconds)
+        assertEquals(100, config.maxTurnRequests)
+        assertFalse(config.webFetchAllowPrivate)
+        assertEquals(emptyList(), config.readableDirectories)
     }
 
     @Test
-    fun `bash timeout clamps to at least one second`() {
-        assertEquals(
-            1,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "0"))
-                .bashTimeoutSeconds,
-        )
-        assertEquals(
-            1,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "-5"))
-                .bashTimeoutSeconds,
-        )
-        assertEquals(
-            600,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "garbage"))
-                .bashTimeoutSeconds,
-        )
-    }
-
-    @Test
-    fun `bash timeout clamps to at most one hour`() {
-        assertEquals(
-            3600,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "999999999"))
-                .bashTimeoutSeconds,
-        )
-        assertEquals(
-            3600,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "3601"))
-                .bashTimeoutSeconds,
-        )
-        assertEquals(
-            3600,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_BASH_TIMEOUT_SECONDS" to "3600"))
-                .bashTimeoutSeconds,
-        )
-    }
-
-    @Test
-    fun `max turn requests defaults to 100`() {
-        assertEquals(
-            100,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).maxTurnRequests,
-        )
-        assertEquals(
-            7,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_MAX_TURN_REQUESTS" to "7"))
-                .maxTurnRequests,
-        )
-    }
-
-    @Test
-    fun `max turn requests clamps to at least one`() {
-        assertEquals(
-            1,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_MAX_TURN_REQUESTS" to "0"))
-                .maxTurnRequests,
-        )
-        assertEquals(
-            1,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_MAX_TURN_REQUESTS" to "-3"))
-                .maxTurnRequests,
-        )
-        assertEquals(
-            100,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_MAX_TURN_REQUESTS" to "garbage"))
-                .maxTurnRequests,
-        )
-    }
-
-    @Test
-    fun `web fetch private hosts default to blocked`() {
-        assertEquals(
-            false,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).webFetchAllowPrivate,
-        )
-        assertEquals(
-            true,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_WEB_FETCH_ALLOW_PRIVATE" to "1"))
-                .webFetchAllowPrivate,
-        )
-        // Anything but the exact "1" keeps the safe default.
-        assertEquals(
-            false,
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_WEB_FETCH_ALLOW_PRIVATE" to "true"))
-                .webFetchAllowPrivate,
-        )
-    }
-
-    @Test
-    fun `extra mounts default to empty and parse a comma separated list of absolute paths`() {
-        assertEquals(
-            emptyList(),
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).extraMounts,
-        )
-        assertEquals(
-            listOf("/srv/data", "/mnt/scratch"),
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_EXTRA_MOUNTS" to "/srv/data,/mnt/scratch"))
-                .extraMounts,
-        )
-    }
-
-    @Test
-    fun `extra mounts trim entries, drop blanks and dedupe`() {
-        assertEquals(
-            listOf("/srv/data", "/mnt/scratch"),
-            Config.fromEnv(
-                mapOf(
-                    "OPENROUTER_API_KEY" to "k",
-                    "ACP_EXTRA_MOUNTS" to " /srv/data ,, /srv/data, /mnt/scratch ,",
-                )
-            ).extraMounts,
-        )
-    }
-
-    @Test
-    fun `extra mounts ignore relative entries fail-open`() {
-        assertEquals(
-            listOf("/srv/data"),
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "ACP_EXTRA_MOUNTS" to "srv/data,/srv/data"))
-                .extraMounts,
-        )
-    }
-
-    @Test
-    fun `scratch directory defaults to the literal path and is overridable`() {
-        assertEquals(
-            "/tmp/ddr-acp-agent",
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k")).scratchDir,
-        )
-        assertEquals(
-            "/tmp/ddr-acp-agent",
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "   ")).scratchDir,
-        )
-        assertEquals(
-            "/var/scratch",
-            Config.fromEnv(
-                mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch/")
-            ).scratchDir,
-        )
-    }
-
-    @Test
-    fun `scratch directory override must be absolute and must not be the root`() {
-        val relative = assertFailsWith<IllegalArgumentException> {
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "scratch"))
+    fun `strict booleans accept the documented spellings and reject typos`() {
+        for (value in listOf("1", "true", "TRUE", "yes", "On")) {
+            assertTrue(
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to value)).fsProxyEnabled,
+                "'$value' must enable the option",
+            )
+        }
+        for (value in listOf("0", "false", "No", "OFF")) {
+            assertFalse(
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to value)).fsProxyEnabled,
+                "'$value' must disable the option",
+            )
         }
         assertEquals(
-            "DDR_ACP_AGENT_SCRATCH_DIR must be an absolute path, got 'scratch'",
-            relative.message,
+            "DDR_ACP_AGENT_TOOLS_FS_PROXY must be one of 1/true/yes/on or 0/false/no/off, got 'garbage'",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to "garbage"))
+            }.message,
         )
-        // Normalized before the root check, so a dot-segment spelling cannot
-        // turn the whole filesystem into a trust root.
+    }
+
+    @Test
+    fun `strict numbers reject out-of-range and non-numeric values`() {
+        assertEquals(
+            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be between 1 and 3600, got 3601",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "3601"))
+            }.message,
+        )
+        assertEquals(
+            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be between 1 and 3600, got 0",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "0"))
+            }.message,
+        )
+        assertEquals(
+            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be an integer, got 'garbage'",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "garbage"))
+            }.message,
+        )
+        assertEquals(
+            "DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS must be at least 1, got 0",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "0"))
+            }.message,
+        )
+    }
+
+    @Test
+    fun `path lists come from the file and the env overrides them comma separated`() {
+        val fromFile = load(
+            configJson = """{"permissions": {"readableDirectories": ["/srv/data"], "writableDirectories": ["/srv/w"]}}"""
+        )
+        assertEquals(listOf("/srv/data"), fromFile.readableDirectories)
+        assertEquals(listOf("/srv/w"), fromFile.writableDirectories)
+
+        val fromEnv = load(
+            configJson = """{"permissions": {"readableDirectories": ["/srv/data"]}}""",
+            env = mapOf(
+                "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to " /mnt/a ,, /mnt/b , /mnt/a ",
+                "DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES" to "/mnt/w",
+            ),
+        )
+        assertEquals(listOf("/mnt/a", "/mnt/b"), fromEnv.readableDirectories)
+        assertEquals(listOf("/mnt/w"), fromEnv.writableDirectories)
+    }
+
+    @Test
+    fun `non-absolute path list entries are rejected`() {
+        assertEquals(
+            "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES entries must be absolute paths, got 'srv/data'",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "srv/data"))
+            }.message,
+        )
+    }
+
+    @Test
+    fun `configured directories that do not exist warn but do not fail`() {
+        val warnings = mutableListOf<String>()
+        val config = load(
+            env = mapOf(
+                "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "/does/not/exist",
+                "DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES" to home.toString(),
+            ),
+            warnings = warnings,
+        )
+        assertEquals(listOf("/does/not/exist"), config.readableDirectories)
+        assertEquals(listOf("configured directory '/does/not/exist' does not exist"), warnings)
+    }
+
+    @Test
+    fun `scratch directory keeps its env name and is validated`() {
+        assertEquals("/var/scratch", load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch/")).scratchDir)
+        assertEquals("/tmp/y", load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/x/../y")).scratchDir)
+        assertEquals(
+            "DDR_ACP_AGENT_SCRATCH_DIR must be an absolute path, got 'scratch'",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "scratch"))
+            }.message,
+        )
         for (root in listOf("/", "/tmp/..", "//")) {
             assertFailsWith<IllegalArgumentException>("expected '$root' to be refused") {
-                Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to root))
+                load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to root))
             }
         }
     }
 
     @Test
-    fun `scratch directory is normalized before the root check`() {
-        // A dot-segment spelling must not survive into the trust root: it is
-        // normalized, so "/tmp/x/../y" becomes "/tmp/y" and trailing slashes go.
+    fun `a relative apiKeyFile in the config file is rejected`() {
         assertEquals(
-            "/tmp/y",
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/x/../y/"))
-                .scratchDir,
-        )
-        assertEquals(
-            "/tmp/ddr-acp-agent",
-            Config.fromEnv(mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/ddr-acp-agent/."))
-                .scratchDir,
+            "config file openRouter.apiKeyFile must be an absolute path, got 'openrouter.key'",
+            assertFailsWith<IllegalArgumentException> {
+                load(configJson = """{"openRouter": {"apiKeyFile": "openrouter.key"}}""")
+            }.message,
         )
     }
 
     @Test
-    fun `scratch directory is not part of the extra mounts`() {
-        val config = Config.fromEnv(
-            mapOf("OPENROUTER_API_KEY" to "k", "DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch")
+    fun `an explicit config file name must not be a path`() {
+        assertEquals(
+            "DDR_ACP_AGENT_CONFIG_FILE must be a file name inside the config directory, not a path, " +
+                    "got '/etc/config.json'",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "/etc/config.json"))
+            }.message,
         )
-        assertEquals(emptyList(), config.extraMounts)
-        assertEquals("/var/scratch", config.scratchDir)
+        for (name in listOf(".", "..")) {
+            assertFailsWith<IllegalArgumentException>("expected '$name' to be refused") {
+                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to name))
+            }
+        }
+    }
+
+    @Test
+    fun `an explicitly selected config file must exist in the config directory`() {
+        assertEquals(
+            "config file '${home.resolve(".config").resolve(Config.APP_CONFIG_DIR).resolve("work.json")}' " +
+                    "is not a regular file",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json"))
+            }.message,
+        )
+    }
+
+    @Test
+    fun `a blank config file selection falls back to the default name`() {
+        // The env layer trims everywhere else: a blank value must not count as
+        // an "explicit selection" (a missing profile is fatal, the default is not).
+        assertEquals("sk-default", load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "  ")).openRouterApiKey)
+    }
+
+    @Test
+    fun `an explicit config file name selects a profile and a broken one names the file`() {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        val profile = configDir.resolve("work.json")
+        profile.writeText("""{"tools": {"maxTurnRequests": 5}}""")
+        assertEquals(
+            5,
+            load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json")).maxTurnRequests,
+        )
+
+        profile.writeText("""{"tools": {"maxTurnRequests": 0}}""")
+        assertEquals(
+            "config file '$profile': tools.maxTurnRequests must be at least 1, got 0",
+            assertFailsWith<IllegalArgumentException> {
+                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json"))
+            }.message,
+        )
+    }
+
+    @Test
+    fun `XDG_CONFIG_HOME relocates the config directory`() {
+        val xdg = Files.createTempDirectory("acp-xdg")
+        val configDir = xdg.resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-xdg")
+        assertEquals(
+            "sk-xdg",
+            Config.load(env = mapOf("XDG_CONFIG_HOME" to xdg.toString()), home = home).openRouterApiKey,
+        )
     }
 }

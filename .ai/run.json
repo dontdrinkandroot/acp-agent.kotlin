@@ -1,14 +1,14 @@
 {
     "compile": {
-        "command": "timeout 180 ./gradlew compileKotlin",
+        "command": "timeout 180 ./gradlew compileKotlin [args]",
         "description": "Compile main sources (fastest loop; 180s timeout to catch hangs)"
     },
     "build": {
-        "command": "timeout 300 ./gradlew build",
+        "command": "timeout 300 ./gradlew build [args]",
         "description": "Compile + run all unit and black-box e2e tests (300s: full suite incl. a cold daemon)"
     },
     "test": {
-        "command": "timeout 300 ./gradlew test",
+        "command": "timeout 300 ./gradlew test [args]",
         "description": "Run the full test suite (unit + black-box e2e; 300s to cover a cold daemon)"
     },
     "test_class": {

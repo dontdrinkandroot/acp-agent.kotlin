@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import net.dontdrinkandroot.acpagent.BuildInfo
+import net.dontdrinkandroot.acpagent.config.UnlistedPaths
 import net.dontdrinkandroot.acpagent.tools.FileAccessExclusions
 import net.dontdrinkandroot.acpagent.tools.RunConfig
 
@@ -17,12 +18,12 @@ internal class SystemPromptBuilder(
     private val todayProvider: () -> String,
     private val runConfigsProvider: () -> List<RunConfig> = { emptyList() },
     /**
-     * Absolute read-trusted paths: the user-configured `ACP_EXTRA_MOUNTS` (e.g.
-     * the extra docker mounts) plus the agent's own scratch directory. Reads
-     * under them never prompt. Static for the process lifetime, so the prompt
-     * can state them once.
+     * The path-access tiers (`permissions.readableDirectories` /
+     * `writableDirectories`, `unlistedPaths`) plus the agent's own scratch
+     * directory: rendered into a static prompt section so the model knows where
+     * it may operate prompt-free. Static for the process lifetime.
      */
-    private val trustedReadPaths: List<String> = emptyList(),
+    private val permissionPolicy: PermissionPolicy = PermissionPolicy(),
     /**
      * Glob rules of the file-access exclusion policy (see
      * [net.dontdrinkandroot.acpagent.tools.FileAccessExclusions]): rendered
@@ -137,30 +138,48 @@ internal class SystemPromptBuilder(
         )
         appendLine("* Cite code as file_path:line_number (relative to the working directory) where it helps navigation.")
         appendLine("* After finishing, summarize the result concisely in Markdown.")
-        append(trustedReadPathsSection(trustedReadPaths))
+        append(trustedPathsSection(permissionPolicy))
         append(excludedFilesSection(excludedFileGlobs))
         append(runConfigsSection(runConfigsProvider()))
         append(instructionsSection(instructions))
     }
 
     /**
-     * Static section naming the read-trusted paths (`ACP_EXTRA_MOUNTS` and the
-     * agent's scratch directory): reads under them run without a permission
-     * prompt, writes and mutations do not, so the model does not have to
-     * discover that asymmetry per call.
+     * Static section naming the path-access tiers (`permissions.*` plus the
+     * agent's scratch directory): reads under the readable tier run without a
+     * prompt, writes under the writable tier too - but only where a mode allows
+     * them at all, which is why the write tier is labelled with its modes and
+     * not as unconditional write access. Paths in neither follow
+     * `permissions.unlistedPaths`, so the model does not have to discover the
+     * tiers per call.
      */
-    private fun trustedReadPathsSection(paths: List<String>): String {
-        if (paths.isEmpty()) return ""
+    private fun trustedPathsSection(policy: PermissionPolicy): String {
+        val readable = policy.readableDirectories
+        val writable = policy.writableDirectories
+        if (readable.isEmpty() && writable.isEmpty()) return ""
         return buildString {
             appendLine()
-            appendLine("## Trusted read paths")
+            appendLine("## Trusted paths")
             appendLine()
             appendLine(
-                "No permission prompt for `read_file`/`list_dir`/`glob`/`grep` under these paths; " +
-                        "writes and mutations still require permission outside the working directory."
+                "The working directory is implicitly readable and writable. Additionally configured:"
             )
             appendLine()
-            paths.forEach { appendLine("* $it") }
+            if (readable.isNotEmpty()) {
+                appendLine("* Read-only access (every mode):")
+                readable.forEach { appendLine("  * $it") }
+            }
+            if (writable.isNotEmpty()) {
+                appendLine("* Write access in build and bash mode:")
+                writable.forEach { appendLine("  * $it") }
+            }
+            if (policy.unlistedPaths == UnlistedPaths.DENY) {
+                appendLine()
+                appendLine(
+                    "Paths outside the working directory and outside every tier are refused without a prompt; " +
+                            "ask the user to add the path to the configuration instead of retrying."
+                )
+            }
         }
     }
 

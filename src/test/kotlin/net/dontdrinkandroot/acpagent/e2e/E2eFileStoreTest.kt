@@ -16,7 +16,7 @@ import kotlin.test.*
 /**
  * Black-box path-aware permissions and the client fs proxy: in-project
  * reads/writes run without a prompt and route through the client fs when it is
- * advertised (unless disabled via `FS_PROXY_ENABLED=0`), while out-of-project
+ * advertised (unless disabled via `DDR_ACP_AGENT_TOOLS_FS_PROXY=0`), while out-of-project
  * reads ask the user for permission.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
@@ -91,7 +91,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                     )
                     // The system prompt surfaces the scratch directory as a trusted read path.
                     assertTrue(
-                        llmMock.requestBodies[0].contains("Trusted read paths") &&
+                        llmMock.requestBodies[0].contains("## Trusted paths") &&
                                 llmMock.requestBodies[0].contains(scratchDir.absolutePath),
                         "the system prompt must surface the scratch directory",
                     )
@@ -153,7 +153,7 @@ class E2eFileStoreTest : E2eAgentTest() {
             targetFile = file
             MockOpenAiServer("unused", toolCall = MockToolCall("read_file", readFileArgs(file.absolutePath)))
         }) {
-            val connection = connect(extraEnv = mapOf("FS_PROXY_ENABLED" to "0"))
+            val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to "0"))
             try {
                 connection.client.initialize(
                     testClientInfo(
@@ -363,7 +363,9 @@ class E2eFileStoreTest : E2eAgentTest() {
                     toolCall = MockToolCall("read_file", readFileArgs(trustedFile.absolutePath)),
                 ),
             ) {
-                val connection = connect(extraEnv = mapOf("ACP_EXTRA_MOUNTS" to trustedDir.absolutePath))
+                val connection = connect(
+                    extraEnv = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to trustedDir.absolutePath)
+                )
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()
@@ -384,7 +386,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                     // The system prompt names the trusted paths so the model
                     // knows reads there are prompt-free.
                     assertTrue(
-                        llmMock.requestBodies[0].contains("Trusted read paths") &&
+                        llmMock.requestBodies[0].contains("## Trusted paths") &&
                                 llmMock.requestBodies[0].contains(trustedDir.absolutePath),
                         "the system prompt must surface the trusted read paths",
                     )
@@ -416,7 +418,9 @@ class E2eFileStoreTest : E2eAgentTest() {
                     ),
                 ),
             ) {
-                val connection = connect(extraEnv = mapOf("ACP_EXTRA_MOUNTS" to trustedDir.absolutePath))
+                val connection = connect(
+                    extraEnv = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to trustedDir.absolutePath)
+                )
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()

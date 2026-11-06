@@ -12,7 +12,7 @@ PROJECT=$TEST_TMP/project
 mkdir -p "$PROJECT"
 
 test_project_is_mounted_at_the_identical_path_with_workdir() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -21,7 +21,7 @@ test_project_is_mounted_at_the_identical_path_with_workdir() {
 }
 
 test_sandbox_hardening_flags_are_present() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -34,7 +34,7 @@ test_sandbox_hardening_flags_are_present() {
 }
 
 test_rw_rootfs_opt_out_relaxes_read_only() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ACP_DOCKER_RW_ROOTFS=1 --skip-pull
+    run_docker_launcher "$PROJECT" DDR_ACP_AGENT_DOCKER_RW_ROOTFS=1 --skip-pull
     assert_exit_status 0
     assert_not_contains "$(last_run_line)" "--read-only"
 }
@@ -47,7 +47,7 @@ test_rw_rootfs_opt_out_relaxes_read_only() {
 # directly, so the mapping must point at 127.0.0.1 instead of the bridge
 # gateway, which would miss 127.0.0.1-bound services.
 test_host_network_is_the_default() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -59,7 +59,7 @@ test_host_network_is_the_default() {
 # host.docker.internal maps to the bridge gateway again (the service names of a
 # compose project, e.g. 'postgres', resolve through its embedded DNS).
 test_explicit_network_keeps_the_host_gateway_mapping() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ACP_DOCKER_NETWORK=development --skip-pull
+    run_docker_launcher "$PROJECT" DDR_ACP_AGENT_DOCKER_NETWORK=development --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -68,14 +68,14 @@ test_explicit_network_keeps_the_host_gateway_mapping() {
 }
 
 test_explicit_docker_network_is_honored() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test ACP_DOCKER_NETWORK=default --skip-pull
+    run_docker_launcher "$PROJECT" DDR_ACP_AGENT_DOCKER_NETWORK=default --skip-pull
     assert_exit_status 0
     assert_contains "$(last_run_line)" "--network default"
 }
 
 test_extra_args_are_appended() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "ACP_DOCKER_EXTRA_ARGS=--label foo=bar --label baz=qux" --skip-pull
+    run_docker_launcher "$PROJECT" \
+        "DDR_ACP_AGENT_DOCKER_EXTRA_ARGS=--label foo=bar --label baz=qux" --skip-pull
     assert_exit_status 0
     assert_contains "$(last_run_line)" "--label foo=bar --label baz=qux"
 }
@@ -85,7 +85,7 @@ test_home_local_directories_get_uid_mapped_tmpfs_mounts() {
     # container; the ~/.local tmpfs mounts keep the whole XDG state/data home
     # writable for the agent's uid (the session-state bind mounts on top of
     # the state tmpfs; see the mount-ordering test below).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -109,7 +109,7 @@ test_state_bind_lands_on_top_of_the_local_state_tmpfs() {
     # later would shadow the state bind and sessions would live in an
     # ephemeral tmpfs. Asserting argv order over-pins the daemon's sort - the
     # launcher keeps the argv independently correct either way.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test "ACP_DOCKER_STATE_DIR=$TEST_TMP/ddr-acp-agent" --skip-pull
+    run_docker_launcher "$PROJECT" "DDR_ACP_AGENT_DOCKER_STATE_DIR=$TEST_TMP/ddr-acp-agent" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -124,11 +124,10 @@ test_state_bind_lands_on_top_of_the_local_state_tmpfs() {
 }
 
 test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
-    # ACP_DOCKER_MOUNT_CACHES=0 disables the cache binds, but never the
+    # DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 disables the cache binds, but never the
     # uid-mapped tmpfs mounts: ~/.local, ~/.cache and the private Gradle
     # user-home root stay writable.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        ACP_DOCKER_MOUNT_CACHES=0 --skip-pull
+    run_docker_launcher "$PROJECT" DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -139,7 +138,7 @@ test_mount_caches_zero_skips_the_local_store_and_cache_mounts() {
     assert_contains "$line" \
         "--tmpfs /home/dev/.cache:uid=$(id -u),gid=$(id -g),mode=700,size=1g"
     # The private Gradle tmpfs root + intermediate depths are unconditional:
-    # no whole-GUH bind and no leaf binds under ACP_DOCKER_MOUNT_CACHES=0, but
+    # no whole-GUH bind and no leaf binds under DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0, but
     # the .gradle root/caches/wrapper tmpfs mounts are still present so
     # daemon/process state stays container-private and every depth the binds
     # would otherwise leave root-owned stays writable.
@@ -163,7 +162,7 @@ test_explicit_cache_dir_is_identity_mounted_and_forwarded_unchanged() {
     # (no relocation to the container default) and the env value is forwarded
     # verbatim - trailing slash included.
     local uv_cache=$TEST_TMP/altdata/cache/uv
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test "UV_CACHE_DIR=$uv_cache/" --skip-pull
+    run_docker_launcher "$PROJECT" "UV_CACHE_DIR=$uv_cache/" --skip-pull
     assert_exit_status 0
     [ -d "$uv_cache" ] || _fail "expected $uv_cache to be created"
     local line
@@ -178,7 +177,7 @@ test_explicit_cache_dir_inside_the_project_is_forwarded_without_a_mount() {
     # tool honors the configured path instead of silently falling back to its
     # in-container default (issue #51).
     local uv_cache=$PROJECT/cache-uv
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test "UV_CACHE_DIR=$uv_cache" --skip-pull
+    run_docker_launcher "$PROJECT" "UV_CACHE_DIR=$uv_cache" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -191,7 +190,7 @@ test_uv_link_mode_is_forwarded_when_set() {
     # (caches on an unencrypted disk, venvs in an encrypted home) - the same
     # layout exists in the container once the cache is identity-bound, so the
     # setting must travel (issue #51).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test UV_LINK_MODE=symlink --skip-pull
+    run_docker_launcher "$PROJECT" UV_LINK_MODE=symlink --skip-pull
     assert_exit_status 0
     assert_eq "symlink" "$(env_value_for "$(last_run_line)" UV_LINK_MODE)"
 }
@@ -204,7 +203,7 @@ test_pnpm_store_and_cache_dirs_are_identity_mounted_and_forwarded() {
     # virtual-store symlinks into the shared store keep resolving.
     local pnpm_store=$TEST_TMP/altdata/cache/pnpm/store
     local pnpm_cache=$TEST_TMP/altdata/cache/pnpm/cache
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+    run_docker_launcher "$PROJECT" \
         "PNPM_CONFIG_STORE_DIR=$pnpm_store" "PNPM_CONFIG_CACHE_DIR=$pnpm_cache" --skip-pull
     assert_exit_status 0
     [ -d "$pnpm_store" ] || _fail "expected $pnpm_store to be created"
@@ -221,7 +220,7 @@ test_pnpm_global_virtual_store_is_forwarded_when_set() {
     # pnpm's enable-global-virtual-store makes node_modules symlink into the
     # shared store - the setting must travel with the identity-bound store so
     # host and container projects share one layout (like UV_LINK_MODE).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+    run_docker_launcher "$PROJECT" \
         PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=true --skip-pull
     assert_exit_status 0
     assert_eq "true" "$(env_value_for "$(last_run_line)" PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE)"
@@ -236,7 +235,7 @@ test_pnpm_default_candidates_are_mounted_at_the_container_defaults() {
     local xdg_cache=$TEST_TMP/xdg-cache
     mkdir -p "$xdg_data/pnpm/store" "$xdg_cache/pnpm" ||
         _fail "could not create the pnpm default-candidate fixtures"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+    run_docker_launcher "$PROJECT" \
         "XDG_DATA_HOME=$xdg_data" "XDG_CACHE_HOME=$xdg_cache" --skip-pull
     assert_exit_status 0
     local line
@@ -253,8 +252,8 @@ test_mount_caches_zero_ignores_explicit_cache_config_entirely() {
     # Total opt-out: with no caches shared at all, explicit cache config is
     # ignored wholesale - no mounts, no env forwarding and no validation of
     # even unusable values (the tool keeps its in-container default; issue #51).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        ACP_DOCKER_MOUNT_CACHES=0 UV_CACHE_DIR=relative/cache ANDROID_HOME=relative/sdk \
+    run_docker_launcher "$PROJECT" \
+        DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 UV_CACHE_DIR=relative/cache ANDROID_HOME=relative/sdk \
         UV_LINK_MODE=symlink PNPM_CONFIG_STORE_DIR=relative/store \
         PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=true --skip-pull
     assert_exit_status 0
@@ -269,94 +268,104 @@ test_mount_caches_zero_ignores_explicit_cache_config_entirely() {
     assert_not_contains "$(mount_values "$line")" "cache"
 }
 
-test_api_key_never_travels_through_the_env() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
-    assert_exit_status 0
-    local line
-    line=$(last_run_line)
-    # The container env carries only the file path, never the key itself.
-    assert_empty "$(env_value_for "$line" OPENROUTER_API_KEY)"
-    assert_eq "/tmp/openrouter-api-key" "$(env_value_for "$line" OPENROUTER_API_KEY_FILE)"
-    # The key is staged as a 0600 file (tmpfs; /tmp fallback where /dev/shm is
-    # unavailable) and mounted ro at the in-container path.
-    local mount
-    mount=$(mount_values "$line" | grep 'dst=/tmp/openrouter-api-key')
-    assert_nonempty "$mount"
-    assert_contains "$mount" "type=bind,src="
-    assert_contains "$mount" "dst=/tmp/openrouter-api-key,ro"
-    local staged
-    staged=$(printf '%s\n' "$mount" | sed -n 's/.*src=\([^,]*\),.*/\1/p')
-    assert_nonempty "$staged"
-    # The staged file is gone by the time docker returns (EXIT trap), so its
-    # mode and content are observed by the stub at run time: one
-    # `keyfile <mode> <content>` record per key mount (fake-docker).
-    assert_eq "keyfile 600 sk-test" "$(grep '^keyfile ' "$LOG")"
-    # The EXIT trap removed the staged file after docker returned.
-    [ ! -e "$staged" ] || _fail "expected the staged key file to be removed"
-}
-
-test_relative_api_key_file_path_is_absolutized_against_the_launcher_cwd() {
-    # Relative OPENROUTER_API_KEY_FILE (a plain filename, cwd == the project
-    # dir): the launcher must absolutize it against its own cwd, since docker
-    # would otherwise resolve it inside the container. The launcher cds into
-    # the project dir first, so the file must exist there.
-    local key_file=$PROJECT/keys/host-key
-    mkdir -p "$PROJECT/keys"
-    printf 'sk-hostfile\n' >"$key_file"
-    chmod 600 "$key_file"
-    run_docker_launcher "$PROJECT" "OPENROUTER_API_KEY_FILE=keys/host-key" --skip-pull
-    assert_exit_status 0
-    local mount
-    mount=$(mount_values "$(last_run_line)" | grep 'dst=/tmp/openrouter-api-key')
-    assert_contains "$mount" "type=bind,src=$key_file,dst=/tmp/openrouter-api-key,ro"
-    rm -rf "$PROJECT/keys"
-}
-
-test_api_key_file_is_mounted_directly_without_a_staged_copy() {
+test_the_launcher_never_handles_the_api_key() {
+    # Issue #50: the key is no longer a launcher input at all. Even with the old
+    # host variables set, nothing reaches the container: no key mount, no key
+    # env - the key travels inside the mounted config directory instead.
     local key_file=$TEST_TMP/host-key
     printf 'sk-hostfile\n' >"$key_file"
     chmod 600 "$key_file"
-    run_docker_launcher "$PROJECT" "OPENROUTER_API_KEY_FILE=$key_file" --skip-pull
+    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-env "OPENROUTER_API_KEY_FILE=$key_file" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
-    assert_eq "/tmp/openrouter-api-key" "$(env_value_for "$line" OPENROUTER_API_KEY_FILE)"
+    assert_nonempty "$line"
     assert_empty "$(env_value_for "$line" OPENROUTER_API_KEY)"
-    local mount
-    mount=$(mount_values "$line" | grep 'dst=/tmp/openrouter-api-key')
-    assert_contains "$mount" "type=bind,src=$key_file,dst=/tmp/openrouter-api-key,ro"
-    # The host file is mounted, not staged: it still exists afterwards, and
-    # exactly one key mount exists with the host file as its source.
-    [ -f "$key_file" ] || _fail "expected the host key file to survive the run (mounted, not staged)"
-    local key_mounts
-    key_mounts=$(mount_values "$line" | grep -c 'dst=/tmp/openrouter-api-key' || true)
-    assert_eq "1" "$key_mounts"
+    assert_empty "$(env_value_for "$line" OPENROUTER_API_KEY_FILE)"
+    assert_empty "$(env_value_for "$line" DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE)"
+    assert_not_contains "$(mount_values "$line")" "openrouter-api-key"
+    [ -f "$key_file" ] || _fail "the launcher must not touch the host key file"
 }
 
 test_optional_env_vars_are_forwarded_only_when_set() {
     # KEY=VALUE env args must precede launcher flags (run_docker_launcher
-    # parses them until the first non-assignment).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        OPENROUTER_MODEL=test/model FS_PROXY_ENABLED=0 ACP_WEB_FETCH_ALLOW_PRIVATE=1 \
+    # parses them until the first non-assignment). The agent's whole env layer
+    # (issue #50) is forwarded verbatim by prefix.
+    run_docker_launcher "$PROJECT" \
+        DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL=test/model DDR_ACP_AGENT_TOOLS_FS_PROXY=0 \
+        DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1 \
+        DDR_ACP_AGENT_CONFIG_FILE=work.json \
         DDR_ACP_AGENT_SCRATCH_DIR=/tmp/scratch-test \
         TZ=Europe/Berlin --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
-    assert_eq "test/model" "$(env_value_for "$line" OPENROUTER_MODEL)"
-    assert_eq "0" "$(env_value_for "$line" FS_PROXY_ENABLED)"
-    assert_eq "1" "$(env_value_for "$line" ACP_WEB_FETCH_ALLOW_PRIVATE)"
+    assert_eq "test/model" "$(env_value_for "$line" DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL)"
+    assert_eq "0" "$(env_value_for "$line" DDR_ACP_AGENT_TOOLS_FS_PROXY)"
+    assert_eq "1" "$(env_value_for "$line" DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE)"
+    # The config-file *name* travels verbatim and resolves inside the mounted
+    # config directory (issue #50) - it is deliberately not a host path.
+    assert_eq "work.json" "$(env_value_for "$line" DDR_ACP_AGENT_CONFIG_FILE)"
     # The scratch directory (issue #10) is forwarded verbatim - never mounted,
     # and never reinterpreted by the launcher.
     assert_eq "/tmp/scratch-test" "$(env_value_for "$line" DDR_ACP_AGENT_SCRATCH_DIR)"
     # TZ keeps the agent's rendered timestamps on the host zone (issue #22).
     assert_eq "Europe/Berlin" "$(env_value_for "$line" TZ)"
-    assert_empty "$(env_value_for "$line" ACP_MAX_TURN_REQUESTS)"
+    assert_empty "$(env_value_for "$line" DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS)"
+}
+
+test_launcher_knobs_stay_out_of_the_agent_env() {
+    # The launcher's own knobs live under DDR_ACP_AGENT_DOCKER_*, i.e. inside
+    # the same prefix family the agent config is forwarded by. They are
+    # host-side decisions (network mode, state dir, cache sharing, ...) that
+    # mean nothing inside the container, so the forwarding loop must carve them
+    # out - otherwise the agent would see, e.g., a network name as config.
+    run_docker_launcher "$PROJECT" \
+        DDR_ACP_AGENT_DOCKER_NETWORK=development \
+        DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 \
+        DDR_ACP_AGENT_DOCKER_STATE_DIR="$TEST_TMP/state" \
+        DDR_ACP_AGENT_DOCKER_RW_ROOTFS=1 \
+        DDR_ACP_AGENT_DOCKER_CAP_ADD=SYS_PTRACE \
+        DDR_ACP_AGENT_DOCKER_HOME_VOLUME=probe-volume \
+        DDR_ACP_AGENT_DOCKER_EXTRA_ARGS="--label probe=1" \
+        DDR_ACP_AGENT_TOOLS_FS_PROXY=0 --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    # The knobs took effect on the docker side ...
+    assert_contains "$line" "--network development"
+    assert_contains "$line" "--cap-add SYS_PTRACE"
+    assert_contains "$line" "--label probe=1"
+    assert_contains "$line" "type=volume,src=probe-volume"
+    # ... while the agent env carries only its own config.
+    assert_eq "0" "$(env_value_for "$line" DDR_ACP_AGENT_TOOLS_FS_PROXY)"
+    local knob
+    for knob in DDR_ACP_AGENT_DOCKER_NETWORK DDR_ACP_AGENT_DOCKER_MOUNT_CACHES \
+        DDR_ACP_AGENT_DOCKER_STATE_DIR DDR_ACP_AGENT_DOCKER_RW_ROOTFS \
+        DDR_ACP_AGENT_DOCKER_CAP_ADD DDR_ACP_AGENT_DOCKER_HOME_VOLUME \
+        DDR_ACP_AGENT_DOCKER_EXTRA_ARGS; do
+        assert_empty "$(env_value_for "$line" "$knob")"
+    done
+}
+
+test_the_legacy_acp_docker_names_are_inert() {
+    # The rename is a hard switch (like the issue #50 env renames): the old
+    # ACP_DOCKER_* spellings are not read and produce no warning. A leftover
+    # must not silently select a network, relax the rootfs or mount a volume.
+    run_docker_launcher "$PROJECT" \
+        ACP_DOCKER_NETWORK=development ACP_DOCKER_RW_ROOTFS=1 \
+        ACP_DOCKER_HOME_VOLUME=legacy-volume --skip-pull
+    assert_exit_status 0
+    local line
+    line=$(last_run_line)
+    assert_contains "$line" "--network host"
+    assert_contains "$line" "--read-only"
+    assert_not_contains "$line" "legacy-volume"
 }
 
 test_env_local_is_masked_with_an_empty_read_only_file() {
     : >"$PROJECT/.env.local"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -369,14 +378,14 @@ test_env_local_is_not_mounted_when_absent() {
     # Defensive: a previously failing test aborts before its cleanup and must
     # not leak its .env.local fixture into this one.
     rm -f "$PROJECT/.env.local"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     assert_not_contains "$(last_run_line)" ".env.local"
 }
 
 test_git_identity_is_forwarded_when_configured() {
     GIT_IDENTITY_SET=1 setup_git_identity
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -388,7 +397,7 @@ test_git_identity_is_forwarded_when_configured() {
 
 test_git_identity_is_omitted_when_not_configured() {
     GIT_IDENTITY_SET=0 setup_git_identity
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -407,8 +416,7 @@ test_explicit_android_home_is_identity_mounted_and_forwarded() {
     # in-container path (no relocation to the container default); both
     # ANDROID_* variables carry the configured value (the companion is
     # synthesized to the same path).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "ANDROID_HOME=$ANDROID_SDK" --skip-pull
+    run_docker_launcher "$PROJECT" "ANDROID_HOME=$ANDROID_SDK" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -421,8 +429,7 @@ test_explicit_android_home_is_identity_mounted_and_forwarded() {
 test_explicit_android_sdk_root_is_forwarded_with_a_synthesized_home() {
     # A lone ANDROID_SDK_ROOT is the authoritative value: identity-mounted and
     # forwarded verbatim, with ANDROID_HOME synthesized to the same path.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "ANDROID_SDK_ROOT=$ANDROID_SDK" --skip-pull
+    run_docker_launcher "$PROJECT" "ANDROID_SDK_ROOT=$ANDROID_SDK" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -436,7 +443,7 @@ test_android_home_wins_over_android_sdk_root() {
     # Both set to different paths: ANDROID_HOME is authoritative - its dir is
     # identity-mounted and both variables carry its value (the losing
     # ANDROID_SDK_ROOT value is never mounted).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+    run_docker_launcher "$PROJECT" \
         "ANDROID_HOME=$ANDROID_SDK" "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT_DIR" --skip-pull
     assert_exit_status 0
     local line
@@ -452,8 +459,7 @@ test_default_android_sdk_dir_is_picked_up_without_env() {
     # No ANDROID_HOME/ANDROID_SDK_ROOT (common.sh strips them): an existing
     # $HOME/Android/Sdk is shared, never created. HOME is pinned to a fixture
     # so the test does not depend on the runner's real home.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$FAKE_HOME" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$FAKE_HOME" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -469,8 +475,7 @@ test_default_android_sdk_dir_inside_the_project_is_skipped() {
     # (issue #51).
     local home_in_project=$PROJECT/home
     mkdir -p "$home_in_project/Android/Sdk"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$home_in_project" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$home_in_project" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -482,8 +487,7 @@ test_default_android_sdk_dir_inside_the_project_is_skipped() {
 test_no_android_mount_without_an_sdk() {
     # HOME without an Android/Sdk dir: nothing is mounted and no ANDROID_*
     # env is injected.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$TEST_TMP/empty-home" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$TEST_TMP/empty-home" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -493,8 +497,8 @@ test_no_android_mount_without_an_sdk() {
 }
 
 test_android_mount_honors_acp_docker_mount_caches_zero() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        ACP_DOCKER_MOUNT_CACHES=0 "ANDROID_HOME=$ANDROID_SDK" --skip-pull
+    run_docker_launcher "$PROJECT" \
+        DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 "ANDROID_HOME=$ANDROID_SDK" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -508,8 +512,7 @@ test_android_sdk_inside_the_project_dir_pins_the_host_path() {
     # the skipped container default would reference a nonexistent directory.
     local sdk_in_project=$PROJECT/android-sdk
     mkdir -p "$sdk_in_project"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "ANDROID_HOME=$sdk_in_project" --skip-pull
+    run_docker_launcher "$PROJECT" "ANDROID_HOME=$sdk_in_project" --skip-pull
     assert_exit_status 0
     local line
     line=$(last_run_line)
@@ -536,8 +539,7 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
     # their identical in-container path; daemon/, per-version caches and the
     # private root are left to the .gradle tmpfs. The GUH root itself is not
     # mounted whole (no daemon-registry merge across PID namespaces).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
     assert_exit_status 0
     local line mounts
     line=$(last_run_line)
@@ -595,11 +597,11 @@ test_gradle_content_addressed_leaves_are_shared_rw() {
 }
 
 test_gradle_leaves_are_not_shared_when_mount_caches_zero() {
-    # ACP_DOCKER_MOUNT_CACHES=0 skips even the content-addressed leaves, but
+    # DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 skips even the content-addressed leaves, but
     # the private .gradle tmpfs (root + intermediate depths) and the
     # GRADLE_USER_HOME pin remain.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        ACP_DOCKER_MOUNT_CACHES=0 "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
+    run_docker_launcher "$PROJECT" \
+        DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0 "HOME=$GRADLE_HOME_FIXTURE" --skip-pull
     assert_exit_status 0
     local line mounts
     line=$(last_run_line)
@@ -620,8 +622,7 @@ test_gradle_no_mount_without_a_host_gradle_home() {
     # No GRADLE_USER_HOME and no existing $HOME/.gradle: nothing is shared,
     # but the private root + intermediate depth tmpfs mounts and the pin stay
     # (the container Gradle uses its ephemeral private GUH).
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$TEST_TMP/empty-gradle-home" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$TEST_TMP/empty-gradle-home" --skip-pull
     assert_exit_status 0
     local line mounts
     line=$(last_run_line)
@@ -648,8 +649,7 @@ test_gradle_version_dirs_derived_from_wrapper_dists_are_shared() {
     mkdir -p "$guh/caches/modules-2" "$guh/wrapper/dists/gradle-9.7.0-bin" \
         "$guh/wrapper/dists/gradle-8.14-all" ||
         _fail "could not create the dists-home fixture"
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        "HOME=$TEST_TMP/dists-home" --skip-pull
+    run_docker_launcher "$PROJECT" "HOME=$TEST_TMP/dists-home" --skip-pull
     assert_exit_status 0
     local line mounts
     line=$(last_run_line)
@@ -673,7 +673,7 @@ test_gradle_version_dirs_derived_from_wrapper_dists_are_shared() {
 
 test_gradle_user_home_env_overrides_home() {
     # An explicit absolute GRADLE_USER_HOME wins over $HOME/.gradle.
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
+    run_docker_launcher "$PROJECT" \
         "GRADLE_USER_HOME=$GRADLE_HOME_FIXTURE/.gradle" "HOME=$TEST_TMP/other-home" --skip-pull
     assert_exit_status 0
     local line mounts
@@ -686,8 +686,6 @@ test_gradle_user_home_env_overrides_home() {
 
 test_pull_failure_falls_back_to_a_local_image() {
     run_docker_launcher "$PROJECT" FAKE_DOCKER_PULL_EXIT=1 FAKE_DOCKER_INSPECT_EXIT=0
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        FAKE_DOCKER_PULL_EXIT=1 FAKE_DOCKER_INSPECT_EXIT=0
     assert_exit_status 0
     assert_contains "$OUT" "WARNING: docker pull"
     assert_contains "$OUT" "continuing with the locally available image"
@@ -695,14 +693,12 @@ test_pull_failure_falls_back_to_a_local_image() {
 
 test_pull_failure_without_a_local_image_fails_loudly() {
     run_docker_launcher "$PROJECT" FAKE_DOCKER_PULL_EXIT=1 FAKE_DOCKER_INSPECT_EXIT=1
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test \
-        FAKE_DOCKER_PULL_EXIT=1 FAKE_DOCKER_INSPECT_EXIT=1
     assert_exit_status 1
     assert_contains "$OUT" "WARNING: docker pull"
 }
 
 test_skip_pull_uses_the_local_image_without_pulling() {
-    run_docker_launcher "$PROJECT" OPENROUTER_API_KEY=sk-test --skip-pull
+    run_docker_launcher "$PROJECT" --skip-pull
     assert_exit_status 0
     assert_contains "$(cat "$LOG")" "image inspect"
     local pulls

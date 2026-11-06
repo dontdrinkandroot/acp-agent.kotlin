@@ -6,12 +6,22 @@ import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.rpc.ACPJson
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.tools.*
+
+private val logger = KotlinLogging.logger {}
+
+/**
+ * The outcome of the permission stage for one tool call: allowed to run,
+ * refused by the user (or by a cancellation of the prompt), or refused by the
+ * configured policy without a prompt at all.
+ */
+internal enum class PermissionOutcome { ALLOWED, DENIED, REFUSED_BY_POLICY }
 
 /**
  * Executes one streamed tool call: mode gating (a tool disabled in the current
@@ -25,11 +35,12 @@ internal class ToolCallExecutor(
     private val toolRegistry: ToolRegistry,
     private val state: SessionState,
     /**
-     * Absolute read-trusted paths (`ACP_EXTRA_MOUNTS`): non-mutating,
-     * path-scoped calls whose targets all lie inside one of them skip the
-     * permission prompt. Empty by default, so the default stays prompt-gated.
+     * The session's path-access tiers (`permissions.*` plus the prepared
+     * scratch directory): read-only path tools are prompt-free under the
+     * readable tier, mutating ones under the writable tier, and paths in
+     * neither follow `permissions.unlistedPaths`.
      */
-    private val trustedReadPaths: List<String> = emptyList(),
+    private val permissionPolicy: PermissionPolicy = PermissionPolicy(),
 ) {
 
     /**
@@ -132,9 +143,13 @@ internal class ToolCallExecutor(
             )
         )
 
-        val allowed = shouldAllow(tool, toolCallId, arguments, title, toolContext.client, toolContext)
-        if (!allowed) {
-            val msg = "Permission denied for tool ${tool.name}"
+        val permission = resolvePermission(tool, toolCallId, arguments, title, toolContext.client, toolContext)
+        if (permission != PermissionOutcome.ALLOWED) {
+            val msg = if (permission == PermissionOutcome.REFUSED_BY_POLICY) {
+                unlistedPathRefusal(tool, arguments)
+            } else {
+                "Permission denied for tool ${tool.name}"
+            }
             emitDenied(
                 emitter = emitter,
                 toolCallId = toolCallId,
@@ -193,17 +208,23 @@ internal class ToolCallExecutor(
         state.persist()
     }
 
-    private suspend fun shouldAllow(
+    private suspend fun resolvePermission(
         tool: AgentTool,
         toolCallId: ToolCallId,
         arguments: JsonObject,
         title: String,
         client: ClientSessionOperations?,
         toolContext: ToolContext,
-    ): Boolean {
-        if (!permissionNeeded(toolContext.cwd, tool, arguments, trustedReadPaths)) return true
-        if (client == null) return true
-        state.permanentPermissions[tool.name]?.let { return it }
+    ): PermissionOutcome {
+        when (permissionDecision(toolContext.cwd, tool, arguments, permissionPolicy)) {
+            PermissionDecision.ALLOW -> return PermissionOutcome.ALLOWED
+            PermissionDecision.DENY -> return PermissionOutcome.REFUSED_BY_POLICY
+            PermissionDecision.PROMPT -> Unit
+        }
+        if (client == null) return PermissionOutcome.ALLOWED
+        state.permanentPermissions[tool.name]?.let { granted ->
+            return if (granted) PermissionOutcome.ALLOWED else PermissionOutcome.DENIED
+        }
         val options = listOf(
             "allow_once" to PermissionOptionKind.ALLOW_ONCE,
             "allow_always" to PermissionOptionKind.ALLOW_ALWAYS,
@@ -232,15 +253,25 @@ internal class ToolCallExecutor(
                         "allow_always" -> state.permanentPermissions[tool.name] = true
                         "reject_always" -> state.permanentPermissions[tool.name] = false
                     }
-                    outcome.optionId.value.startsWith("allow")
+                    if (outcome.optionId.value.startsWith("allow")) {
+                        PermissionOutcome.ALLOWED
+                    } else {
+                        PermissionOutcome.DENIED
+                    }
                 }
 
-                is RequestPermissionOutcome.Cancelled -> false
+                is RequestPermissionOutcome.Cancelled -> PermissionOutcome.DENIED
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            false
+            // Fail-closed (a broken permission channel must not allow the tool),
+            // but never silently: the user and the model both see only a plain
+            // "Permission denied", so the real cause is visible on stderr only.
+            logger.warn(e) {
+                "permission request for tool \"${tool.name}\" failed; treating it as a denial"
+            }
+            PermissionOutcome.DENIED
         }
     }
 

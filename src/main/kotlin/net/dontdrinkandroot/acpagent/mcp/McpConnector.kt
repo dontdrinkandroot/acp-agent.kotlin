@@ -32,12 +32,13 @@ public suspend fun connectMcpServer(
 
 /**
  * Variables a stdio MCP server may inherit from the agent process: the process
- * basics only. Everything else - secrets (`OPENROUTER_API_KEY`), the agent's own
- * configuration (`OPENROUTER_*`, `ACP_*`, `DDR_ACP_*`) and whatever else the IDE
+ * basics only. Everything else - the agent's own configuration (the whole
+ * `DDR_ACP_AGENT_*` family, including the API key file path), secrets, and
+ * whatever else the IDE
  * or the invoking shell put into the agent environment - stays out: a server is
  * spawned automatically at `session/new`, before any permission decision, so an
  * inherited environment is an unreviewed grant (issue #14). This mirrors how the
- * docker launcher keeps the key out of the agent env in the first place.
+ * docker launcher never puts the key into the agent env in the first place.
  */
 internal val MCP_INHERITED_ENV: List<String> = listOf(
     "PATH", "HOME", "TMPDIR", "TMP", "TEMP",

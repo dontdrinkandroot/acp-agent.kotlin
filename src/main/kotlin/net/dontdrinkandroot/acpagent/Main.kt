@@ -37,7 +37,7 @@ public fun main(args: Array<String>) {
 public fun runAgent() {
     val logger = KotlinLogging.logger {}
 
-    val config = Config.fromEnv()
+    val config = Config.load(warnings = { logger.warn { it } })
     val sessionStore = SessionStore()
 
     val localRegistry = ToolRegistry().apply { registerAll(localTools()) }

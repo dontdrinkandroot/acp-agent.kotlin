@@ -4,6 +4,7 @@ import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.model.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.config.UnlistedPaths
 import net.dontdrinkandroot.acpagent.tools.*
 import java.nio.file.Files
 import kotlin.test.*
@@ -11,6 +12,24 @@ import kotlin.test.*
 class PermissionAndFileStoreTest {
 
     private fun pathArgs(path: String): JsonObject = buildJsonObject { put("path", path) }
+
+    /**
+     * Adapter over [permissionDecision] for the pre-#50 assertions: under the
+     * default policy (`unlistedPaths = prompt`) "needs a prompt" is exactly
+     * "not allowed outright". The tiers themselves (writable, deny) are pinned
+     * by their own tests below.
+     */
+    private fun permissionNeeded(
+        cwd: String,
+        tool: AgentTool,
+        arguments: JsonObject,
+        trustedReadPaths: List<String> = emptyList(),
+    ): Boolean = permissionDecision(
+        cwd,
+        tool,
+        arguments,
+        PermissionPolicy(readableDirectories = trustedReadPaths),
+    ) != PermissionDecision.ALLOW
 
     @Test
     fun `in project read needs no permission`() {
@@ -466,6 +485,114 @@ class PermissionAndFileStoreTest {
         val read = store.readFile("/any", null, null)
         assertTrue(read.complete)
         assertNull(read.total)
+    }
+
+    @Test
+    fun `a writable directory allows writes prompt-free and implies readable`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val writable = Files.createTempDirectory("acp-writable")
+        val policy = PermissionPolicy(writableDirectories = listOf(writable.toString()))
+        assertEquals(
+            PermissionDecision.ALLOW,
+            permissionDecision(dir.toString(), WriteFileTool(), pathArgs(writable.resolve("x.txt").toString()), policy),
+            "a mutating tool under the writable tier runs prompt-free",
+        )
+        assertEquals(
+            PermissionDecision.ALLOW,
+            permissionDecision(dir.toString(), ReadFileTool(), pathArgs(writable.resolve("f.txt").toString()), policy),
+            "writable implies readable",
+        )
+    }
+
+    @Test
+    fun `a readable directory does not allow writes`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val readable = Files.createTempDirectory("acp-readable")
+        val policy = PermissionPolicy(readableDirectories = listOf(readable.toString()))
+        assertEquals(
+            PermissionDecision.PROMPT,
+            permissionDecision(dir.toString(), WriteFileTool(), pathArgs(readable.resolve("x.txt").toString()), policy),
+        )
+    }
+
+    @Test
+    fun `a partially covered call is unlisted`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val writable = Files.createTempDirectory("acp-writable")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        val policy = PermissionPolicy(writableDirectories = listOf(writable.toString()))
+        assertEquals(
+            PermissionDecision.PROMPT,
+            permissionDecision(
+                dir.toString(),
+                MoveFileTool(),
+                moveArgs(writable.resolve("a.txt").toString(), outside.resolve("b.txt").toString()),
+                policy,
+            ),
+            "every target must be covered by the tier",
+        )
+    }
+
+    @Test
+    fun `unlisted paths set to deny refuses outside every tier without a prompt`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val readable = Files.createTempDirectory("acp-readable")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        val policy = PermissionPolicy(
+            readableDirectories = listOf(readable.toString()),
+            unlistedPaths = UnlistedPaths.DENY,
+        )
+        assertEquals(
+            PermissionDecision.DENY,
+            permissionDecision(dir.toString(), ReadFileTool(), pathArgs(outside.resolve("x").toString()), policy),
+        )
+        assertEquals(
+            PermissionDecision.ALLOW,
+            permissionDecision(dir.toString(), ReadFileTool(), pathArgs(readable.resolve("x").toString()), policy),
+            "the configured tier still applies",
+        )
+        assertEquals(
+            PermissionDecision.ALLOW,
+            permissionDecision(dir.toString(), WriteFileTool(), pathArgs(dir.resolve("x").toString()), policy),
+            "the cwd stays implicitly read+write",
+        )
+    }
+
+    @Test
+    fun `non path tools are unaffected by the deny policy`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val policy = PermissionPolicy(unlistedPaths = UnlistedPaths.DENY)
+        assertEquals(
+            PermissionDecision.ALLOW,
+            permissionDecision(
+                dir.toString(),
+                UpdatePlanTool(),
+                buildJsonObject { put("entries", JsonPrimitive("[]")) },
+                policy
+            ),
+        )
+        assertEquals(
+            PermissionDecision.PROMPT,
+            permissionDecision(dir.toString(), BashTool(), buildJsonObject { put("command", "ls") }, policy),
+            "bash keeps its own always-prompt semantics",
+        )
+    }
+
+    @Test
+    fun `the deny refusal names the tool the targets and the config entry`() {
+        val dir = Files.createTempDirectory("acp-perm")
+        val outside = Files.createTempDirectory("acp-outside-tmp")
+        val target = outside.resolve("x.txt").toString()
+        val refusal = unlistedPathRefusal(ReadFileTool(), pathArgs(target))
+        assertTrue(refusal.contains("\"read_file\""), refusal)
+        assertTrue(refusal.contains("'$target'"), refusal)
+        assertTrue(refusal.contains("permissions.readableDirectories"), refusal)
+        assertEquals(
+            "permissions.writableDirectories",
+            unlistedPathRefusal(WriteFileTool(), pathArgs(target))
+                .substringAfter("add the path to ")
+                .substringBefore(" "),
+        )
     }
 }
 

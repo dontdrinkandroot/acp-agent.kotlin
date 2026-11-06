@@ -10,6 +10,18 @@ FAKE_DOCKER=$SCRIPT_DIR/stubs/fake-docker
 # shellcheck source=tests/bash/harness.sh
 source "$SCRIPT_DIR/harness.sh"
 
+# Every DDR_ACP_AGENT_* variable present in the ambient environment is stripped
+# before the launcher runs (issue #50): the launcher forwards that whole family
+# verbatim (minus its own DDR_ACP_AGENT_DOCKER_* knobs), so an ambient
+# DDR_ACP_AGENT_TOOLS_FS_PROXY=0 from a container env would silently change a
+# test's outcome. Tests opt in via leading KEY=VALUE arguments, which are applied
+# after the stripping.
+DDR_ACP_AGENT_UNSET_ARGS=()
+while IFS= read -r _ddr_var; do
+    DDR_ACP_AGENT_UNSET_ARGS+=(-u "$_ddr_var")
+done < <(compgen -e | grep -E '^DDR_ACP_AGENT_' || true)
+unset _ddr_var
+
 # Deterministic git identity for the launcher's git-config forwarding probe:
 # tests call `GIT_IDENTITY_SET=0/1 setup_git_identity` (prefix assignment, so
 # the function itself is exported-visible to git via the env vars it sets).
@@ -23,15 +35,15 @@ setup_git_identity() {
     fi
 }
 
-# The launcher invocation strips both API key variants (plus
-# ACP_DOCKER_EXTRA_MOUNTS, the Android SDK vars, TZ, DDR_ACP_AGENT_SCRATCH_DIR
-# and the tool-cache env vars) so ambient values can never leak into a test;
-# tests opt into a fake key via leading KEY=VALUE arguments.
+# The launcher invocation strips the whole DDR_ACP_AGENT_* family (see above)
+# plus the Android SDK vars, TZ, XDG_CONFIG_HOME and the tool-cache env vars, so
+# ambient host values can never leak into a test; tests opt in via leading
+# KEY=VALUE arguments.
 
 # Creates a fresh sandbox dir for one test file: $TEST_TMP/<name>/...
 # The sandbox lives under build/ (never /tmp or $HOME): the launcher skips
-# extra mounts inside /tmp (tmpfs) and the container home, which would defeat
-# every fixture placed there.
+# permission paths inside /tmp (tmpfs) and the container home, which would
+# defeat every fixture placed there.
 new_sandbox() {
     local name=$1
     mkdir -p "$REPO_ROOT/build"
@@ -41,15 +53,11 @@ new_sandbox() {
 }
 
 # Runs the docker launcher with the stub docker, capturing stdout+stderr into
-# $OUT and the stub invocations into $LOG. Extra args are forwarded to the
-# launcher (e.g. --skip-pull). Env overrides come via the caller's environment.
-# Runs the docker launcher with the stub docker, capturing stdout+stderr into
 # $OUT and the stub invocations into $LOG. Leading KEY=VALUE args are applied
-# to the launcher's environment (unexported VAR=x func does not propagate, so
-# this is the supported way to set ACP_DOCKER_EXTRA_MOUNTS & friends; they
+# to the launcher's environment (an unexported VAR=x does not propagate, so
+# this is the supported way to set DDR_ACP_AGENT_DOCKER_NETWORK & friends; they
 # must precede any launcher flags); remaining args are forwarded to the
-# launcher (e.g. --skip-pull). ACP_DOCKER_EXTRA_MOUNTS is always cleared first
-# so a stale value from a previous test cannot leak.
+# launcher (e.g. --skip-pull).
 run_docker_launcher() {
     local project_dir=$1
     shift
@@ -63,19 +71,26 @@ run_docker_launcher() {
     LOG=$TEST_TMP/docker.log
     : >"$LOG"
     # The launcher execs docker with stdin kept open (-i); feed /dev/null so
-    # the stub's stdin loop sees EOF instead of blocking forever. Both API key
-    # variants are stripped so a real key from the ambient environment can
-    # never leak into test output or the stub log; tests opt into a fake one.
+    # the stub's stdin loop sees EOF instead of blocking forever. The legacy key
+    # variables are stripped (inert for the launcher now, but a leftover would
+    # still be visible to anyone reading the test env), every DDR_ACP_AGENT_*
+    # variable because the launcher forwards that whole family verbatim (its own
+    # DDR_ACP_AGENT_DOCKER_* knobs included, so an ambient ACP_DOCKER_* rename
+    # leftover cannot influence a test either), and the remaining host config
+    # vars so no ambient value can change a test.
     # shellcheck disable=SC2034  # OUT is asserted on by the tests
     OUT=$(cd "$project_dir" && env -u OPENROUTER_API_KEY -u OPENROUTER_API_KEY_FILE \
         -u ACP_DOCKER_EXTRA_MOUNTS -u ACP_DOCKER_NETWORK -u ACP_DOCKER_EXTRA_ARGS \
+        -u ACP_DOCKER_STATE_DIR -u ACP_DOCKER_MOUNT_CACHES -u ACP_DOCKER_RW_ROOTFS \
+        -u ACP_DOCKER_CAP_ADD -u ACP_DOCKER_HOME_VOLUME \
         -u ANDROID_HOME -u ANDROID_SDK_ROOT \
         -u GRADLE_USER_HOME -u UV_CACHE_DIR -u PIP_CACHE_DIR \
         -u COMPOSER_CACHE_DIR -u YARN_CACHE_FOLDER -u HF_HOME \
         -u NPM_CONFIG_CACHE -u CARGO_HOME -u GOMODCACHE -u NUGET_PACKAGES \
         -u PUB_CACHE -u KONAN_DATA_DIR -u UV_LINK_MODE \
         -u PNPM_CONFIG_STORE_DIR -u PNPM_CONFIG_CACHE_DIR \
-        -u PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE -u TZ -u DDR_ACP_AGENT_SCRATCH_DIR "${env_args[@]}" \
+        -u PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE -u TZ -u XDG_CONFIG_HOME \
+        ${DDR_ACP_AGENT_UNSET_ARGS[@]+"${DDR_ACP_AGENT_UNSET_ARGS[@]}"} "${env_args[@]}" \
         "FAKE_DOCKER_LOG=$LOG" \
         "DOCKER_BIN=$FAKE_DOCKER" "$DOCKER_LAUNCHER" "$@" </dev/null 2>&1)
     # The launcher execs docker, so the exit status is the stub's.
@@ -92,6 +107,14 @@ env_value_for() {
     local line=$1 key=$2
     printf '%s\n' "$line" | tr ' ' '\n' | grep -A1 '^--env$' |
         grep "^${key}=" | head -1 | cut -d= -f2-
+}
+
+# How many `--env K=...` occurrences a `docker run` line carries for a key.
+# Docker applies the last one, so a duplicate is a launcher bug that a plain
+# value assertion hides.
+env_count_for() {
+    local line=$1 key=$2
+    printf '%s\n' "$line" | tr ' ' '\n' | grep -c "^${key}=" || true
 }
 
 # All values of `--mount` from a `docker run` line (the argument follows the

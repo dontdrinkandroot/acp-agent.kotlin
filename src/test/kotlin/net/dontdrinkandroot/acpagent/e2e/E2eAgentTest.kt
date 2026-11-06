@@ -129,21 +129,39 @@ abstract class E2eAgentTest {
         return ProcessBuilder(binaryPath)
             .apply {
                 workingDir?.let { directory(it) }
-                environment()["OPENROUTER_API_KEY"] = "sk-test-phase4"
-                environment()["OPENROUTER_BASE_URL"] = "http://127.0.0.1:$llmPort"
-                environment()["OPENROUTER_MODEL"] = "test-model"
+                // The key is delivered the only way the agent accepts one: as a
+                // 0600 file (issue #50).
+                val keyFile = Files.createTempFile("acp-e2e-key", ".txt").toFile().apply { deleteOnExit() }
+                keyFile.writeText("sk-test-phase4\n")
+                Files.setPosixFilePermissions(
+                    keyFile.toPath(),
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+                )
+                // An isolated config dir: no host config.json, no host key may leak in.
+                val configDir = Files.createTempDirectory("acp-e2e-config").toFile().apply { deleteOnExit() }
+                // The agent's whole config surface is the DDR_ACP_AGENT_* family (issue #50), so an
+                // ambient value (e.g. a docker launcher forwarding
+                // DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES, or a locally exported
+                // DDR_ACP_AGENT_TOOLS_FS_PROXY=0) would silently override what a scenario configures
+                // via XDG_CONFIG_HOME or expects to be the default. Strip the family, then apply the
+                // harness values; scenarios opt in via extraEnv, which wins below.
+                environment().keys.removeIf { it.startsWith("DDR_ACP_AGENT_") }
+                environment()["XDG_CONFIG_HOME"] = configDir.absolutePath
+                environment()["DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE"] = keyFile.absolutePath
+                environment()["DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL"] = "http://127.0.0.1:$llmPort"
+                environment()["DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL"] = "test-model"
                 if (xdgStateHome != null) environment()["XDG_STATE_HOME"] = xdgStateHome.absolutePath
-                // A leaked FS_PROXY_ENABLED=0 in the host environment must not silently force the
-                // local store in scenarios that expect the proxy; scenarios opting out pass it via
-                // extraEnv, which wins below.
-                environment().remove("FS_PROXY_ENABLED")
-                // Same for a leaked OPENROUTER_API_KEY_FILE (e.g. a staged docker-launcher key
-                // in the host env): together with the harness key below it fails Config.fromEnv
-                // loudly at agent startup, hanging the client-side initialize.
+                // A leaked key location would fail Config.load loudly at agent startup, hanging the
+                // client-side initialize.
+                environment().remove("OPENROUTER_API_KEY")
                 environment().remove("OPENROUTER_API_KEY_FILE")
-                // Same for a leaked scratch-directory override: scenarios that care set it via
-                // extraEnv, and an ambient value would make the default-path pins meaningless.
-                environment().remove("DDR_ACP_AGENT_SCRATCH_DIR")
+                environment().remove("OPENROUTER_BASE_URL")
+                environment().remove("OPENROUTER_MODEL")
+                // Any ambient legacy rename leftovers must not affect the new layering.
+                listOf(
+                    "FS_PROXY_ENABLED", "MCP_TRUST_ANNOTATIONS", "ACP_BASH_TIMEOUT_SECONDS",
+                    "ACP_MAX_TURN_REQUESTS", "ACP_WEB_FETCH_ALLOW_PRIVATE", "ACP_EXTRA_MOUNTS",
+                ).forEach { environment().remove(it) }
                 extraEnv.forEach { (key, value) -> environment()[key] = value }
             }
             .start()

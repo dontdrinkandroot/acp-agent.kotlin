@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 
 /**
  * Black-box coverage of the per-prompt tool iteration cap and its wind-down
- * synthesis pass: with a low `ACP_MAX_TURN_REQUESTS` and a model that always
+ * synthesis pass: with a low `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS` and a model that always
  * calls tools, the agent consumes exactly cap tool iterations (the third
  * identical call with the same result is refused by the repeat guard, #39),
  * then streams one final text-only summary and ends with `MAX_TURN_REQUESTS`.
@@ -28,7 +28,7 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
                 alwaysToolCall = true,
             )
         }) {
-            val connection = connect(extraEnv = mapOf("ACP_MAX_TURN_REQUESTS" to "3"))
+            val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "3"))
             val operations = TestClientOperations()
             try {
                 connection.client.initialize(testClientInfo())

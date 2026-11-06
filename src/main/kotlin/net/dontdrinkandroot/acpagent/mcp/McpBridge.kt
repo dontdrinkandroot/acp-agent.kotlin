@@ -4,13 +4,8 @@ import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
-import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolResult
@@ -51,7 +46,7 @@ public data class McpCallResult(
  * marks the tool non-mutating so it runs without a permission prompt, while
  * absent/unset hints keep the pessimistic default (mutating, always prompts).
  * Annotations are untrusted hints per the MCP spec - trusting them is an
- * explicit operator decision (env `MCP_TRUST_ANNOTATIONS`, default enabled).
+ * explicit operator decision (`mcp.trustAnnotations`, default enabled).
  */
 public class McpTool(
     private val server: McpServerConnection,

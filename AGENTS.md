@@ -55,15 +55,17 @@ banner-suppressing API.
 * Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
 * _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
-* Secrets come from env vars only (`OPENROUTER_API_KEY`, ...); never commit or print them.
-  * Exception (deliberate): the docker launcher never forwards `OPENROUTER_API_KEY`
-    into the container env — it stages a `0600` copy (or mounts the user's
-    `OPENROUTER_API_KEY_FILE`) read-only at `/tmp/openrouter-api-key`, and the agent env
-    carries only the path. Rationale: anything in the agent's env is inherited by every
-    bash-tool child and shows up in `set -x` traces / `env` dumps / `/proc/*/environ`
-    (this actually leaked a real key into a session once); docker `--env K=V` also puts
-    the value into the docker CLI argv visible to host-side `ps`. The agent-side
-    resolution lives in `Config.resolveApiKey`.
+* Secrets never come from env vars: the OpenRouter key is read from a **file**
+  (`openRouter.apiKeyFile`, `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`, or the default
+  `<config dir>/openrouter.key`; owner-only `0600`/`0400`, issue #50). Never commit or
+  print them.
+    * The docker launcher has **no key logic at all**: it mounts the host config
+      directory (`$XDG_CONFIG_HOME/ddr-acp-agent`, i.e. `~/.config/ddr-acp-agent` by
+      default) read-only at the container's own config directory and the agent
+      resolves the key from there. The old `OPENROUTER_API_KEY` /
+      `OPENROUTER_API_KEY_FILE` inputs and the `0600` staging path are gone - a key value
+      therefore never appears in the agent env, a `set -x` trace, an `env` dump,
+      `/proc/*/environ` or the docker CLI argv.
   *`build/` is generated output - never edit or commit it.
 * **Never commit without the user requesting it**: the agent must not run
   `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
@@ -93,8 +95,8 @@ Use the `run` tool's configurations for the standard dev loop:
   every section shows and the output is reproducible - for reviewing the static prompt
   sections on their own
 
-The launchers take no args; env config only (one of `OPENROUTER_API_KEY` /
-`OPENROUTER_API_KEY_FILE` required):
+The launchers take no args; configuration comes from `config.json` + the
+`DDR_ACP_AGENT_*` env layer (the docker launcher mounts the host config directory):
 
 - `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
 - `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README)
@@ -144,8 +146,11 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # factory (AgentSessionFactory: create/restore), store
                                      # wiring, transport, isoDateToday
     BuildInfo.kt                     # build commit hash from git.properties (classpath)
-    config/Config.kt                 # env config (OPENROUTER_*, FS_PROXY_ENABLED,
-                                     # MCP_TRUST_ANNOTATIONS)
+    config/Config.kt                 # resolved config: Config.load layering (env >
+                                     # config.json > defaults), EnvValues accessors,
+                                     # key-file resolution + owner-only check
+    config/ConfigFile.kt             # strict config.json parser (ConfigFile, UnlistedPaths,
+                                     # path/scratch validation shared with the env layer)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
     llm/ChatCompleter.kt             # chat-completion seam (LlmClient implements it) so the prompt
@@ -187,6 +192,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/ToolCallPairing.kt         # repairToolCallPairing: dangling tool calls -> synthetic
                                      # FAILED result (pure; issue #38, pinned by
                                      # ToolCallPairingRepairTest)
+    agent/PermissionPolicy.kt        # the path-access tiers + permissionDecision (cwd/readable/
+                                     # writable/unlistedPaths) + unlistedPathRefusal (issue #50)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
                                        # AGENTS.md instructions)
@@ -194,7 +201,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # validation/assignment, effective reasoning effort,
                                      # effective provider slug
     agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, repeat guard,
-                                     # permission (path-aware + permanent), execution, updates + history
+                                     # permission (tiered policy + permanent), execution, updates + history
     agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
@@ -317,8 +324,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # + out-of-project read permission (incl. the four
                                      # permission option kinds, issue #61)
                                      # + allow_always session grant (one prompt for two prompts'
-                                     # out-of-project reads, issue #65) + trusted read paths
-                                     # (ACP_EXTRA_MOUNTS: read prompt-free, write
+                                     # out-of-project reads, issue #65) + trusted paths
+                                     # (readable dirs: read prompt-free, write
                                      # still prompts) + the scratch directory (plan-mode
                                      # grep prompt-free, a symlinked scratch dir refusing
                                      # session creation, issue #10) + move/delete tools
@@ -327,6 +334,10 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
                                      # without reading/prompting, list_dir hides the entry,
                                      # the .ai/run.json rule is hidden too (issue #70)
+        E2eDirectoryTiersTest.kt     # the permissions tiers from config.json (issue #50) end to end:
+                                     # readable-tier read + writable-tier write prompt-free, a write
+                                     # in the readable tier still prompts, unlistedPaths=deny refuses
+                                     # without a prompt naming the config entry
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eProviderOptionTest.kt     # provider config option (issue #42): advertisement, request
                                      # wire shape order, fail-open hidden, manual-beats-env,
@@ -339,7 +350,7 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # rejected create cannot be re-applied via edit_file
         E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
                                      # (trusted), unannotated prompts + executes,
-                                     # MCP_TRUST_ANNOTATIONS=0 prompts, destructive annotated
+                                     # MCP trustAnnotations=false prompts, destructive annotated
                                      # title, mcpCapabilities.http advertisement
         E2eMcpStdioTransportTest.kt  # the spec-mandatory stdio transport end-to-end (issue #60)
                                      # over StdioMcpMockServer: read-only prompt-free, unannotated
@@ -364,9 +375,8 @@ tests/bash/                             # shell test suite (launcher composition
                                         # `test_scripts` / Gradle `testScripts`): harness.sh
                                         # (assert lib), common.sh (launcher invocation +
                                         # sandbox under build/), stubs/fake-docker (DOCKER_BIN
-                                        # stub recording argv + staged-keyfile mode/content;
-                                        # pull/inspect exit switches),
-                                        # test_extra_mounts/test_launcher_args/test_error_paths
+                                        # stub recording argv; pull/inspect exit switches),
+                                        # test_permission_mounts/test_launcher_args/test_error_paths
                                         # test_harness + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
@@ -377,44 +387,77 @@ tests/bash/                             # shell test suite (launcher composition
                                         # (run config `show_failures`)
 ```
 
-### Configuration (OpenRouter + MCP)
+### Configuration (config.json + env overrides)
 
-Config comes from environment variables:
+Layered, resolved once at startup (`Config.load`, no live reload):
+**built-in defaults < `$XDG_CONFIG_HOME/ddr-acp-agent/config.json` < env**.
+`DDR_ACP_AGENT_CONFIG_FILE` selects another **file name inside that directory**
+(a "profile" such as `work.json`; bare name, no path — that keeps the value
+meaningful inside the docker container, whose `XDG_CONFIG_HOME` is pinned and
+whose config directory is a bind mount). A selected file must exist, a missing
+default file means "all defaults".
+`ConfigFile.parse` (`config/ConfigFile.kt`) is strict: typed values, ranges, no
+clamping, unknown keys ignored, errors name the JSON path (`tools.bash.timeoutSeconds
+must be between 1 and 3600, got -5`). Env names derive from the config path (`Config.envName`: camelCase -> UPPER_SNAKE
+per segment, prefix
+`DDR_ACP_AGENT_`), so `tools.bash.timeoutSeconds` ->
+`DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`, `scratchDir` ->
+`DDR_ACP_AGENT_SCRATCH_DIR` (unchanged). Legacy names (`OPENROUTER_*`,
+`FS_PROXY_ENABLED`, `ACP_*`) are **dead** - not read, no warning (issue #50); the
+launcher's own knobs follow the same scheme as `DDR_ACP_AGENT_DOCKER_*`, and their
+legacy `ACP_DOCKER_*` spellings are dead too (no warning, pinned inert by the shell
+suite) - they are carved out of the agent env prefix forwarding, so a knob never
+reaches the agent.
 
-- `OPENROUTER_API_KEY` (required unless `OPENROUTER_API_KEY_FILE` is set)
-- `OPENROUTER_API_KEY_FILE` (optional; file holding the key, read + trimmed at
-  startup; the docker launcher always injects it pointing at the mounted key file
-  and never forwards the key itself)
-- `OPENROUTER_MODEL` (default `openrouter/auto`)
-- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
-- `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED` (default enabled; `0` disables
-  the automatic provider routing, see Features)
-- `FS_PROXY_ENABLED` (default enabled; `0` uses the local store even when the
-  client advertises fs capabilities, see Features)
-- `MCP_TRUST_ANNOTATIONS` (default enabled; `0` ignores MCP tool behavior
-  annotations, keeping the pessimistic always-prompt permission default, see
-  Permissions)
-- `ACP_BASH_TIMEOUT_SECONDS` (default 600, clamped to 1..3600; the bash tool terminates commands
-  after this many seconds, killing the whole process tree, see Features; the upper bound keeps a
-  huge value from arming a decades-long wait, issue #25)
-- `ACP_MAX_TURN_REQUESTS` (default 100, clamped to >= 1; the per-prompt tool iteration
-  budget, see Features; when the cap is hit, a final text-only synthesis pass is streamed
-  before the turn ends with `MAX_TURN_REQUESTS`)
-- `ACP_WEB_FETCH_ALLOW_PRIVATE` (default blocked; `1` lets `web_fetch` reach
-  private/loopback/link-local hosts - tests against a local mock server need this)
-- `ACP_EXTRA_MOUNTS` (default empty; comma-separated **absolute** paths that are
-  read-trusted: `read_file`/`list_dir`/`glob`/`grep` under them run without a permission
-  prompt even though they lie outside the cwd; writes/moves/deletes still prompt. The
-  docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`; see Features /
-  Permissions)
+| Config path                        | Env                                                 |
+|------------------------------------|-----------------------------------------------------|
+| `openRouter.apiKeyFile`            | `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`            |
+| `openRouter.defaultModel`          | `DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL`           |
+| `openRouter.baseUrl`               | `DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL`                |
+| `openRouter.autoThroughputSorting` | `DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING` |
+| `tools.maxTurnRequests`            | `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`             |
+| `tools.fsProxy`                    | `DDR_ACP_AGENT_TOOLS_FS_PROXY`                      |
+| `tools.bash.timeoutSeconds`        | `DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`          |
+| `tools.webFetch.allowPrivate`      | `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE`       |
+| `mcp.trustAnnotations`             | `DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS`               |
+| `permissions.readableDirectories`  | `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`    |
+| `permissions.writableDirectories`  | `DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES`    |
+| `permissions.unlistedPaths`        | `DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS`          |
+| `scratchDir`                       | `DDR_ACP_AGENT_SCRATCH_DIR`                         |
+
+Value rules (both layers): booleans accept `1/true/yes/on` | `0/false/no/off`
+(case-insensitive, anything else is an error - a typo must not silently disable
+a safety feature), numbers are strict with the documented ranges (the old
+`coerceIn` clamping is gone), path lists are absolute-only (relative entries are
+an error), comma-separated in env, deduped, and a missing directory only warns.
+
+**API key: file only.** No variable ever holds the key itself. Resolution order
+`DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE` > `openRouter.apiKeyFile` >
+`<config dir>/openrouter.key` > fail listing the tried sources. Every key file
+must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
+refused with the path (`requireOwnerOnly` in `Config.kt`).
+
+**Directory permission tiers** (`agent/PermissionPolicy.kt`, `permissionDecision`):
+the session cwd is implicitly read+write; `readableDirectories` covers the
+read-only path tools, `writableDirectories` the mutating ones (writable implies
+readable); everything else follows `unlistedPaths` (`prompt` = today's
+`session/request_permission`, `deny` = hard refusal naming the config entry,
+`unlistedPathRefusal`). A partially covered call (one target in, one out) is
+unlisted. `bash`, `run` and MCP tools are unaffected. Under the docker launcher
+the two lists **are the mount list** (readable mounted `:ro`, writable rw, at
+the identical in-container path), so the env layer is the docker source and the
+`config.json` lists are direct-run only; the launcher also mounts the host
+config directory (`$XDG_CONFIG_HOME/ddr-acp-agent`) read-only at the container's
+own config directory (a
+`~/.config` tmpfs underneath, same reason as `~/.local`).
 - `DDR_ACP_AGENT_SCRATCH_DIR` (default `/tmp/ddr-acp-agent`; the agent's own scratch
-  directory, read-trusted like the extra mounts but a separate config field - it is never
-  part of `ACP_EXTRA_MOUNTS`. Must be absolute and must not be `/`. Created `0700` and
-  verified at session assembly: a symlink, a non-directory or a foreign-owned directory
-  fails session creation, a wider mode is repaired to `0700`. Never cleaned up. The docker
-  launcher forwards it verbatim and never mounts it - inside the container the path lives
-  on the ephemeral `/tmp` tmpfs, so scratch content is per-container-session. See
-  Features / Permissions)
+  directory, read-trusted like a readable directory but a separate config field - it is
+  never part of `permissions.readableDirectories`. Must be absolute and must not be `/`.
+  Created `0700` and verified at session assembly: a symlink, a non-directory or a
+  foreign-owned directory fails session creation, a wider mode is repaired to `0700`.
+  Never cleaned up. The docker launcher forwards it verbatim and never mounts it - inside
+  the container the path lives on the ephemeral `/tmp` tmpfs, so scratch content is
+  per-container-session. See Features / Permissions)
 
 ## Features
 
@@ -524,8 +567,8 @@ Config comes from environment variables:
   `SessionStateTitleTest`, black-box by `E2eSessionPersistenceTest`.
   Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
-- **Agent loop**: up to `ACP_MAX_TURN_REQUESTS` tool-calling LLM iterations per prompt (default 100,
-  `ACP_MAX_TURN_REQUESTS`, clamped to >= 1); text streamed as `AgentMessageChunk`,
+- **Agent loop**: up to `tools.maxTurnRequests` tool-calling LLM iterations per prompt (default 100,
+  `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`, rejected below 1); text streamed as `AgentMessageChunk`,
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
   when the iteration budget is exhausted while the model kept calling tools, streams one final
   text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
@@ -662,7 +705,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   records; see the "Gradle lock timeout" Pitfall). A
   `test_fsproxy`
   run config was removed because it is redundant: the e2e harness itself strips a
-  leaked `FS_PROXY_ENABLED=0` from the spawned agent's environment (unless a
+  leaked `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` from the spawned agent's environment (unless a
   scenario explicitly sets it), so the full `test` suite already covers the
   fs-proxy scenarios regardless of the host environment (`E2eAgentTest`).
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
@@ -671,7 +714,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
 - **Model + reasoning + provider options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed
   (`llm/LlmModels.kt`:
   tool-capable text-output models, sorted; failure fails session creation).
-  Per-session `model` (default `OPENROUTER_MODEL`), `reasoning` effort (`category: thought_level`; empty
+  Per-session `model` (default `openRouter.defaultModel`), `reasoning` effort (`category: thought_level`; empty
   `supported_efforts` -> gateway levels max..minimal;
   mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`, issue #42)
   config options. Model switches reset reasoning and provider; changes emit updates and persist. The chat request
@@ -683,7 +726,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
       `provider: {order: ["<slug>"]}` only (no `max_price` cap, OpenRouter fallbacks kept); a slug not listed by
       OpenRouter is harmless (the router just falls back). `auto` is env-aware: with auto routing enabled the request
       carries the `sort: "throughput"` + median-cap preferences; with
-      `OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0` no `provider` field at all - the toggle gates the auto policy
+      `openRouter.autoThroughputSorting: false` no `provider` field at all - the toggle gates the auto policy
       only, the option stays visible and a manual slug always wins over it. **Fail-open lifecycle**: the option is
       backed by a snapshot of the current model's providers, seeded at session assembly (`assembleSession` calls
       `providersFor` for the initial model and passes `initialProviderOptions` - failure/empty feed logs a warn and
@@ -741,7 +784,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `delete_directory` (no content flow into the model context; `move_file`/`move_directory`
   do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded (
   issue #70)**: it is not a secret but a privilege
-  boundary. Permissions are path-scoped (`permissionNeeded` allows every in-project target
+  boundary. Permissions are path-scoped (`permissionDecision` allows every in-project target
   outright), so the permission prompt of the dedicated write tools was
   cosmetically bypassable - an observed session rejected `create_run_config`, and the model
   re-applied the same entry with an in-project `edit_file`, prompt-free (because `run` is
@@ -758,11 +801,11 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   subtree walk for `move_directory`/`delete_directory` is deliberately not part of this fix.
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
-  `ACP_BASH_TIMEOUT_SECONDS`, whole process tree) + `web_fetch` (HTTP (S) GET via a
+  `tools.bash.timeoutSeconds`, whole process tree) + `web_fetch` (HTTP (S) GET via a
   per-call ktor CIO client, `requestTimeout = 0` + 60s socket idle; manual redirect
   loop (max 5) with per-hop SSRF re-validation - loopback/link-local/site-local/
   any-local IPs and `localhost`/`*.local`/`.internal` by name refused unless
-  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, residual validate-then-fetch TOCTOU documented;
+  `tools.webFetch.allowPrivate: true`, residual validate-then-fetch TOCTOU documented;
   only http/https; gzip/deflate via `ktor-client-encoding` - the encoders must be
   registered in the `install(ContentEncoding)` config block, the bare plugin rejects
   every encoded response; 20 MB body cap enforced by Content-Length pre-check and a
@@ -796,7 +839,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   is the one the permission check approved); `list_dir`/`glob`/`grep` skip symlinks (kotlinx-io
   follows them by default, which could smuggle reads outside the project). `read/write/edit`
   use the client fs proxy (`tools/FileStore.kt`, unsaved editor state + reviewable diffs) when
-  the client advertises read+write fs capabilities and `FS_PROXY_ENABLED` is not `0`, else a
+  the client advertises read+write fs capabilities and `tools.fsProxy` is not `false`, else a
   local store; `read_file` renders all reads as fixed-width 1-indexed `number│content`
   lines (the content - including its leading indentation - is verbatim after the `│`, so
   the model can read indentation directly off the line rather than inferring it from a
@@ -894,19 +937,23 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   diff's `oldText = null` means "new file" in ACP. `LocalFileStore` opens **only regular
   files** (`metadata.isRegularFile`): a FIFO/device reports size -1, passes the size cap and
   then blocks on `open(2)` or streams without end. MCP tool results are intentionally uncapped.
-- **Permissions (path-aware)**: path-scoped tools inside the session cwd run without asking;
+- **Permissions (path-aware, tiered)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
-  `session/request_permission`. Exception: `ACP_EXTRA_MOUNTS` names absolute **read-trusted**
-  paths (the docker launcher derives it from the effective `ACP_DOCKER_EXTRA_MOUNTS`); the
+  `session/request_permission` (unless the tier below covers it). `permissions.readableDirectories`
+  names absolute **read-trusted** paths (the docker launcher mounts exactly these paths, read-only); the
   non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
   targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
   against the session cwd so a symlink escape still gates); writes/moves/deletes under them
-  always prompt. **The agent's own scratch directory is read-trusted the same way**
+  always prompt. `permissions.writableDirectories` covers the mutating path tools prompt-free
+  and implies readable; paths in neither tier nor the cwd follow `permissions.unlistedPaths`
+  (`agent/PermissionPolicy.kt`, see Configuration / Directory permission tiers). **The agent's own scratch directory is
+  read-trusted like a readable directory**
   (`Config.scratchDir`, env `DDR_ACP_AGENT_SCRATCH_DIR`, default `/tmp/ddr-acp-agent`,
-  issue #10): `AgentSessionImpl` merges `config.extraMounts + scratchDir` into one
-  `trustedReadPaths` list - the single merge point, consumed by `permissionNeeded` and the
+  issue #10): `AgentSessionImpl` merges `config.readableDirectories + scratchDir` into one
+  `permissionPolicy.readableDirectories` - the single merge point, consumed by
+  `permissionDecision` and the
   system prompt - so the config surface keeps the two apart (the scratch dir is never part of
-  `extraMounts`). It is prepared by `prepareScratchDirectory` (`tools/ScratchDirectory.kt`)
+  `readableDirectories`). It is prepared by `prepareScratchDirectory` (`tools/ScratchDirectory.kt`)
   at session assembly: created `0700`, and an existing path is verified rather than assumed
   because `isWithinAnyRoot` resolves the root *through* symlinks - a symlink, a
   non-directory or a foreign-owned directory fails session creation, a directory we own with
@@ -916,15 +963,16 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   plan mode stays read-only. Preparation requires a POSIX filesystem (mode + ownership are
   POSIX concepts) and resolves the directory's real path, so a symlinked *parent* cannot
   smuggle the trust root elsewhere. Pinned by `ScratchDirectoryTest`, `ConfigTest` (default,
-  override, absolute/non-root validation, normalization, "not part of extraMounts"),
+  override, absolute/non-root validation, normalization, "not part of readableDirectories"),
   `PermissionAndFileStoreTest` (read/grep prompt-free, write still prompts, siblings not
   covered) and `E2eFileStoreTest` (plan-mode grep prompt-free, path surfaced in the prompt,
   a symlinked scratch directory refusing `session/new`).
-  The paths are also surfaced as a static "Trusted read paths" system-prompt
-  section (`SystemPromptBuilder`, a `## Trusted read paths` heading + one bullet per path)
-  so the model knows reads there are prompt-free. MCP tools
+  The paths are also surfaced as a static "Trusted paths" system-prompt
+  section (`SystemPromptBuilder`, a `## Trusted paths` heading with a read tier and a write
+  tier, plus the deny note when `unlistedPaths = deny`)
+  so the model knows where it operates prompt-free. MCP tools
   always prompt **unless** the server annotates the
-  tool `readOnlyHint: true` and annotations are trusted (`MCP_TRUST_ANNOTATIONS`, default
+  tool `readOnlyHint: true` and annotations are trusted (`mcp.trustAnnotations`, default
   enabled; annotations are untrusted hints per the MCP spec, so absent/unset hints keep the
   pessimistic always-prompt default). The trusted `title` annotation replaces the bare tool
   name in permission prompts and tool-call progress (MCP names are often machine-prefixed);
@@ -1015,7 +1063,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `sse` variant a client may hand us - with a local `@Suppress("DEPRECATION")` and the reason
   documented in place, so it can be dropped when ACP drops the variant.
   MCP tool behavior annotations (`Tool.annotations`) drive the permission decision when
-  trusted (`MCP_TRUST_ANNOTATIONS`, default enabled; see Permissions) - pinned black-box by
+  trusted (`mcp.trustAnnotations`, default enabled; see Permissions) - pinned black-box by
   `E2eMcpToolPermissionTest` with the in-process `MockMcpServer` (streamable-HTTP JSON-only
   mock: JSON POST responses, 202 for `notifications/initialized`, 405 for GET/DELETE;
   tools carry the mandatory `inputSchema`) and over stdio by `E2eMcpStdioTransportTest`
@@ -1034,8 +1082,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   basics (`PATH`, `HOME`, `TMPDIR`/`TMP`/`TEMP`, `LANG`/`LC_ALL`/`LC_CTYPE`, `TERM`, `TZ`,
   `USER`, `LOGNAME`) and applies the client's `McpServer.Stdio.env` entries last, so a
   server declaration can set anything (that per-server `env` is the deliberate escape
-  hatch, mirroring how the docker launcher keeps `OPENROUTER_API_KEY` out of the agent env
-  in the first place - there is no process-wide passthrough knob, which would be a second
+  hatch - there is no process-wide passthrough knob, which would be a second
   allowlist to keep in sync and a session-wide grant). Everything else the agent env
   carries - secrets, `OPENROUTER_*`, `ACP_*`, `DDR_ACP_*`, IDE internals - stays out: a
   server is spawned automatically at `session/new`, before any permission decision, so an
@@ -1090,7 +1137,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `E2eWireConformanceTest` (finding the mandatory v2 flip, issue #63).
   Requests carry app attribution headers (`HTTP-Referer`
   + `X-OpenRouter-Title`).
-- **Auto provider routing**: by default (`OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0`
+- **Auto provider routing**: by default (`openRouter.autoThroughputSorting: false`
   disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
   median endpoint completion price}` (USD per million tokens,
   `providerrouting/ProviderRouting.kt`, lazy per-model cache over the shared endpoints
@@ -1153,8 +1200,9 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   shell test (`tests/bash/test_dockerfile.bash`) pins the allowlist against the real
   build inputs.
   The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
-  `no-new-privileges`, read-only rootfs (`ACP_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and **`--network host` by
-  default** (`ACP_DOCKER_NETWORK` restores isolation) with
+  `no-new-privileges`, read-only rootfs (`DDR_ACP_AGENT_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
+  **`--network host` by
+  default** (`DDR_ACP_AGENT_DOCKER_NETWORK` restores isolation) with
   `--add-host=host.docker.internal:127.0.0.1` in host mode /
   `:host-gateway` on an explicit network (plain Linux daemons do not resolve
   `host.docker.internal`; the mapping lets the container reach MCP servers running on the
@@ -1167,7 +1215,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `postgres` only resolve on the compose network — with host networking a project's own
   test config must target `127.0.0.1:<published-port>` instead, e.g. via a
   `.env.test.local` the project gitignores),
-  tmpfs home (`ACP_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
+  tmpfs home (`DDR_ACP_AGENT_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
   `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
   home tmpfs/named volume would shadow it anyway, so runc would create the deep
   bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
@@ -1176,7 +1224,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   composes all mounts shallowest-first into the OCI spec and runc mounts in that
   order, so CLI argv order is irrelevant - the launcher still emits them in argv
   order), pinned by the shell suite; non-root user matching host UID/GID,
-  host tool caches shared in (`ACP_DOCKER_MOUNT_CACHES=0` disables the whole cache
+  host tool caches shared in (`DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` disables the whole cache
   composition - no mounts, no cache env, not even validation; issue #51). Two cases:
   an explicitly configured cache (the tool's env var set, e.g. `UV_CACHE_DIR`) is **identity-bound at the identical
   in-container path with the env value forwarded
@@ -1235,7 +1283,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
   noexec default (nothing executes from there).
   `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
-  of `ACP_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK
+    of `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK
   follows the same split (issue #51): an explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT`
   (first one set wins, `ANDROID_HOME` preferred) is identity-bound at the identical
   in-container path and both variables carry the configured value (the companion
@@ -1245,32 +1293,35 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `$HOME/Android/Sdk`, never created) keeps the relocation to the in-container
   default `$HOME/Android/Sdk` with both variables pinned to it; inside the project
   dir the candidate is skipped entirely (unchanged)),
-  host session state always shared rw (`ACP_DOCKER_STATE_DIR` overrides the
+    host session state always shared rw (`DDR_ACP_AGENT_DOCKER_STATE_DIR` overrides the
   host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
-  `OPENROUTER_*`/`FS_PROXY_ENABLED`/`MCP_TRUST_ANNOTATIONS`/
-    `ACP_BASH_TIMEOUT_SECONDS`/`ACP_MAX_TURN_REQUESTS`/`ACP_WEB_FETCH_ALLOW_PRIVATE`/
-    `DDR_ACP_AGENT_SCRATCH_DIR`/`TZ` forwarded (the API key
-    excepted: it
-  is staged as a `0600` file or taken from
-  `OPENROUTER_API_KEY_FILE` and mounted read-only at `/tmp/openrouter-api-key`, with only
-  the path in the container env; the staged copy and the `.env.local` mask are removed by
-    an EXIT trap, which is why the launcher does not `exec` docker; `TZ` keeps the
+    the host config directory (`~/.config/ddr-acp-agent`) mounted **read-only** at the
+    identical in-container path when it exists (with a `~/.config` uid tmpfs underneath,
+    same reason as `~/.local`) - that mount is the agent's only key source inside the
+    container, since the launcher reads no key variable at all,
+    the whole `DDR_ACP_AGENT_*` family (forwarded by prefix; combined with the read-only
+    config-directory mount that is what makes the agent's own config work unchanged), **minus the launcher's own
+    `DDR_ACP_AGENT_DOCKER_*` knobs** (host-side decisions -
+    network, state dir, cache sharing, ... - that mean nothing inside the container and
+    must not look like agent config)/
+    `TZ` forwarded (`TZ` keeps the
     container's wall clock on the host zone, since the read-only rootfs has no
     `/etc/localtime` and the agent renders local-offset timestamps - issue #22),
-  host `.env.local` masked, git identity forwarded. Optional extra host paths
-  (`ACP_DOCKER_EXTRA_MOUNTS=/srv/data,/mnt/scratch:rw`) are bind-mounted at the
-  identical in-container path (src == dst like the CWD; mode suffix `:ro` default /
-  `:rw`; dirs or single files; absolute, relative paths / `/` are rejected
-  loudly, and host existence is required only for entries actually mounted -
-  entries under the covered roots (project dir/container home/`tmpfs`) are
-  shadowed by the covering mount at the identical path, so they are skipped
-  with a warning regardless of host existence); the launcher injects the *effective* extras as
-  `ACP_EXTRA_MOUNTS` so the agent treats them as read-trusted (skipped entries -
-  inside the project dir/home/tmpfs - are never trusted). Extras are emitted before every built-in mount and sorted
-  shallowest-first, so built-ins and later, deeper mounts shadow shallower ones (mounting a CWD parent ro works; the
-  project dir itself stays rw); entries inside
-  the project dir or container home are skipped with a warning. Extras:
-  `ACP_DOCKER_NETWORK`, `ACP_DOCKER_CAP_ADD`, `ACP_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
+    host `.env.local` masked, git identity forwarded. The **permission directory
+    lists are the mount list** (issues #50): `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`
+    mounts each path `:ro`, `…_WRITABLE_DIRECTORIES` mounts it rw (a path in both is
+    mounted rw once), at the identical in-container path (src == dst like the CWD).
+    Absolute only, `/` is rejected, host existence is required only for paths
+    actually mounted - paths under the covered roots (project dir/container
+    home/`tmpfs`) are shadowed by the covering mount at the identical path, so they
+    are skipped with a warning regardless of host existence. The lists are also
+    forwarded verbatim, so the agent trusts exactly what is mounted; `config.json`'s
+    `permissions.*` are therefore direct-run only. Mounts are emitted before every
+    built-in mount and sorted shallowest-first, so built-ins and later, deeper
+    mounts shadow shallower ones (mounting a CWD parent ro works; the project dir
+    itself stays rw). Extras:
+    `DDR_ACP_AGENT_DOCKER_NETWORK`, `DDR_ACP_AGENT_DOCKER_CAP_ADD`,
+    `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
   local builds via `./build-docker`. Launcher output is stderr-only - ACP travels over the container
   stdin/stdout.
 
@@ -1312,7 +1363,8 @@ stays a task input instead of a stale constant.
 - **Security & permissions** — path-aware permissions + client fs proxy (in-project prompt-free, out-of-project read
   prompts, the `allow_always`
   session grant prompting once for two prompts' out-of-project reads (issue #65
-  pin of the tool-name-keyed semantics)), `FS_PROXY_ENABLED=0` and the **fs-capability negative** (issue #61: with the
+  pin of the tool-name-keyed semantics)), `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` and the **fs-capability negative** (issue
+  #61: with the
   default `ClientCapabilities()` -
   `fs` absent - `read_file` + `write_file` run through the local store and never
   call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT attempt to
@@ -1414,7 +1466,7 @@ stays a task input instead of a stale constant.
   a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; RFC 5737 IP literal);
   black-box e2e in
   `E2eWebFetchTest` (prompt-free plan-mode fetch with
-  `ACP_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
+  `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
 timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` upper bound at
@@ -1500,26 +1552,35 @@ graceful-shutdown pin: `E2eShutdownTest` covers the client closing stdin mid-tur
 the JVM suites cannot see which argv/env the `ddr-acp-agent-docker` launcher composes.
 The stub `tests/bash/stubs/fake-docker` is plugged in via the launcher's own
 `DOCKER_BIN` seam (record mode: every invocation appended to `$FAKE_DOCKER_LOG`,
-`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths; on
-`docker run` it records the staged API-key file's mode/content as a `keyfile <mode>
-<content>` line - the EXIT trap removes that file before the test can stat it);
+`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths);
 `tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in its own
 subshell and the first failing assert aborts it via `_fail`'s `exit` - bash ignores
 `set -e` in the runner's capture context, which had let tests false-green until
 issue #52), `tests/bash/common.sh` provides the
 launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
-assignments must precede flags and `ACP_DOCKER_EXTRA_MOUNTS`/`ANDROID_HOME`/
-`ANDROID_SDK_ROOT`/`TZ`/the tool-cache env vars (`UV_CACHE_DIR` & friends, `UV_LINK_MODE`,
-the `PNPM_CONFIG_*` cache vars) are always cleared).
-Suites: `test_extra_mounts.bash` (`ACP_EXTRA_MOUNTS` derivation), `test_launcher_args.bash`
-(sandbox flags, env forwarding, the API-key-never-in-env contract: no `--env
-OPENROUTER_API_KEY=`, key file mounted ro, `0600` staged copy removed after the run,
-`OPENROUTER_API_KEY_FILE` host file mounted without staging, `.env.local` masking, git
+assignments must precede flags, and the launcher-visible host config (`ANDROID_HOME`/`ANDROID_SDK_ROOT`/`TZ`, the
+tool-cache env vars - `UV_CACHE_DIR`
+& friends, `UV_LINK_MODE`, the `PNPM_CONFIG_*` cache vars - and the whole
+`DDR_ACP_AGENT_*` family) is always cleared).
+Suites: `test_permission_mounts.bash` (the permission lists as the mount list:
+ro/rw per tier, a path in both tiers mounted rw once, covered paths skipped,
+lists forwarded once and unchanged), `test_config_mounts.bash` (the agent config
+directory mount: host dir read-only at the container's own config directory on a
+uid-mapped `~/.config` tmpfs, bind landing on top of the tmpfs, a missing host
+dir mounting nothing, a config dir inside the project dir skipped),
+`test_launcher_args.bash`
+(sandbox flags, env forwarding, the no-key-handling contract: legacy
+`OPENROUTER_API_KEY`/`OPENROUTER_API_KEY_FILE` are inert (no key mount, no key env,
+host file untouched), `.env.local` masking, git
 identity, pull fallback, `DDR_ACP_AGENT_SCRATCH_DIR` forwarded verbatim without a mount,
+`DDR_ACP_AGENT_CONFIG_FILE` forwarded as a bare file name,
 `--network host` as the default + `--add-host=host.docker.internal:(127.0.0.1|host-gateway)`
 depending on the network mode (always present)
 
-+ `--network` honoring `ACP_DOCKER_NETWORK` + `ACP_DOCKER_EXTRA_ARGS` appending, Gradle
++ `--network` honoring `DDR_ACP_AGENT_DOCKER_NETWORK` + `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS`
+  appending, the launcher's own `DDR_ACP_AGENT_DOCKER_*` knobs carved out of the forwarded
+  agent config (a knob must never reach the agent env), the legacy `ACP_DOCKER_*` spellings
+  inert, Gradle
   GUH sharing (content-addressed leaves incl. `build-cache-*`/`transforms-*`,
   version-bound `transforms`/`generated-gradle-jars` incl. wrapper-dist-derived
   versions, per-version tmpfs, #67), cache sharing (issue #51): explicit
@@ -1529,7 +1590,7 @@ depending on the network mode (always present)
   the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
   `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the
   container defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
-  forwarding), `ACP_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
+  forwarding), `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
   config ignored and not even validated), Android SDK sharing: explicit
   `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both vars carrying the configured value (lone `ANDROID_SDK_ROOT`
   synthesizes `ANDROID_HOME`, `ANDROID_HOME` wins on conflict),
@@ -1542,15 +1603,16 @@ depending on the network mode (always present)
   capture context and later code must never run; each test there ends in ONE
   decisive all-properties assertion kept last, so it also fails under a
   non-aborting `_fail`). Fixtures live under
-`build/` (never `/tmp`: the launcher skips extra mounts inside the container tmpfs;
+  `build/` (never `/tmp`: the launcher skips permission paths inside the container tmpfs;
 never `/home/dev` either - container-only and unwritable on a host, see the
-env-independence pitfall) and
-the API key is pinned to `sk-test` so a real key can never leak into logs.
+  env-independence pitfall); no test needs a key value at all (the launcher never
+  reads one).
 
 Manual validation (the run configurations cannot do this):
 - Docker: validate `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
   build with `./build-docker` and smoke-test by piping an `initialize` request into
-  `OPENROUTER_API_KEY=... ./ddr-acp-agent-docker --skip-pull` (expects a JSON-RPC
+  `./ddr-acp-agent-docker --skip-pull` with a `~/.config/ddr-acp-agent/openrouter.key`
+  in place (expects a JSON-RPC
   response on stdout). What the shell suite cannot pin without a real daemon: the
   image itself (entrypoint, tool availability) and real bind mounts.
 - Direct: validate `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the
@@ -1612,9 +1674,12 @@ communicate that with the user so we can review them.
 - **`terminal/*` is deliberately skipped** - the agent runs its own local processes (`ProcessBuilder`), it does not
   delegate terminals to the client; the `terminal`
   client capability is ignored. This is a design decision, not a deferred feature.
-- **Permissions are path-aware**: anything outside the session working directory -
-  reads and writes alike - requires the user decision (mechanics under Features); do
-  not execute a path-scoped file tool or mutating tool without the permission decision.
+- **Permissions are path-aware and tiered**: anything outside the session working
+  directory - reads and writes alike - requires the user decision unless a configured
+  directory tier covers it (`permissions.readableDirectories` / `writableDirectories`,
+  mechanics under Features); with `permissions.unlistedPaths = deny` an uncovered path
+  is refused without any prompt. Do not execute a path-scoped file tool or mutating
+  tool without the permission decision.
 - **LLM provider**: OpenRouter. The **OpenAI wire types (from Koog) are the internal LLM
   contract** - a deliberate single-provider design decision; do not wrap them in
   domain/anti-corruption types. `LlmClient` in `net.dontdrinkandroot.acpagent.llm` owns
@@ -1757,7 +1822,7 @@ communicate that with the user so we can review them.
   serialize correctly. Gradle declares this unsupported and will not change the protocol (gradle/gradle#851, #8375; the
   timeout is deliberately not configurable). **The launcher
   therefore runs the container in the host network namespace by default** (`--network host`,
-  `ACP_DOCKER_NETWORK` for an opt-out), which puts host and container Gradle processes on
+  `DDR_ACP_AGENT_DOCKER_NETWORK` for an opt-out), which puts host and container Gradle processes on
   one loopback and restores the handover. The shared
   cache leaves still form one lock domain across the host and all agent containers, so a
   `Timeout waiting to lock` now only appears in the opt-out (bridge/named-network) mode or

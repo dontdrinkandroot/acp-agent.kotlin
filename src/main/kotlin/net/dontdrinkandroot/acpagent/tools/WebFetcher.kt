@@ -2,14 +2,15 @@ package net.dontdrinkandroot.acpagent.tools
 
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.compression.ContentEncoding
+import io.ktor.client.plugins.compression.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
+import net.dontdrinkandroot.acpagent.tools.WebFetcher.defaultClient
 import java.net.InetAddress
 import java.nio.charset.Charset
-import java.util.Locale
+import java.util.*
 
 /**
  * The outcome of one [WebFetcher.fetch]: the final URL after redirects, the
@@ -178,7 +179,7 @@ internal object WebFetcher {
      * SSRF guard: only http(s) URLs, and hosts resolving to loopback,
      * link-local, site-local (private ranges) or any-local (0.0.0.0) addresses
      * are refused - unless [allowPrivate] opted out
-     * (`ACP_WEB_FETCH_ALLOW_PRIVATE=1`, also what tests against a local mock
+     * (`tools.webFetch.allowPrivate`, also what tests against a local mock
      * server need). `localhost` and friends are blocked by name even without
      * DNS. Every redirect hop is validated again: `resolve` + this prevent a
      * public URL from redirecting the fetch into the private network.
@@ -254,5 +255,5 @@ internal object WebFetcher {
 
     private fun blockedMessage(host: String): String =
         "refusing to fetch private or loopback host '$host' " +
-                "(set ACP_WEB_FETCH_ALLOW_PRIVATE=1 to allow)"
+                "(the operator can allow it via tools.webFetch.allowPrivate)"
 }

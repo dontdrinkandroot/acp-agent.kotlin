@@ -199,7 +199,7 @@ public class ToolContext internal constructor(
     internal val fileExclusions: FileAccessExclusions = FileAccessExclusions.DEFAULT,
     /**
      * When true, `web_fetch` may reach private/loopback/link-local hosts
-     * (env `ACP_WEB_FETCH_ALLOW_PRIVATE=1`). Default false: the SSRF guard
+     * (config `tools.webFetch.allowPrivate`). Default false: the SSRF guard
      * blocks them so a prompt cannot probe internal networks.
      */
     internal val webFetchAllowPrivate: Boolean = false,

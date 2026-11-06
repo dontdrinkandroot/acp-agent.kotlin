@@ -192,7 +192,7 @@ class WebFetchToolTest {
         val url = "http://127.0.0.1:9/x"
         val blocked = runCatching { WebFetcher.validateHop(url, allowPrivate = false) }
         assertTrue(blocked.isFailure)
-        assertContains(blocked.exceptionOrNull()!!.message!!, "ACP_WEB_FETCH_ALLOW_PRIVATE")
+        assertContains(blocked.exceptionOrNull()!!.message!!, "tools.webFetch.allowPrivate")
         runCatching { WebFetcher.validateHop(url, allowPrivate = true) }.getOrThrow()
     }
 

@@ -194,7 +194,7 @@ class ProviderRoutingTest {
     @Test
     fun `providersFor works even when auto routing is disabled`() = runBlocking {
         // The manual provider picker must stay visible with
-        // OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED=0: only `auto` degrades.
+        // DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING=false: only `auto` degrades.
         val server = EndpointsServer(endpointBody())
         server.start()
         try {

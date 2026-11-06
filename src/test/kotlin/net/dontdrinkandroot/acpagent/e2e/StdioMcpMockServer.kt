@@ -22,7 +22,8 @@ import java.nio.file.StandardOpenOption
  *  - `MOCK_MCP_SHADOW=1` additionally exposes a tool named like a local tool
  *  - `MOCK_MCP_BROKEN=1` answers every request with unparseable JSON
  *  - `MOCK_MCP_PROBE=1` records the launch context into the marker at startup
- *    (working directory, whether `OPENROUTER_API_KEY` reached the child, and
+ *    (working directory, whether the agent's API key location
+ *    `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE` reached the child, and
  *    whether `PATH` did)
  *
  * Exits on stdin EOF, so an agent that gets killed never leaves the mock behind.
@@ -41,7 +42,10 @@ internal object StdioMcpMockServer {
         }
         if (System.getenv("MOCK_MCP_PROBE") == "1") {
             appendMarker("cwd=" + Paths.get("").toAbsolutePath())
-            appendMarker("openrouter_api_key=" + if (System.getenv("OPENROUTER_API_KEY") == null) "absent" else "present")
+            appendMarker(
+                "openrouter_api_key_file=" +
+                        if (System.getenv("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE") == null) "absent" else "present"
+            )
             appendMarker("path=" + if (System.getenv("PATH") == null) "absent" else "present")
         }
 

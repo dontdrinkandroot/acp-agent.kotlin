@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
@@ -32,8 +31,8 @@ internal class AgentSessionImpl(
     private val config: Config,
     /**
      * The prepared (created + verified) scratch directory, read-trusted like
-     * [Config.extraMounts] but kept separate: the two lists are merged only
-     * where the trust roots are consumed (permission decision and system
+     * [Config.readableDirectories] but kept separate: the two lists are merged
+     * only where the trust roots are consumed (permission decision and system
      * prompt), never in the config surface. Callers pass the *prepared* path
      * (`prepareScratchDirectory`), not the configured one.
      */
@@ -102,22 +101,22 @@ internal class AgentSessionImpl(
     )
 
     /**
-     * Every read-trust root of this session: the user-configured
-     * `ACP_EXTRA_MOUNTS` plus the agent's own scratch directory (issue #10).
-     * The single merge point - [permissionNeeded] and the system prompt both
-     * consume this, so the two lists cannot drift apart.
-     *
-     * Merged here (not at the call sites) so a session that was never handed a
-     * prepared scratch directory still trusts `extraMounts`; forgetting the
-     * parameter narrows the trust domain instead of widening it.
+     * The access tiers of this session: the configured readable/writable
+     * directories plus the agent's own prepared scratch directory (read-tier
+     * only, issue #10). The single merge point - the permission decision and
+     * the system prompt both consume it, so the two cannot drift apart.
      */
-    private val trustedReadPaths: List<String> = config.extraMounts + listOfNotNull(scratchDir)
+    private val permissionPolicy = PermissionPolicy(
+        readableDirectories = (config.readableDirectories + listOfNotNull(scratchDir)).distinct(),
+        writableDirectories = config.writableDirectories.distinct(),
+        unlistedPaths = config.unlistedPaths,
+    )
 
     private val systemPrompt = SystemPromptBuilder(
         cwd,
         todayProvider,
         runConfigsProvider = { loadRunConfigs(cwd) },
-        trustedReadPaths = trustedReadPaths,
+        permissionPolicy = permissionPolicy,
         excludedFileGlobs = FileAccessExclusions.DEFAULT.globs(),
     )
 
@@ -135,7 +134,7 @@ internal class AgentSessionImpl(
         initialProviderOptions = initialProviderOptions,
     )
 
-    private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, trustedReadPaths)
+    private val toolCallExecutor = ToolCallExecutor(toolRegistry, state, permissionPolicy)
 
     private val promptRunner = PromptRunner(
         state = state,
@@ -362,30 +361,6 @@ internal data class StreamToolCall(
     val name: String,
     val arguments: String
 )
-
-/**
- * Decides whether a tool call needs a user permission prompt. Path-scoped
- * calls whose targets all lie inside the session working directory are allowed
- * outright; non-mutating reads whose targets all lie inside a trusted read
- * path (`ACP_EXTRA_MOUNTS`, e.g. the extra docker mounts) are allowed too.
- * Anything else that is mutating (bash) or reaches outside the project
- * (path-scoped reads, writes, searches, moves) requires permission.
- */
-internal fun permissionNeeded(
-    cwd: String,
-    tool: AgentTool,
-    arguments: JsonObject,
-    trustedReadPaths: List<String> = emptyList(),
-): Boolean {
-    val targets = tool.targetPaths(arguments)
-    if (targets.isNotEmpty() && targets.all { isWithin(cwd, it) }) return false
-    val withinTrustedReadPaths = targets.isNotEmpty() &&
-            targets.all { isWithinAnyRoot(cwd, trustedReadPaths, it) }
-    if (!tool.mutating && trustedReadPaths.isNotEmpty() && withinTrustedReadPaths) {
-        return false
-    }
-    return tool.mutating || targets.isNotEmpty()
-}
 
 /**
  * Selects the file backend for the session: the client fs proxy when it is

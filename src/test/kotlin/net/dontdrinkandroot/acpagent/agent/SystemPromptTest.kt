@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
+import net.dontdrinkandroot.acpagent.config.UnlistedPaths
 import net.dontdrinkandroot.acpagent.tools.RunConfig
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -171,25 +172,48 @@ class SystemPromptTest {
     }
 
     @Test
-    fun `trusted read paths section is present when configured and states read-only semantics`() {
+    fun `trusted paths section states both tiers and their prompt-free semantics`() {
         val builder = SystemPromptBuilder(
             "/project",
             { "2026-09-03" },
-            trustedReadPaths = listOf("/srv/data", "/mnt/scratch"),
+            permissionPolicy = PermissionPolicy(
+                readableDirectories = listOf("/srv/data", "/mnt/scratch"),
+                writableDirectories = listOf("/srv/scratch"),
+            ),
         )
         val prompt = builder.build(null)
-        assertTrue(prompt.contains("## Trusted read paths"), prompt)
-        assertTrue(prompt.contains("No permission prompt for `read_file`/`list_dir`/`glob`/`grep`"), prompt)
-        assertTrue(prompt.contains("writes and mutations still require permission"), prompt)
-        // One bullet per path (same list style as the run configurations section).
+        assertTrue(prompt.contains("## Trusted paths"), prompt)
+        assertTrue(prompt.contains("The working directory is implicitly readable and writable."), prompt)
+        assertTrue(prompt.contains("* Read-only access (every mode):"), prompt)
         assertTrue(prompt.contains("* /srv/data"), prompt)
         assertTrue(prompt.contains("* /mnt/scratch"), prompt)
+        assertTrue(prompt.contains("* Write access in build and bash mode:"), prompt)
+        assertTrue(prompt.contains("* /srv/scratch"), prompt)
+        // No tool names: the mode status message and the request's tool schemas
+        // are the single source for which tools exist, so this section states
+        // only what the tiers grant.
+        assertTrue(!prompt.contains("`read_file`/`list_dir`"), prompt)
+        assertTrue(!prompt.contains("refused without a prompt"), "the deny note is only rendered for deny")
     }
 
     @Test
-    fun `trusted read paths section is omitted when none are configured`() {
+    fun `trusted paths section notes the deny policy`() {
+        val builder = SystemPromptBuilder(
+            "/project",
+            { "2026-09-03" },
+            permissionPolicy = PermissionPolicy(
+                readableDirectories = listOf("/srv/data"),
+                unlistedPaths = UnlistedPaths.DENY,
+            ),
+        )
         val prompt = builder.build(null)
-        assertTrue(!prompt.contains("Trusted read paths"), prompt)
+        assertTrue(prompt.contains("refused without a prompt"), prompt)
+    }
+
+    @Test
+    fun `trusted paths section is omitted when no tier is configured`() {
+        val prompt = builder.build(null)
+        assertTrue(!prompt.contains("Trusted paths"), prompt)
     }
 
     @Test

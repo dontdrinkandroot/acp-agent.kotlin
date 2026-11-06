@@ -130,7 +130,9 @@ class E2eProviderOptionTest : E2eAgentTest() {
 
                 // Agent 2 (auto routing disabled): the option stays visible (only
                 // `auto` degrades), and the persisted pick still routes the request.
-                val second = connect(extraEnv = mapOf("OPENROUTER_AUTO_THROUGHPUT_SORTING_ENABLED" to "0"))
+                val second = connect(
+                    extraEnv = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING" to "0")
+                )
                 try {
                     second.client.initialize(testClientInfo())
                     val resumeOps = TestClientOperations()

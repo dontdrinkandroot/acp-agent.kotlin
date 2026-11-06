@@ -7,7 +7,10 @@ import net.dontdrinkandroot.acpagent.tools.RunConfig
 /** Example working directory of the dump - deliberately not the real one. */
 private const val EXAMPLE_CWD = "/home/dev/projects/example-project"
 
-private val exampleTrustedReadPaths = listOf("/srv/data", "/mnt/scratch", "/tmp/ddr-acp-agent")
+private val examplePermissionPolicy = PermissionPolicy(
+    readableDirectories = listOf("/srv/data", "/mnt/scratch", "/tmp/ddr-acp-agent"),
+    writableDirectories = listOf("/srv/scratch"),
+)
 
 private val exampleExcludedFileGlobs = listOf(".env*.local", ".ai/run.json", "secrets/**")
 
@@ -42,6 +45,6 @@ internal fun reviewSystemPrompt(): String =
         EXAMPLE_CWD,
         ::isoDateToday,
         runConfigsProvider = { exampleRunConfigs },
-        trustedReadPaths = exampleTrustedReadPaths,
+        permissionPolicy = examplePermissionPolicy,
         excludedFileGlobs = exampleExcludedFileGlobs,
     ).build(null)

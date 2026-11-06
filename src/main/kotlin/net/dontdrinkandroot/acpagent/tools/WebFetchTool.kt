@@ -17,7 +17,7 @@ public class WebFetchTool : AgentTool {
                 "a '│' delimiter. When the window does not cover the whole content a footer shows the shown " +
                 "range and the 'startLine' to continue from. Non-text content (PDF, images, archives) is " +
                 "refused with a hint to download it via bash instead. Private/loopback hosts are refused " +
-                "unless ACP_WEB_FETCH_ALLOW_PRIVATE=1."
+                "unless the operator has enabled them (tools.webFetch.allowPrivate)."
     override val kind = ToolKind.FETCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(

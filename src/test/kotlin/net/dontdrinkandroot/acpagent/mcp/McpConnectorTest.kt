@@ -12,9 +12,8 @@ class McpConnectorTest {
         "LANG" to "C.UTF-8",
         "TERM" to "xterm-256color",
         "TZ" to "Europe/Berlin",
-        "OPENROUTER_API_KEY" to "sk-or-v1-secret",
-        "OPENROUTER_API_KEY_FILE" to "/tmp/openrouter-api-key",
-        "ACP_EXTRA_MOUNTS" to "/srv/data",
+        "DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to "/home/dev/.config/ddr-acp-agent/openrouter.key",
+        "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "/srv/data",
         "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/ddr-acp-agent",
         "GITHUB_TOKEN" to "ghp_secret",
         "SSH_AUTH_SOCK" to "/run/user/1000/ssh-agent.sock",
@@ -38,9 +37,8 @@ class McpConnectorTest {
         val env = mcpChildEnvironment(agentEnv, emptyList())
 
         for (leaked in listOf(
-            "OPENROUTER_API_KEY",
-            "OPENROUTER_API_KEY_FILE",
-            "ACP_EXTRA_MOUNTS",
+            "DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE",
+            "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES",
             "DDR_ACP_AGENT_SCRATCH_DIR",
             "GITHUB_TOKEN",
             "SSH_AUTH_SOCK",
