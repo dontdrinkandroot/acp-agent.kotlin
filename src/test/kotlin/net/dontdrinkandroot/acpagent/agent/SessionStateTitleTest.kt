@@ -1,9 +1,9 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.model.SessionId
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.*
 

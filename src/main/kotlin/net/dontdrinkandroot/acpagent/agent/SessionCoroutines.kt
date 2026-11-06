@@ -1,9 +1,9 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
 import com.agentclientprotocol.agent.client
 import com.agentclientprotocol.common.ClientSessionOperations
 import kotlinx.coroutines.currentCoroutineContext
+import net.dontdrinkandroot.acpagent.llm.models.Content
 
 /**
  * The client session operations of the enclosing session context, or null

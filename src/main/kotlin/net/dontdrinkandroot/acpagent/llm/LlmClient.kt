@@ -1,8 +1,5 @@
 package net.dontdrinkandroot.acpagent.llm
 
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAITool
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
@@ -14,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import net.dontdrinkandroot.acpagent.llm.models.OpenAITool
+import net.dontdrinkandroot.acpagent.llm.models.OpenRouterChatCompletionStreamResponse
 
 private const val CHAT_COMPLETIONS_PATH = "chat/completions"
 private const val MODELS_PATH = "models"

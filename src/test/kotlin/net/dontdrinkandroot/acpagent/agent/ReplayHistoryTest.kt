@@ -1,19 +1,10 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIFunction
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIToolCall
-import com.agentclientprotocol.model.ContentBlock
-import com.agentclientprotocol.model.PlanEntry
-import com.agentclientprotocol.model.PlanEntryPriority
-import com.agentclientprotocol.model.PlanEntryStatus
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.model.ToolCallContent
-import com.agentclientprotocol.model.ToolCallId
-import com.agentclientprotocol.model.ToolCallLocation
-import com.agentclientprotocol.model.ToolCallStatus
-import com.agentclientprotocol.model.ToolKind
+import com.agentclientprotocol.model.*
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.WriteFileTool
 import kotlin.test.Test

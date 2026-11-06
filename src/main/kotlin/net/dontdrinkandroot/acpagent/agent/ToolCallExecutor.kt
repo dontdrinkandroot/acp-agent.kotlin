@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
@@ -12,6 +11,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.llm.models.Content
 import net.dontdrinkandroot.acpagent.tools.*
 
 private val logger = KotlinLogging.logger {}

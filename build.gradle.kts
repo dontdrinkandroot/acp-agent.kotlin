@@ -103,7 +103,6 @@ dependencies {
     implementation(libs.kotlinx.io.core)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.koog.openrouter.client)
     implementation(libs.uuid.creator)
     implementation(libs.slf4j.simple)
     implementation(libs.kotlin.logging)

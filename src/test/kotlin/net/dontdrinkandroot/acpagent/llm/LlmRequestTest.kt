@@ -1,12 +1,8 @@
 package net.dontdrinkandroot.acpagent.llm
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAITool
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIToolFunction
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.llm.models.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

@@ -1,9 +1,9 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIContentPart
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.EmbeddedResourceResource
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIContentPart
 
 /**
  * Converts prompt content blocks into LLM message content. Plain text stays a

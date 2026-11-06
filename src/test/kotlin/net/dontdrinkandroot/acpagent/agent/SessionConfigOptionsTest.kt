@@ -1,6 +1,5 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
@@ -12,6 +11,8 @@ import net.dontdrinkandroot.acpagent.llm.OpenRouterEndpoint
 import net.dontdrinkandroot.acpagent.llm.OpenRouterEndpointPricing
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ReasoningCapability
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.AgentTool
@@ -254,7 +255,7 @@ class SessionConfigOptionsTest {
         assertEquals(
             "Mode: build. Read-write: read, write, edit, move and delete files to implement the task. Available tools: read_file, write_file.",
             s.historySnapshot.single()
-                .let { (it as ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage.System).content as Content.Text }
+                .let { (it as OpenAIMessage.System).content as Content.Text }
                 .text(),
         )
         // Re-indicating without a mode change appends nothing.

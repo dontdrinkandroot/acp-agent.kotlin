@@ -1,11 +1,11 @@
 package net.dontdrinkandroot.acpagent.llm
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors

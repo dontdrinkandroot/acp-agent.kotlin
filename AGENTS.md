@@ -19,30 +19,28 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 version catalog `gradle/libs.versions.toml` (single source of truth; declared versions match
 what actually resolves).
 
-| Layer                  | Dependency                                                                            | Version                      |
-|------------------------|---------------------------------------------------------------------------------------|------------------------------|
-| Kotlin / plugins       | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.8) | 2.4.21                       |
-| Dep update check       | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.67.0                       |
-| ACP                    | `com.agentclientprotocol:acp`                                                         | 0.34.0                       |
-| MCP                    | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.16.0                       |
-| HTTP                   | ktor client (CIO engine)                                                              | 3.6.1                        |
-|                        | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.6.1                        |
-| HTML parsing           | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                       |
-| Coroutines             | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
-| IO                     | kotlinx-io-core                                                                       | 0.9.2                        |
-| JSON                   | kotlinx-serialization-json                                                            | 1.12.0 (declared + resolved) |
-| OpenRouter wire models | ai.koog:prompt-executor-openrouter-client (models only, no framework)                 | 1.3.0                        |
-| UUIDv7 ids             | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
-| Logging                | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.20               |
+| Layer            | Dependency                                                                            | Version                      |
+|------------------|---------------------------------------------------------------------------------------|------------------------------|
+| Kotlin / plugins | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.8) | 2.4.21                       |
+| Dep update check | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.67.0                       |
+| ACP              | `com.agentclientprotocol:acp`                                                         | 0.34.0                       |
+| MCP              | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.16.0                       |
+| HTTP             | ktor client (CIO engine)                                                              | 3.6.1                        |
+|                  | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.6.1                        |
+| HTML parsing     | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                       |
+| Coroutines       | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
+| IO               | kotlinx-io-core                                                                       | 0.9.2                        |
+| JSON             | kotlinx-serialization-json                                                            | 1.12.0 (declared + resolved) |
+| LLM wire models  | owned (`llm/models/LlmWireModels.kt`, no LLM framework dependency)                    | -                            |
+| UUIDv7 ids       | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
+| Logging          | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.20               |
 
-Gradle conflict resolution picks the Koog-forced kotlinx versions; the catalog declares them
-at the values that actually resolve (kotlinx-serialization-json 1.12.0), so there is no
-declared-vs-resolved drift. Koog
-is used as a wire-model / serialization library
-only (no framework); its OpenAI-compat wire types are the internal LLM contract (see the
-LLM provider bullet below). kotlin-logging 8.0.4 is declared explicitly because
-Koog/ktor/ACP pull 7.0.0 and 8.0.01 transitives; pinning 8.0.4 pins the
-banner-suppressing API.
+kotlin-logging 8.0.4 is declared explicitly because ktor/ACP pull 7.0.0 and 8.0.01
+transitives; pinning 8.0.4 pins the banner-suppressing API. The Koog dependency
+(`ai.koog:prompt-executor-openrouter-client`) was removed 2026-11-06: the wire types are
+owned in `llm/models/LlmWireModels.kt` (byte-equivalent to the Koog 1.3.0 types they
+replaced, pinned by `LlmWireGoldensTest`), so the LLM contract is ours (see the LLM
+provider bullet under Boundaries).
 
 ## Conventions
 
@@ -159,6 +157,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # wire-shaped LLM data (chat traffic + persisted history)
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
                                      # provider endpoints feed: tag/provider_name/pricing)
+    llm/models/LlmWireModels.kt      # owned chat-completion wire types (`OpenAIMessage`, `Content`
+                                     # string-or-parts, tools, stream chunk) - the internal LLM
+                                     # contract, byte-pinned by LlmWireGoldensTest
     llm/ModelLookup.kt               # List<OpenRouterModel>.forModel(id) - the single model lookup
     providerrouting/ProviderRouting.kt  # provider routing: auto (throughput sort + median
                                      # completion cap) + the manual `provider` option's
@@ -502,8 +503,8 @@ own config directory (a
   reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
   (same `NonCancellable` flush before the resources go away) and **at
   shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
-  Shutdown; issue #17). The record
-  (`agent/SessionRecord.kt`) holds history (Koog `OpenAIMessage` wire types via the shared
+  Shutdown; issue #17). The record (`agent/SessionRecord.kt`) holds history (owned `OpenAIMessage` wire types from
+  `llm/models/LlmWireModels.kt` via the shared
   `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning, plan and
   `toolOutcomes` (toolCallId -> `"completed"` | `"failed"`, recorded at history-append time in
   `SessionState.appendToolResult`; lenient at replay - unknown values/legacy records fall back
@@ -677,7 +678,7 @@ own config directory (a
   loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
   `test` (full `test` suite), `test_class` (single class/method via `[args]`),
   `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
-report-only, Koog bumps additionally go through the Koog upgrade checklist),
+  report-only),
   `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build, `.ai/scripts/*` and shell-test scripts),
   `test_fresh` (`test --rerun-tasks`, the cache-defeating full suite for the false-green
   pitfall below), `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the
@@ -718,7 +719,7 @@ report-only, Koog bumps additionally go through the Koog upgrade checklist),
   `supported_efforts` -> gateway levels max..minimal;
   mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`, issue #42)
   config options. Model switches reset reasoning and provider; changes emit updates and persist. The chat request
-  carries `reasoning: {effort}` (own wire type in `LlmClient`, not Koog).
+  carries `reasoning: {effort}` (own wire type `ReasoningEffort` in `LlmClient`).
     - **Provider option** (issue #42): flat select with `auto` (real value, default, always re-selectable) +
       the current model's provider slugs from the endpoints feed (value = endpoint `tag`, name = `provider_name`;
       blank tags and a tag literally `auto` are skipped - `auto` always means OpenRouter routing);
@@ -1452,7 +1453,9 @@ stays a task input instead of a stale constant.
   `SessionConfigOptionsTest` (provider option
   listing/validation/reset/self-heal, manual pick survives an outage, blank/`auto` tag exclusion),
   `ProviderRoutingTest` (provider lookup + median price filtering), `LlmRequestTest`
-  (manual pick wire shape `order` without sort/max_price) and `PromptRunnerTest`
+  (manual pick wire shape `order` without sort/max_price), `LlmWireGoldensTest`
+  (byte-exact wire documents for the owned chat-completion wire types - request,
+  stream chunk, choice error, `Content` serializer) and `PromptRunnerTest`
   (request-level provider choice: manual order vs omitted auto).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
   provider routing (median cap, fail-open, disabled) and the manual provider option (`E2eProviderOptionTest`:
@@ -1619,16 +1622,6 @@ Manual validation (the run configurations cannot do this):
   same way via `./ddr-acp-agent` (keep stdin open briefly after the request — closing
   it immediately races the transport teardown and swallows the response).
 
-**Koog upgrade checklist**: on every Koog version bump, re-verify the three hand-rolled
-surfaces against the new version (see the "No more Koog" bullet under Boundaries) and
-update this file: (1) `GET /models` wire types - still `internal`? still without the
-`reasoning` block? (2) chat request - does Koog's OpenRouter request model carry
-`reasoning {effort}` now? (3) `agents-features-acp` - still batch-emits events, no
-permission flow/modes/usage indicator/replay? The moment any of these closes, port that
-surface to Koog. Run config `sources` (e.g.
-`build/library-sources-unpacked/prompt-executor-openrouter-client-jvm-1.3.0/`) is the
-mechanism to check these against the exact resolved Koog sources.
-
 **ACP SDK upgrade checklist**: on every `com.agentclientprotocol:acp` bump, read the
 release notes (github.com/agentclientprotocol/kotlin-sdk/releases) and re-verify against
 the exact resolved sources (`sources` unpacks `acp-jvm-<version>/` + `acp-model-jvm-<version>/`):
@@ -1680,43 +1673,21 @@ communicate that with the user so we can review them.
   mechanics under Features); with `permissions.unlistedPaths = deny` an uncovered path
   is refused without any prompt. Do not execute a path-scoped file tool or mutating
   tool without the permission decision.
-- **LLM provider**: OpenRouter. The **OpenAI wire types (from Koog) are the internal LLM
-  contract** - a deliberate single-provider design decision; do not wrap them in
-  domain/anti-corruption types. `LlmClient` in `net.dontdrinkandroot.acpagent.llm` owns
-  only the transport (HTTP/SSE/JSON); both `llm` and `agent` (`AgentSessionImpl`) import
-  the Koog wire types (`ai.koog.prompt.executor.clients.openai.base.models.*` for
-  `OpenAIMessage`, `OpenAITool`, etc. and
-  `.openrouter.models.OpenRouterChatCompletionStreamResponse`).
+- **LLM provider**: OpenRouter. The **wire types in `llm/models/LlmWireModels.kt` are the
+  internal LLM contract** - a deliberate single-provider design decision; do not wrap them
+  in domain/anti-corruption types. They were the Koog `ai.koog:prompt-executor-openrouter-client`
+  wire types until 2026-11-06, when the dependency was dropped and the consumed surface
+  became owned (byte-equivalent to the Koog 1.3.0 shapes, pinned by `LlmWireGoldensTest`).
+  `LlmClient` in `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON); both `llm` and `agent`
+  (`AgentSessionImpl`) import the owned wire types (`OpenAIMessage`, `OpenAITool`,
+  `OpenRouterChatCompletionStreamResponse`, ...).
   - **No `temperature` is set** for chat completions (providers default it); pinned by
     `LlmRequestTest`.
   - Streaming is a hand-rolled line scan via `preparePost` + `bodyAsChannel().readLine()`
-    (`data:` events, `[DONE]` terminator) that emits chunks as they arrive - not Koog's
-    framework `LLMClient`/`ToolDescriptor` entry points. Koog's execute/streaming entry
-    points are public since 1.1.1 (and streamed tool-call deltas decode fine - the
-    partial-tool-call crash, JetBrains/koog#1996, is fixed since then); we hand-roll
-    because (a) OpenRouter's `reasoning: {effort}` request param is not in Koog's
-    `OpenRouterParams`, (b) every wire-shaped byte must round-trip through the shared
-    `llmWireJson` (Koog clients carry their own `Json` with different settings), and (c) raw per-chunk access is needed
-    for `delta.reasoning`, `usage` and finish
-    reasons without Koog's StreamFrame conversion.
-  - **No more Koog - for now (recheck periodically)**: hand-rolled surfaces beyond the
-    wire types were re-evaluated against Koog 1.3.0 and stay hand-rolled (1.3.0 only added
-    ready-made `LLModel` definitions + Google/Langfuse fixes; `OpenAIDataModels.kt` and
-    `OpenRouterChatCompletion.kt` are byte-identical to 1.2.0, so the wire contract did not move):
-    - `GET /models`: Koog's `OpenRouterModelsResponse`/`OpenRouterModel` are `internal`
-      (module-private) and lack the `reasoning` block (`supported_efforts`,
-      `default_effort`, `mandatory`) our thought-level config option needs - our
-      `llm/LlmModels.kt` is strictly more capable.
-    - Chat request: Koog's `OpenRouterChatCompletionRequest` still ships no `reasoning`
-      field, so the `reasoning: {effort}` contract cannot be expressed on the client API.
-    - `agents-features-acp` (added in 1.2.0) was read (`AcpAgent.kt`): it only works
-      inside a full `AIAgent` framework rewrite and even then lacks per-token streaming (it batch-emits `toAcpEvents()`
-      on LLM completion), the permission flow, session
-      modes (plan/build/bash), the `usage_update` indicator and load-replay; it even
-      carries `TODO: Support kind for tools`.
-      This is **not a final decision** - Koog moves fast and the above gaps may close;
-      re-evaluate the newer Koog version whenever it is upgraded (see the version bump
-      checklist under Testing).
+    (`data:` events, `[DONE]` terminator) that emits chunks as they arrive - no LLM
+    framework in between. Every wire-shaped byte must round-trip through the shared
+    `llmWireJson`, and raw per-chunk access is needed
+    for `delta.reasoning`, `usage` and finish reasons.
 
 ## Pitfalls and learnings
 
@@ -1727,7 +1698,7 @@ communicate that with the user so we can review them.
   false` is set first - `main()` in `Main.kt` does this (together with
   `org.slf4j.simpleLogger.logFile=System.err`) before `runAgent` creates the first
   logger; do not move a top-level `val logger = KotlinLogging.logger {}` ahead of it.
-- **Koog wire JSON settings are load-bearing.** The shared `llmWireJson` (`llm/LlmWire.kt`)
+- **LLM wire JSON settings are load-bearing.** The shared `llmWireJson` (`llm/LlmWire.kt`)
   must keep `namingStrategy = JsonNamingStrategy.SnakeCase` (without it `tool_calls` /
   `finish_reason` silently fail to parse - verified e2e) plus `ignoreUnknownKeys = true`,
   `explicitNulls = false`, `encodeDefaults = true`. Do not create a second `Json` for LLM
@@ -1864,7 +1835,6 @@ communicate that with the user so we can review them.
 * [Model Context Protocol](https://modelcontextprotocol.io/llms.txt)
 * [OpenRouter](https://openrouter.ai/docs/llms.txt)
 * [Kotlin Coding Conventions](https://raw.githubusercontent.com/JetBrains/kotlin-web-site/refs/heads/master/docs/topics/coding-conventions.md)
-* [Koog Documentation](https://github.com/JetBrains/koog/tree/develop/docs/docs)
 
 ## Self-Update Instruction
 

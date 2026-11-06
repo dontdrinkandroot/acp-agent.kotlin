@@ -1,9 +1,5 @@
 package net.dontdrinkandroot.acpagent.e2e
 
-import ai.koog.prompt.executor.clients.openai.base.models.Content
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIFunction
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIToolCall
 import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.*
 import kotlinx.coroutines.async
@@ -13,6 +9,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.SessionRecord
 import net.dontdrinkandroot.acpagent.agent.SessionStore
+import net.dontdrinkandroot.acpagent.llm.models.Content
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test

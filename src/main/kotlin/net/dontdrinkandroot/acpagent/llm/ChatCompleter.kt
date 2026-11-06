@@ -1,9 +1,9 @@
 package net.dontdrinkandroot.acpagent.llm
 
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAITool
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
 import kotlinx.coroutines.flow.Flow
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import net.dontdrinkandroot.acpagent.llm.models.OpenAITool
+import net.dontdrinkandroot.acpagent.llm.models.OpenRouterChatCompletionStreamResponse
 
 /**
  * The chat-completion capability used by [net.dontdrinkandroot.acpagent.agent.PromptRunner].

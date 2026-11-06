@@ -1,9 +1,5 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.*
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterChatCompletionStreamResponse
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamChoice
-import ai.koog.prompt.executor.clients.openrouter.models.OpenRouterStreamDelta
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +13,7 @@ import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
+import net.dontdrinkandroot.acpagent.llm.models.*
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext

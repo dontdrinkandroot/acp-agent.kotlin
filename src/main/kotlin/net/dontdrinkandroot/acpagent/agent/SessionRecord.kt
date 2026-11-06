@@ -1,8 +1,8 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import ai.koog.prompt.executor.clients.openai.base.models.OpenAIMessage
 import com.agentclientprotocol.model.PlanEntry
 import kotlinx.serialization.Serializable
+import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 
 /**
  * The durable state of one session, written to disk by [SessionStore] after
