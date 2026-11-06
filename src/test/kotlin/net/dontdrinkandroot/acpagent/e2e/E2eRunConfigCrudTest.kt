@@ -26,7 +26,7 @@ class E2eRunConfigCrudTest : E2eAgentTest() {
         val request = llmWireJson.parseToJsonElement(body ?: return emptySet()).jsonObject
         val tools = request["tools"]?.jsonArray ?: return emptySet()
         return tools.mapNotNull { tool ->
-            (tool.jsonObject["function"]?.jsonObject?.get("name") as? JsonPrimitive)?.content
+            (tool.jsonObject["name"] as? JsonPrimitive)?.content
         }.toSet()
     }
 

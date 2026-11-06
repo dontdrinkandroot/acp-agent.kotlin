@@ -1,10 +1,10 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
- * One assistant tool call id whose `role:"tool"` result message was never
+ * One assistant tool call id whose `function_call_output` item was never
  * appended - the turn died between the call's append and its terminal result
  * (a cancelled tool call, the issue #38 corruption).
  */
@@ -16,33 +16,36 @@ internal data class DanglingToolCall(val assistantIndex: Int, val callId: String
  * so the caller can record their FAILED outcome. Pure and idempotent: a
  * pair-complete history passes through unchanged.
  */
-internal data class PairingRepair(val history: List<OpenAIMessage>, val danglingIds: Set<String>)
+internal data class PairingRepair(val history: List<HistoryItem>, val danglingIds: Set<String>)
 
 /**
- * Closes dangling tool calls (issue #38): an assistant tool call whose
- * `role:"tool"` result was never appended (the turn was cancelled mid-call)
+ * Closes dangling tool calls (issue #38): a `function_call` item whose
+ * `function_call_output` was never appended (the turn was cancelled mid-call)
  * must not reach any history consumer - LLM requests, load replay, persisted
- * records - with its call dangling, because strict providers (Azure/OpenAI)
- * reject the whole request with 400 "No tool output found for function call
- * <id>". Every repaired id is closed by one synthetic FAILED result.
+ * records - with its call dangling, because strict providers reject the whole
+ * request with 400 "No tool output found for function call <id>". Every
+ * repaired id is closed by one synthetic FAILED result.
  *
  * The repair is per call id, so a batch whose earlier calls completed keeps
  * their real results and only the never-answered ones are synthesized. The
  * synthetic result is inserted after the batch's already-present results (or
- * directly after the assistant message when none arrived), so history order
- * stays chronologically faithful: the interruption happened last.
+ * directly after the call when none arrived), so history order stays
+ * chronologically faithful: the interruption happened last.
+ *
+ * `reasoning` items are not calls and are never repaired - they are simply
+ * carried along (and dropped at turn end, see [SessionState]).
  */
-internal fun repairToolCallPairing(history: List<OpenAIMessage>): PairingRepair {
+internal fun repairToolCallPairing(history: List<HistoryItem>): PairingRepair {
     val dangling = danglingToolCalls(history)
     if (dangling.isEmpty()) return PairingRepair(history, emptySet())
 
     val insertions = mutableMapOf<Int, MutableList<String>>()
-    dangling.forEach { (assistantIndex, callId) ->
-        insertions.getOrPut(pairingInsertionIndex(history, assistantIndex)) { mutableListOf() }.add(callId)
+    dangling.forEach { (callIndex, callId) ->
+        insertions.getOrPut(pairingInsertionIndex(history, callIndex)) { mutableListOf() }.add(callId)
     }
     val repaired = buildList {
-        history.forEachIndexed { index, message ->
-            add(message)
+        history.forEachIndexed { index, item ->
+            add(item)
             insertions[index]?.forEach { callId -> add(syntheticCancelledResult(callId)) }
         }
     }
@@ -50,36 +53,34 @@ internal fun repairToolCallPairing(history: List<OpenAIMessage>): PairingRepair 
 }
 
 /**
- * The index whose message the synthetic result follows: the assistant message
- * itself, or the last of the tool results directly following it (the results
+ * The index whose item the synthetic result follows: the `function_call`
+ * itself, or the last of the tool outputs directly following it (the results
  * of the same batch that did arrive).
  */
-private fun pairingInsertionIndex(history: List<OpenAIMessage>, assistantIndex: Int): Int {
-    var index = assistantIndex
-    while (index + 1 < history.size && history[index + 1] is OpenAIMessage.Tool) index++
+private fun pairingInsertionIndex(history: List<HistoryItem>, callIndex: Int): Int {
+    var index = callIndex
+    while (index + 1 < history.size && history[index + 1] is HistoryItem.ToolOutput) index++
     return index
 }
 
 /**
- * Finds every assistant tool-call id that has no matching tool result message
- * in [history] - set-difference semantics (call id minus result ids),
- * independent of where in the history the messages sit.
+ * Finds every `function_call` id that has no matching tool output in
+ * [history] - set-difference semantics (call id minus result ids), independent
+ * of where in the history the items sit.
  */
-private fun danglingToolCalls(history: List<OpenAIMessage>): List<DanglingToolCall> {
-    val answered = history.filterIsInstance<OpenAIMessage.Tool>().mapTo(mutableSetOf()) { it.toolCallId }
+private fun danglingToolCalls(history: List<HistoryItem>): List<DanglingToolCall> {
+    val answered = history.mapNotNullTo(mutableSetOf()) { it.toolCallIdOrNull() }
     val dangling = mutableListOf<DanglingToolCall>()
-    history.forEachIndexed { index, message ->
-        if (message !is OpenAIMessage.Assistant) return@forEachIndexed
-        message.toolCalls.orEmpty().forEach { call ->
-            if (call.id !in answered) dangling += DanglingToolCall(index, call.id)
-        }
+    history.forEachIndexed { index, item ->
+        val call = item.capturedFunctionCall() ?: return@forEachIndexed
+        if (call.callId !in answered) dangling += DanglingToolCall(index, call.callId)
     }
     return dangling
 }
 
-private fun syntheticCancelledResult(callId: String) = OpenAIMessage.Tool(
-    Content.Text(CANCELLED_TOOL_RESULT_TEXT),
-    toolCallId = callId,
+private fun syntheticCancelledResult(callId: String) = HistoryItem.ToolOutput(
+    callId = callId,
+    output = CANCELLED_TOOL_RESULT_TEXT,
 )
 
 internal const val CANCELLED_TOOL_RESULT_TEXT =
@@ -91,6 +92,29 @@ internal const val CANCELLED_TOOL_RESULT_TEXT =
  * carries a FAILED outcome even though it has no recorded one in memory).
  */
 internal data class RepairedView(
-    val history: List<OpenAIMessage>,
+    val history: List<HistoryItem>,
     val outcomes: Map<String, String>,
+)
+
+/** A captured `function_call` item's id and payload, if this item is one. */
+internal data class CapturedFunctionCall(val callId: String, val name: String, val arguments: String)
+
+internal fun HistoryItem.capturedFunctionCall(): CapturedFunctionCall? {
+    val raw = (this as? HistoryItem.Captured)?.raw ?: return null
+    if (!raw.isFunctionCall) return null
+    return CapturedFunctionCall(
+        callId = raw.stringField("call_id").orEmpty(),
+        name = raw.stringField("name").orEmpty(),
+        arguments = raw.stringField("arguments").orEmpty(),
+    )
+}
+
+/** Builds the wire form of a `function_call` item. */
+internal fun functionCallItem(callId: String, name: String, arguments: String) = HistoryItem.Captured(
+    buildJsonObject {
+        put("type", "function_call")
+        put("call_id", callId)
+        put("name", name)
+        put("arguments", arguments)
+    }
 )

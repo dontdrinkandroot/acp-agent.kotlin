@@ -1,11 +1,10 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionId
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -21,15 +20,12 @@ import kotlin.test.assertIs
 class SessionStateRepairTest {
 
     private fun danglingHistory() = listOf(
-        OpenAIMessage.User(Content.Text("Run the config")),
-        OpenAIMessage.Assistant(
-            content = Content.Text(""),
-            toolCalls = listOf(OpenAIToolCall("call_1", OpenAIFunction("run", "{\"config\":\"validate\"}"))),
-        ),
-        OpenAIMessage.User(Content.Text("you were too slow")),
+        userMessage("Run the config"),
+        functionCall("call_1", "run", "{\"config\":\"validate\"}"),
+        userMessage("you were too slow"),
     )
 
-    private fun stateWith(history: List<OpenAIMessage>, outcomes: Map<String, String> = emptyMap()) = SessionState(
+    private fun stateWith(history: List<HistoryItem>, outcomes: Map<String, String> = emptyMap()) = SessionState(
         sessionId = SessionId("sess_repairtest000001"),
         cwd = "/project",
         toolRegistry = ToolRegistry(),
@@ -40,7 +36,7 @@ class SessionStateRepairTest {
             mode = "build",
             title = "t",
             updatedAt = 0,
-            history = history,
+            history = history.map { it.toWire() },
             toolOutcomes = outcomes,
         ),
         sessionStore = null,
@@ -54,18 +50,15 @@ class SessionStateRepairTest {
         val snapshot = state.historySnapshot
 
         assertEquals(4, snapshot.size)
-        assertEquals(
-            CANCELLED_TOOL_RESULT_TEXT,
-            (assertIs<OpenAIMessage.Tool>(snapshot[2]).content as Content.Text).text(),
-        )
+        assertEquals(CANCELLED_TOOL_RESULT_TEXT, assertIs<HistoryItem.ToolOutput>(snapshot[2]).output)
         // The stored history itself is not repaired: appending continues after
-        // the original last message, and the record repairs on the way out.
-        state.appendToHistory(OpenAIMessage.User(Content.Text("next")))
+        // the original last item, and the record repairs on the way out.
+        state.appendToHistory(userMessage("next"))
         val record = state.buildRecord()
         assertEquals(5, record.history.size)
         assertEquals(
             "next",
-            (assertIs<OpenAIMessage.User>(record.history[4]).content as Content.Text).text(),
+            historyItemFromWire(record.history[4]).let { assertIs<HistoryItem.UserMessage>(it).textOrNull() },
             "the append landed on the stored tail, not after the synthetic result",
         )
     }
@@ -96,12 +89,9 @@ class SessionStateRepairTest {
         // replay contract is fail-open COMPLETED, not a synthesized FAILED.
         val state = stateWith(
             listOf(
-                OpenAIMessage.User(Content.Text("Do it")),
-                OpenAIMessage.Assistant(
-                    content = Content.Text(""),
-                    toolCalls = listOf(OpenAIToolCall("call_1", OpenAIFunction("bash", "{}"))),
-                ),
-                OpenAIMessage.Tool(Content.Text("real result"), toolCallId = "call_1"),
+                userMessage("Do it"),
+                functionCall("call_1", "bash", "{}"),
+                toolOutput("call_1", "real result"),
             ),
         )
 
@@ -109,5 +99,68 @@ class SessionStateRepairTest {
 
         assertEquals(3, history.size, "no synthetic result is inserted for an answered call")
         assertEquals(emptyMap<String, String>(), outcomes, "outcomes are not invented")
+    }
+
+    @Test
+    fun `a restored history reproduces the record wire items exactly`() {
+        // Round-trip identity: an item the typed model cannot express without
+        // losing data (a prompt image, a multimodal tool output) must survive a
+        // restore+persist cycle byte-for-byte instead of being rewritten.
+        val imagePrompt = buildJsonObject {
+            put("type", "message")
+            put("role", "user")
+            put(
+                "content",
+                buildJsonArray {
+                    add(buildJsonObject { put("type", "input_text"); put("text", "what is this") })
+                    add(
+                        buildJsonObject {
+                            put("type", "input_image")
+                            put("image_url", "data:image/png;base64,AAAA")
+                        }
+                    )
+                },
+            )
+        }
+        val multimodalToolOutput = buildJsonObject {
+            put("type", "function_call_output")
+            put("call_id", "call_1")
+            put(
+                "output",
+                buildJsonArray {
+                    add(buildJsonObject { put("type", "input_text"); put("text", "shot") })
+                    add(
+                        buildJsonObject {
+                            put("type", "input_image")
+                            put("image_url", "data:image/png;base64,BBBB")
+                        }
+                    )
+                },
+            )
+        }
+        val history = listOf(
+            imagePrompt,
+            assistantMessage("done").toWire(),
+            functionCall("call_1", "screenshot", "{}").toWire(),
+            multimodalToolOutput,
+        )
+        val state = SessionState(
+            sessionId = SessionId("sess_roundtrip000001"),
+            cwd = "/project",
+            toolRegistry = ToolRegistry(),
+            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            restored = SessionRecord(
+                sessionId = "sess_roundtrip000001",
+                cwd = "/project",
+                mode = "build",
+                title = "t",
+                updatedAt = 0,
+                history = history,
+            ),
+            sessionStore = null,
+            closeResources = {},
+        )
+
+        assertEquals(history, state.buildRecord().history, "no wire item may be rewritten or dropped by a restore")
     }
 }

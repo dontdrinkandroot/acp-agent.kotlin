@@ -2,18 +2,19 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
-import net.dontdrinkandroot.acpagent.llm.models.*
+import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
@@ -39,23 +40,137 @@ private fun emittedMessageTexts(emitter: PromptRecordingEmitter): List<String> =
         .filterIsInstance<SessionUpdate.AgentMessageChunk>()
         .mapNotNull { (it.content as? ContentBlock.Text)?.text }
 
-/** Fake stream that replays the given chunk scripts, one per request. */
+/** Polls [condition] until it holds, failing loudly on timeout. */
+private suspend fun awaitUntil(timeoutMillis: Long, condition: () -> Boolean) {
+    withTimeout(timeoutMillis) {
+        while (!condition()) delay(10)
+    }
+}
+
+private fun SessionState.userTexts(): List<String> =
+    historySnapshot.filterIsInstance<HistoryItem.UserMessage>().mapNotNull { it.textOrNull() }
+
+private fun SessionState.assistantTexts(): List<String> =
+    historySnapshot.mapNotNull { (it as? HistoryItem.Captured)?.assistantTextOrNull() }
+
+private fun SessionState.toolOutputs(): List<HistoryItem.ToolOutput> =
+    historySnapshot.filterIsInstance<HistoryItem.ToolOutput>()
+
+// ---------------------------------------------------------------------------
+// Responses-API event scripts
+// ---------------------------------------------------------------------------
+
+private fun contentDelta(text: String): JsonObject = buildJsonObject {
+    put("type", "response.content_part.delta")
+    put("output_index", 0)
+    put("delta", text)
+}
+
+private fun reasoningDelta(text: String): JsonObject = buildJsonObject {
+    put("type", "response.reasoning.delta")
+    put("output_index", 0)
+    put("delta", text)
+}
+
+private fun assistantItem(text: String): JsonObject = buildJsonObject {
+    put("type", "message")
+    put("id", "msg_test")
+    put("role", "assistant")
+    put("status", "completed")
+    put("content", buildJsonArray {
+        add(buildJsonObject {
+            put("type", "output_text")
+            put("text", text)
+        })
+    })
+}
+
+private fun functionCallItem(callId: String, name: String, arguments: String): JsonObject = buildJsonObject {
+    put("type", "function_call")
+    put("id", "fc_$callId")
+    put("call_id", callId)
+    put("name", name)
+    put("arguments", arguments)
+}
+
+private fun reasoningItemEvent(): JsonObject = buildJsonObject {
+    put("type", "reasoning")
+    put("id", "rs_test")
+    put("summary", "thinking about it")
+}
+
+private fun doneEvent(
+    status: String = "completed",
+    incompleteReason: String? = null,
+    errorCode: String? = null,
+): JsonObject = buildJsonObject {
+    put("type", if (status == "incomplete") "response.incomplete" else "response.completed")
+    put("response", buildJsonObject {
+        put("id", "resp_test")
+        put("model", "test-model")
+        put("status", status)
+        incompleteReason?.let {
+            put("incomplete_details", buildJsonObject { put("reason", it) })
+        }
+        errorCode?.let {
+            put("error", buildJsonObject { put("code", it); put("message", "blocked") })
+        }
+    })
+}
+
+/** A text iteration: deltas, the completed message item, then the terminal event. */
+private fun textScript(
+    content: String? = null,
+    reasoning: String? = null,
+    status: String = "completed",
+    incompleteReason: String? = null,
+    errorCode: String? = null,
+): List<JsonObject> = buildList {
+    reasoning?.let { add(reasoningDelta(it)) }
+    content?.let { add(contentDelta(it)) }
+    if (!content.isNullOrEmpty()) add(doneEvent(status, incompleteReason, errorCode).let {
+        buildJsonObject {
+            put("type", "response.output_item.done")
+            put("output_index", 0)
+            put("item", assistantItem(content))
+        }
+    })
+    add(doneEvent(status, incompleteReason, errorCode))
+}
+
+/** A tool-call iteration: one completed `function_call` item plus the terminal event. */
+private fun toolScript(
+    callId: String,
+    name: String,
+    arguments: String,
+    status: String = "completed",
+    incompleteReason: String? = null,
+): List<JsonObject> = listOf(
+    buildJsonObject {
+        put("type", "response.output_item.done")
+        put("output_index", 0)
+        put("item", functionCallItem(callId, name, arguments))
+    },
+    doneEvent(status, incompleteReason),
+)
+
+/** Fake stream that replays the given event scripts, one per request. */
 private class FakeCompleter(
-    vararg val scripts: List<OpenRouterChatCompletionStreamResponse>,
+    vararg val scripts: List<JsonObject>,
 ) : ChatCompleter {
-    val requests = mutableListOf<List<OpenAIMessage>>()
-    val toolRequests = mutableListOf<List<OpenAITool>>()
+    val requests = mutableListOf<List<JsonObject>>()
+    val toolRequests = mutableListOf<List<FunctionTool>>()
     val providers = mutableListOf<ProviderPreferences?>()
     private var next = 0
 
-    override fun chatCompletion(
-        messages: List<OpenAIMessage>,
-        tools: List<OpenAITool>,
+    override fun responsesStream(
+        input: List<JsonObject>,
+        tools: List<FunctionTool>,
         reasoning: String?,
         model: String,
         provider: ProviderPreferences?,
-    ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
-        requests += messages
+    ): Flow<JsonObject> = flow {
+        requests += input
         toolRequests += tools
         providers += provider
         scripts[next++ % scripts.size].forEach { emit(it) }
@@ -104,56 +219,11 @@ class PromptRunnerTest {
         sessionId = SessionId("sess_prompttest0001"),
     )
 
-    private fun chunk(
-        content: String? = null,
-        reasoning: String? = null,
-        finishReason: String? = null,
-        nativeFinishReason: String? = null,
-    ): OpenRouterChatCompletionStreamResponse =
-        OpenRouterChatCompletionStreamResponse(
-            choices = listOf(
-                OpenRouterStreamChoice(
-                    delta = OpenRouterStreamDelta(content = content, reasoning = reasoning),
-                    finishReason = finishReason,
-                    nativeFinishReason = nativeFinishReason,
-                )
-            ),
-            created = 0,
-            id = "chunk-id",
-            model = "test-model",
-        )
-
-    private fun toolChunk(
-        index: Int,
-        id: String?,
-        functionName: String?,
-        arguments: String?,
-        finishReason: String? = null,
-    ): OpenRouterChatCompletionStreamResponse =
-        OpenRouterChatCompletionStreamResponse(
-            choices = listOf(
-                OpenRouterStreamChoice(
-                    delta = OpenRouterStreamDelta(
-                        toolCalls = listOf(
-                            OpenAIStreamToolCall(
-                                index = index,
-                                id = id,
-                                function = OpenAIStreamFunction(functionName, arguments),
-                            )
-                        )
-                    ),
-                    finishReason = finishReason,
-                )
-            ),
-            created = 0,
-            id = "chunk-id",
-            model = "test-model",
-        )
-
     private fun runner(
-        fake: FakeCompleter,
+        fake: ChatCompleter,
         state: SessionState,
-        registry: ToolRegistry = ToolRegistry()
+        registry: ToolRegistry = ToolRegistry(),
+        maxTurnRequests: Int = 2,
     ): PromptRunner =
         PromptRunner(
             state = state,
@@ -170,13 +240,13 @@ class PromptRunnerTest {
             ),
             toolRegistry = registry,
             toolCallExecutor = ToolCallExecutor(registry, state),
-            maxTurnRequests = 2,
+            maxTurnRequests = maxTurnRequests,
             models = listOf(testModel),
         )
 
     @Test
     fun `a manual provider pick is sent as order preferences`() = runBlocking {
-        val fake = FakeCompleter(listOf(chunk(content = "Hello")))
+        val fake = FakeCompleter(textScript(content = "Hello"))
         val state = state()
         val runner = PromptRunner(
             state = state,
@@ -203,7 +273,7 @@ class PromptRunnerTest {
 
     @Test
     fun `auto selection without routing omits provider preferences`() = runBlocking {
-        val fake = FakeCompleter(listOf(chunk(content = "Hello")))
+        val fake = FakeCompleter(textScript(content = "Hello"))
         val state = state()
         val runner = runner(fake, state)
         val emitter = PromptRecordingEmitter()
@@ -215,9 +285,7 @@ class PromptRunnerTest {
 
     @Test
     fun `no tool call ends the turn with END_TURN and persists history`() = runBlocking {
-        val fake = FakeCompleter(
-            listOf(chunk(content = "Hello "), chunk(content = "world"), chunk(reasoning = "thinking")),
-        )
+        val fake = FakeCompleter(textScript(content = "Hello world", reasoning = "thinking"))
         val state = state()
         val runner = runner(fake, state)
         val emitter = PromptRecordingEmitter()
@@ -230,8 +298,7 @@ class PromptRunnerTest {
             emitter.events.any { it is Event.SessionUpdateEvent && it.update is SessionUpdate.AgentThoughtChunk },
             "reasoning deltas must be relayed as agent thought chunks",
         )
-        val assistant = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>().single()
-        assertEquals("Hello world", assistant.content?.text())
+        assertEquals(listOf("Hello world"), state.assistantTexts())
     }
 
     @Test
@@ -239,15 +306,8 @@ class PromptRunnerTest {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(
-                toolChunk(
-                    index = 0,
-                    id = "call_1",
-                    functionName = "write_text",
-                    arguments = """{"path":"/project/a.txt"}"""
-                ),
-            ),
-            listOf(chunk(content = "Done.")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(content = "Done."),
         )
         val state = state(registry)
         val runner = runner(fake, state, registry)
@@ -264,55 +324,167 @@ class PromptRunnerTest {
     }
 
     @Test
+    fun `reasoning and message items of an iteration are replayed to the next iteration`() = runBlocking {
+        // Issue #75: iteration n+1 must carry what iteration n produced.
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val firstIteration = listOf(
+            buildJsonObject {
+                put("type", "response.output_item.done")
+                put("output_index", 0)
+                put("item", reasoningItemEvent())
+            },
+        ) + toolScript("call_1", "write_text", """{"path":"/project/a.txt"}""")
+        val fake = FakeCompleter(firstIteration, textScript(content = "Done."))
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val secondRequest = fake.requests[1]
+        val reasoningInRequest = secondRequest.filter { it.stringField("type") == "reasoning" }
+        assertEquals(1, reasoningInRequest.size, "iteration 2 must replay iteration 1's reasoning item")
+        assertTrue(
+            reasoningInRequest.single().toString().contains("thinking about it"),
+            "the reasoning payload must travel verbatim",
+        )
+        val calls = secondRequest.filter { it.stringField("type") == "function_call" }
+        assertEquals(listOf("call_1"), calls.map { it.stringField("call_id") })
+        val outputs = secondRequest.filter { it.stringField("type") == "function_call_output" }
+        assertEquals(listOf("call_1"), outputs.map { it.stringField("call_id") })
+        assertTrue(
+            secondRequest.indexOf(outputs.single()) > secondRequest.indexOf(calls.single()),
+            "the tool output must follow the call it answers",
+        )
+    }
+
+    @Test
+    fun `reasoning items are dropped when the turn ends`() = runBlocking {
+        // Live-only: no chain-of-thought outlives the turn, and none is persisted.
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val firstIteration = listOf(
+            buildJsonObject {
+                put("type", "response.output_item.done")
+                put("output_index", 0)
+                put("item", reasoningItemEvent())
+            },
+        ) + toolScript("call_1", "write_text", """{"path":"/project/a.txt"}""")
+        val fake = FakeCompleter(firstIteration, textScript(content = "Done."))
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        assertTrue(
+            state.historySnapshot.none { (it as? HistoryItem.Captured)?.raw?.stringField("type") == "reasoning" },
+            "reasoning items must be gone once the turn ended",
+        )
+        assertTrue(
+            state.buildRecord().history.none { it.stringField("type") == "reasoning" },
+            "the persisted record must never carry reasoning",
+        )
+    }
+
+    @Test
+    fun `the assistant message item replayed to the next iteration is the provider's own item`() = runBlocking {
+        // The Responses API requires `id` and `status` on assistant history
+        // messages, so the item must be captured, not rebuilt from deltas.
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val firstIteration = listOf(contentDelta("Looking.")) +
+                listOf(
+                    buildJsonObject {
+                        put("type", "response.output_item.done")
+                        put("output_index", 0)
+                        put("item", assistantItem("Looking."))
+                    },
+                ) + toolScript("call_1", "write_text", """{"path":"/project/a.txt"}""")
+        val fake = FakeCompleter(firstIteration, textScript(content = "Done."))
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        runner.run(emitter, SessionModeId("build"), null, toolContext())
+
+        val replayed =
+            fake.requests[1].filter { it.stringField("type") == "message" && it.stringField("role") == "assistant" }
+        assertEquals(1, replayed.size, "the provider's assistant item must be replayed")
+        assertEquals(
+            assistantItem("Looking.").toString(),
+            replayed.single().toString(),
+            "replayed verbatim, with id and status"
+        )
+        assertEquals("msg_test", replayed.single().stringField("id"))
+        assertEquals("completed", replayed.single().stringField("status"))
+    }
+
+    @Test
+    fun `reasoning items are dropped when a cancelled turn ends`() = runBlocking {
+        // Live-only means live-only on every exit, including cancellation: a
+        // cancelled turn's reasoning must not be replayed into the next prompt.
+        val tool = RecordingTool("write_text", mutating = true)
+        val registry = ToolRegistry().apply { register(tool) }
+        val reasoningThenCall = listOf(
+            buildJsonObject {
+                put("type", "response.output_item.done")
+                put("output_index", 0)
+                put("item", reasoningItemEvent())
+            },
+        ) + toolScript("call_1", "write_text", """{"path":"/project/a.txt"}""")
+        // The second iteration streams forever, so the test cancels the turn
+        // while it is in flight.
+        val fake = object : ChatCompleter {
+            var calls = 0
+            override fun responsesStream(
+                input: List<JsonObject>,
+                tools: List<FunctionTool>,
+                reasoning: String?,
+                model: String,
+                provider: ProviderPreferences?,
+            ): Flow<JsonObject> = flow {
+                if (calls++ == 0) {
+                    reasoningThenCall.forEach { emit(it) }
+                } else {
+                    emit(reasoningDelta("still thinking"))
+                    awaitCancellation()
+                }
+            }
+        }
+        val state = state(registry)
+        val runner = runner(fake, state, registry)
+        val emitter = PromptRecordingEmitter()
+
+        val turn = launch(Dispatchers.Default) {
+            runner.run(emitter, SessionModeId("build"), null, toolContext())
+        }
+        // The first iteration's items (reasoning + call) are on the history once
+        // the tool ran; cancel from that point on.
+        awaitUntil(5_000) { tool.executed }
+        turn.cancelAndJoin()
+
+        assertTrue(
+            state.historySnapshot.none { (it as? HistoryItem.Captured)?.raw?.stringField("type") == "reasoning" },
+            "a cancelled turn must not leave live reasoning in the history",
+        )
+    }
+
+    @Test
     fun `third identical tool call within a turn gets refused and the turn continues`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(
-                toolChunk(
-                    index = 0,
-                    id = "call_1",
-                    functionName = "write_text",
-                    arguments = """{"path":"/project/a.txt"}"""
-                ),
-            ),
             // A single identical retry is allowed - it may reveal a new result.
-            listOf(
-                toolChunk(
-                    index = 0,
-                    id = "call_2",
-                    functionName = "write_text",
-                    arguments = """{"path":"/project/a.txt"}"""
-                ),
-            ),
-            // Third identical call with the same result again: refused, the refusal is in the history now.
-            listOf(
-                toolChunk(
-                    index = 0,
-                    id = "call_3",
-                    functionName = "write_text",
-                    arguments = """{"path":"/project/a.txt"}"""
-                ),
-            ),
-            // Fourth iteration: the model gives up on tools and answers in text.
-            listOf(chunk(content = "Done.")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}"""),
+            toolScript("call_2", "write_text", """{"path":"/project/a.txt"}"""),
+            // Third identical call with the same result again: refused.
+            toolScript("call_3", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(content = "Done."),
         )
         val state = state(registry)
-        val runner = PromptRunner(
-            state = state,
-            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
-            chatCompleter = fake,
-            providerRouting = null,
-            sessionConfigOptions = SessionConfigOptions(
-                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
-                listOf(testModel),
-                state,
-            ),
-            toolRegistry = registry,
-            toolCallExecutor = ToolCallExecutor(registry, state),
-            maxTurnRequests = 4,
-            models = listOf(testModel),
-        )
+        val runner = runner(fake, state, registry, maxTurnRequests = 4)
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
@@ -329,10 +501,13 @@ class PromptRunnerTest {
             .map { it.update }
             .filterIsInstance<SessionUpdate.ToolCallUpdate>()
         assertEquals(ToolCallStatus.FAILED, updates.last().status)
-        val outcome = state.replaySnapshot().third["call_3"]
-        assertEquals(TOOL_OUTCOME_FAILED, outcome, "the refused call must be recorded as failed")
+        assertEquals(
+            TOOL_OUTCOME_FAILED,
+            state.replaySnapshot().third["call_3"],
+            "the refused call must be recorded as failed"
+        )
         assertTrue(
-            state.historySnapshot.filterIsInstance<OpenAIMessage.Tool>().any { it.toolCallId == "call_3" },
+            state.toolOutputs().any { it.callId == "call_3" },
             "the refusal must land in the history so the model sees it",
         )
     }
@@ -342,15 +517,10 @@ class PromptRunnerTest {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(
-                toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "tool_calls"),
-            ),
-            listOf(chunk(content = "First turn done.")),
-            // Second turn: same call signature again - must be allowed.
-            listOf(
-                toolChunk(0, "call_3", "write_text", """{"path":"/project/a.txt"}""", finishReason = "tool_calls"),
-            ),
-            listOf(chunk(content = "Second turn done.")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(content = "First turn done."),
+            toolScript("call_3", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(content = "Second turn done."),
         )
         val state = state(registry)
         val runner = runner(fake, state, registry)
@@ -367,32 +537,11 @@ class PromptRunnerTest {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(
-                toolChunk(
-                    index = 0,
-                    id = "call_1",
-                    functionName = "write_text",
-                    arguments = """{"path":"/project/a.txt"}"""
-                ),
-            ),
-            listOf(chunk(content = "Summary.")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(content = "Summary."),
         )
         val state = state(registry)
-        val runner = PromptRunner(
-            state = state,
-            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
-            chatCompleter = fake,
-            providerRouting = null,
-            sessionConfigOptions = SessionConfigOptions(
-                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
-                listOf(testModel),
-                state,
-            ),
-            toolRegistry = registry,
-            toolCallExecutor = ToolCallExecutor(registry, state),
-            maxTurnRequests = 1,
-            models = listOf(testModel),
-        )
+        val runner = runner(fake, state, registry, maxTurnRequests = 1)
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
@@ -401,7 +550,7 @@ class PromptRunnerTest {
         assertEquals(StopReason.MAX_TURN_REQUESTS, response.response.stopReason)
         assertEquals(2, fake.requests.size, "one tool iteration plus one wind-down pass")
         assertTrue(
-            state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>().any { it.content?.text() == "Summary." },
+            state.assistantTexts().any { it == "Summary." },
             "wind-down text must be appended to history",
         )
     }
@@ -412,25 +561,11 @@ class PromptRunnerTest {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""")),
-            listOf(chunk(finishReason = "length")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}"""),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
         )
         val state = state(registry)
-        val runner = PromptRunner(
-            state = state,
-            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
-            chatCompleter = fake,
-            providerRouting = null,
-            sessionConfigOptions = SessionConfigOptions(
-                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
-                listOf(testModel),
-                state,
-            ),
-            toolRegistry = registry,
-            toolCallExecutor = ToolCallExecutor(registry, state),
-            maxTurnRequests = 1,
-            models = listOf(testModel),
-        )
+        val runner = runner(fake, state, registry, maxTurnRequests = 1)
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
@@ -446,12 +581,12 @@ class PromptRunnerTest {
     }
 
     @Test
-    fun `empty completion with stop reason retries once with a continuation prompt`() = runBlocking {
+    fun `empty completion retries once with a continuation prompt`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "stop")),
-            listOf(chunk(content = "Actually done.")),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
+            textScript(content = "Actually done."),
         )
         val state = state(registry)
         val runner = runner(fake, state, registry)
@@ -466,18 +601,17 @@ class PromptRunnerTest {
             fake.toolRequests[1].isNotEmpty(),
             "the retry must keep tools available so the model can resume tool work",
         )
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        val users = state.userTexts()
         assertEquals(1, users.size, "a continuation user message must be appended")
-        assertTrue(users.single().content?.text()!!.contains("empty"), users.single().content?.text())
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
-        assertEquals(listOf("Actually done."), assistants.map { it.content?.text() })
+        assertTrue(users.single().contains("empty"), users.single())
+        assertEquals(listOf("Actually done."), state.assistantTexts())
     }
 
     @Test
-    fun `truncated length keeps the partial text and retries with a continue prompt`() = runBlocking {
+    fun `truncated completion keeps the partial text and retries with a continue prompt`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(content = "Partial", finishReason = "length")),
-            listOf(chunk(content = " done.")),
+            textScript(content = "Partial", status = "incomplete", incompleteReason = "max_output_tokens"),
+            textScript(content = " done."),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -488,20 +622,22 @@ class PromptRunnerTest {
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
         assertEquals(2, fake.requests.size)
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
-        assertEquals(listOf("Partial", " done."), assistants.map { it.content?.text() })
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(listOf("Partial", " done."), state.assistantTexts())
+        val users = state.userTexts()
         assertEquals(1, users.size)
-        assertTrue(users.single().content?.text()!!.contains("cut off"), users.single().content?.text())
+        assertTrue(users.single().contains("cut off"), users.single())
     }
 
     @Test
-    fun `truncated length drops a complete tool call so the tool never executes`() = runBlocking {
+    fun `truncated completion drops a complete tool call so the tool never executes`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "length")),
-            listOf(chunk(content = "Done.")),
+            toolScript(
+                "call_1", "write_text", """{"path":"/project/a.txt"}""",
+                status = "incomplete", incompleteReason = "max_output_tokens",
+            ),
+            textScript(content = "Done."),
         )
         val state = state(registry)
         val runner = runner(fake, state, registry)
@@ -515,21 +651,20 @@ class PromptRunnerTest {
             "dropped tool calls must not surface as tool_call updates",
         )
         assertEquals(2, fake.requests.size)
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
         assertEquals(
             listOf("Done."),
-            assistants.map { it.content?.text() },
-            "the dropped call must not appear in history"
+            state.assistantTexts(),
+            "the dropped call must not appear in history",
         )
     }
 
     @Test
-    fun `an undocumented finish reason with a complete tool call executes it instead of dropping it`() = runBlocking {
+    fun `an undocumented status with a complete tool call executes it instead of dropping it`() = runBlocking {
         val tool = RecordingTool("write_text", mutating = true)
         val registry = ToolRegistry().apply { register(tool) }
         val fake = FakeCompleter(
-            listOf(toolChunk(0, "call_1", "write_text", """{"path":"/project/a.txt"}""", finishReason = "pause_turn")),
-            listOf(chunk(content = "Done.")),
+            toolScript("call_1", "write_text", """{"path":"/project/a.txt"}""", status = "pause_turn"),
+            textScript(content = "Done."),
         )
         val state = state(registry)
         val runner = runner(fake, state, registry)
@@ -537,17 +672,20 @@ class PromptRunnerTest {
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
 
-        assertTrue(tool.executed, "a complete tool call behind an unknown finish reason must execute (issue #16)")
+        assertTrue(tool.executed, "a complete tool call behind an unknown status must execute (issue #16)")
         assertEquals(2, fake.requests.size, "the loop continues normally - no continuation retry")
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
-        assertEquals(0, users.size, "a completion with usable output must not get a synthetic continue prompt")
+        assertEquals(
+            0,
+            state.userTexts().size,
+            "a completion with usable output must not get a synthetic continue prompt"
+        )
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
     }
 
     @Test
-    fun `an undocumented finish reason with usable text ends the turn normally`() = runBlocking {
-        val fake = FakeCompleter(listOf(chunk(content = "All done.", finishReason = "pause_turn")))
+    fun `an undocumented status with usable text ends the turn normally`() = runBlocking {
+        val fake = FakeCompleter(textScript(content = "All done.", status = "pause_turn"))
         val state = state()
         val runner = runner(fake, state)
         val emitter = PromptRecordingEmitter()
@@ -555,17 +693,16 @@ class PromptRunnerTest {
         runner.run(emitter, SessionModeId("plan"), null, toolContext())
 
         assertEquals(1, fake.requests.size, "a complete completion must not trigger the continuation retry")
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
-        assertEquals(0, users.size)
+        assertEquals(0, state.userTexts().size)
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
     }
 
     @Test
-    fun `an undocumented finish reason with empty output still retries once conservatively`() = runBlocking {
+    fun `an undocumented status with empty output still retries once conservatively`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "pause_turn")),
-            listOf(chunk(content = "Recovered.")),
+            textScript(status = "pause_turn"),
+            textScript(content = "Recovered."),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -574,18 +711,18 @@ class PromptRunnerTest {
         runner.run(emitter, SessionModeId("plan"), null, toolContext())
 
         assertEquals(2, fake.requests.size, "nothing usable arrived - the empty-completion retry applies")
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        val users = state.userTexts()
         assertEquals(1, users.size)
-        assertTrue(users.single().content?.text()!!.contains("empty"), users.single().content?.text())
+        assertTrue(users.single().contains("empty"), users.single())
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
     }
 
     @Test
-    fun `a native token-limit reason classifies an unknown finish reason as truncated`() = runBlocking {
+    fun `an incomplete completion with the max_output_tokens reason is classified as truncated`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(content = "Partial", finishReason = "provider_specific", nativeFinishReason = "max_tokens")),
-            listOf(chunk(content = " continued.")),
+            textScript(content = "Partial", status = "incomplete", incompleteReason = "max_output_tokens"),
+            textScript(content = " continued."),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -593,19 +730,18 @@ class PromptRunnerTest {
 
         runner.run(emitter, SessionModeId("plan"), null, toolContext())
 
-        assertEquals(2, fake.requests.size, "native max_tokens means the completion was cut off")
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        assertEquals(2, fake.requests.size, "max_output_tokens means the completion was cut off")
+        val users = state.userTexts()
         assertEquals(1, users.size)
-        assertTrue(users.single().content?.text()!!.contains("cut off"), users.single().content?.text())
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
-        assertEquals(listOf("Partial", " continued."), assistants.map { it.content?.text() })
+        assertTrue(users.single().contains("cut off"), users.single())
+        assertEquals(listOf("Partial", " continued."), state.assistantTexts())
     }
 
     @Test
-    fun `an error finish reason without an error object is treated as truncation`() = runBlocking {
+    fun `a failed status is treated as truncation and retried once`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "error")),
-            listOf(chunk(content = "Recovered after error.")),
+            textScript(status = "incomplete", incompleteReason = "error"),
+            textScript(content = "Recovered after error."),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -613,40 +749,35 @@ class PromptRunnerTest {
 
         runner.run(emitter, SessionModeId("plan"), null, toolContext())
 
-        assertEquals(2, fake.requests.size, "a bare error finish reason retries once like a truncation")
+        assertEquals(2, fake.requests.size, "an error-like completion retries once like a truncation")
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
     }
 
     @Test
-    fun `a dangling tool call is closed in the chat request - strict providers never see it dangling`() = runBlocking {
-        val fake = FakeCompleter(listOf(chunk(content = "Understood.")))
+    fun `a dangling tool call is closed in the request - strict providers never see it dangling`() = runBlocking {
+        val fake = FakeCompleter(textScript(content = "Understood."))
         val state = state()
         // The in-memory state a cancelled turn leaves behind (issue #38): the
         // call was appended to the history, its result never was.
-        state.appendToHistory(OpenAIMessage.User(Content.Text("Run the config")))
-        state.appendToHistory(
-            OpenAIMessage.Assistant(
-                content = Content.Text(""),
-                toolCalls = listOf(OpenAIToolCall("call_1", OpenAIFunction("run", "{\"config\":\"validate\"}"))),
-            ),
-        )
+        state.appendToHistory(userMessage("Run the config"))
+        state.appendToHistory(functionCall("call_1", "run", "{\"config\":\"validate\"}"))
         val runner = runner(fake, state)
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
 
         val request = fake.requests.single()
-        val synthetic = request.filterIsInstance<OpenAIMessage.Tool>().single()
-        assertEquals("call_1", synthetic.toolCallId)
-        assertEquals(CANCELLED_TOOL_RESULT_TEXT, (synthetic.content as Content.Text).text())
+        val synthetic = request.filter { it.stringField("type") == "function_call_output" }.single()
+        assertEquals("call_1", synthetic.stringField("call_id"))
+        assertEquals(CANCELLED_TOOL_RESULT_TEXT, synthetic.stringField("output"))
     }
 
     @Test
     fun `a second truncation ends the turn with a note instead of an exception`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "length")),
-            listOf(chunk(finishReason = "length")),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -662,9 +793,9 @@ class PromptRunnerTest {
             emittedMessageTexts(emitter),
             "the note must reach the client even without partial text (issue #30 lockstep)",
         )
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
+        val assistants = state.assistantTexts()
         assertEquals(1, assistants.size)
-        assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
+        assertTrue(assistants.single().contains("interrupted"), assistants.single())
     }
 
     @Test
@@ -672,8 +803,8 @@ class PromptRunnerTest {
         // Issue #30: with no partial text the note used to reach only the
         // persisted history - the client saw an empty turn ending in END_TURN.
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "content_filter")),
-            listOf(chunk(content = "must not be requested")),
+            textScript(status = "incomplete", incompleteReason = "content_filter"),
+            textScript(content = "must not be requested"),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -689,15 +820,14 @@ class PromptRunnerTest {
         )
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
-        assertEquals(listOf("The response was blocked by content filtering."), assistants.map { it.content?.text() })
+        assertEquals(listOf("The response was blocked by content filtering."), state.assistantTexts())
     }
 
     @Test
     fun `content filter ends the turn immediately with a notice and no retry`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(content = "Some", finishReason = "content_filter")),
-            listOf(chunk(content = "must not be requested")),
+            textScript(content = "Some", status = "incomplete", incompleteReason = "content_filter"),
+            textScript(content = "must not be requested"),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -713,34 +843,20 @@ class PromptRunnerTest {
             emittedMessageTexts(emitter),
             "the streamed partial text is relayed live and must not be re-emitted; the notice exactly once",
         )
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
         assertEquals(
             listOf("Some", "The response was blocked by content filtering."),
-            assistants.map { it.content?.text() })
+            state.assistantTexts(),
+        )
     }
 
     @Test
     fun `empty completion in the last iteration still gets its one retry`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(finishReason = "stop")),
-            listOf(chunk(finishReason = "length")),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
+            textScript(status = "incomplete", incompleteReason = "max_output_tokens"),
         )
         val state = state()
-        val runner = PromptRunner(
-            state = state,
-            systemPrompt = SystemPromptBuilder("/project", { "2026-09-03" }),
-            chatCompleter = fake,
-            providerRouting = null,
-            sessionConfigOptions = SessionConfigOptions(
-                listOf(SessionMode(SessionModeId("build"), "Build", "desc")),
-                listOf(testModel),
-                state,
-            ),
-            toolRegistry = ToolRegistry(),
-            toolCallExecutor = ToolCallExecutor(ToolRegistry(), state),
-            maxTurnRequests = 1,
-            models = listOf(testModel),
-        )
+        val runner = runner(fake, state, ToolRegistry(), maxTurnRequests = 1)
         val emitter = PromptRecordingEmitter()
 
         runner.run(emitter, SessionModeId("build"), null, toolContext())
@@ -752,27 +868,25 @@ class PromptRunnerTest {
             fake.requests.size,
             "the truncated last iteration must still get its one retry despite the cap",
         )
-        val assistants = state.historySnapshot.filterIsInstance<OpenAIMessage.Assistant>()
-        assertTrue(assistants.single().content?.text()!!.contains("interrupted"), assistants.single().content?.text())
+        val assistants = state.assistantTexts()
+        assertTrue(assistants.single().contains("interrupted"), assistants.single())
     }
 
     @Test
     fun `renderLog dumps the unfiltered completion including empty-but-present fields`() {
         val iteration = StreamedIteration(
             rawContent = "Partial\nrest",
-            toolCalls = emptyList(),
+            functionCalls = emptyList(),
             usage = null,
-            finishReason = "length",
-            nativeFinishReason = "length",
+            status = "incomplete",
+            incompleteReason = "max_output_tokens",
             rawReasoning = "",
-            reasoningDetails = listOf(JsonPrimitive("redacted")),
         )
         val log = iteration.renderLog()
-        assertTrue(log.contains("finishReason=length"), log)
-        assertTrue(log.contains("nativeFinishReason=length"), log)
+        assertTrue(log.contains("status=incomplete"), log)
+        assertTrue(log.contains("incompleteReason=max_output_tokens"), log)
         assertTrue(log.contains("content=Partial\\nrest"), log)
         assertTrue(log.contains("reasoning=<empty>"), log)
-        assertTrue(log.contains("""reasoningDetails="redacted""""), log)
         assertEquals("Partial\nrest", iteration.text)
     }
 
@@ -780,22 +894,26 @@ class PromptRunnerTest {
     fun `renderLog marks absent fields distinctly from empty ones`() {
         val iteration = StreamedIteration(
             rawContent = "Partial",
-            toolCalls = emptyList(),
+            functionCalls = emptyList(),
             usage = null,
-            finishReason = "length",
+            status = "incomplete",
         )
         val log = iteration.renderLog()
         assertTrue(log.contains("reasoning=<absent>"), log)
-        assertTrue(log.contains("reasoningDetails=<absent>"), log)
-        assertTrue(log.contains("nativeFinishReason=<none>"), log)
+        assertTrue(log.contains("incompleteReason=<none>"), log)
         assertEquals("Partial", iteration.text)
     }
 
     @Test
     fun `empty-but-present reasoning in a truncation still gets its one retry`() = runBlocking {
         val fake = FakeCompleter(
-            listOf(chunk(content = "Partial", reasoning = "", finishReason = "length", nativeFinishReason = "length")),
-            listOf(chunk(content = " done.")),
+            textScript(
+                content = "Partial",
+                reasoning = "",
+                status = "incomplete",
+                incompleteReason = "max_output_tokens"
+            ),
+            textScript(content = " done."),
         )
         val state = state()
         val runner = runner(fake, state)
@@ -805,7 +923,7 @@ class PromptRunnerTest {
 
         val response = emitter.events.filterIsInstance<Event.PromptResponseEvent>().single()
         assertEquals(StopReason.END_TURN, response.response.stopReason)
-        val users = state.historySnapshot.filterIsInstance<OpenAIMessage.User>()
+        val users = state.userTexts()
         assertEquals(1, users.size, "a continuation user message must be appended")
     }
 }

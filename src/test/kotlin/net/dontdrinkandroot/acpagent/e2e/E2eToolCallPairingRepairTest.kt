@@ -7,12 +7,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.agent.SessionRecord
-import net.dontdrinkandroot.acpagent.agent.SessionStore
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
+import net.dontdrinkandroot.acpagent.agent.*
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -90,17 +85,9 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                             title = "poisoned before the fix",
                             updatedAt = System.currentTimeMillis(),
                             model = "test-model",
-                            history = listOf(
-                                OpenAIMessage.User(Content.Text("Run the config")),
-                                OpenAIMessage.Assistant(
-                                    content = Content.Text(""),
-                                    toolCalls = listOf(
-                                        OpenAIToolCall(
-                                            "call_poisoned",
-                                            OpenAIFunction("run", "{\"config\":\"validate\"}")
-                                        )
-                                    ),
-                                ),
+                            history = wireHistory(
+                                userMessage("Run the config"),
+                                functionCall("call_poisoned", "run", "{\"config\":\"validate\"}"),
                             ),
                         ),
                     )
@@ -179,13 +166,11 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
                     // synthetic result closing the dangling call.
                     val cancelledRecord = SessionStore(sessionsStoreDir).load(sessionId.value)
                     assertNotNull(cancelledRecord, "a cancelled turn must persist its record")
-                    val cancelledCalls = cancelledRecord.history
-                        .filterIsInstance<OpenAIMessage.Assistant>()
-                        .flatMap { it.toolCalls.orEmpty() }
-                        .map { it.id }
-                    val cancelledResults = cancelledRecord.history
-                        .filterIsInstance<OpenAIMessage.Tool>()
-                        .map { it.toolCallId }
+                    val cancelledItems = cancelledRecord.history.map { historyItemFromWire(it) }
+                    val cancelledCalls = cancelledItems.filterIsInstance<HistoryItem.Captured>()
+                        .mapNotNull { it.capturedFunctionCall()?.callId }
+                    val cancelledResults = cancelledItems.filterIsInstance<HistoryItem.ToolOutput>()
+                        .map { it.callId }
                     assertTrue(
                         "call_bash" in cancelledCalls && "call_bash" in cancelledResults,
                         "the record persisted by the cancel must be pair-complete " +
@@ -205,13 +190,11 @@ class E2eToolCallPairingRepairTest : E2eAgentTest() {
 
                 val record = SessionStore(sessionsStoreDir).load(sessionId.value)
                 assertNotNull(record)
-                val calls = record.history
-                    .filterIsInstance<OpenAIMessage.Assistant>()
-                    .flatMap { it.toolCalls.orEmpty() }
-                    .map { it.id }
-                val results = record.history
-                    .filterIsInstance<OpenAIMessage.Tool>()
-                    .map { it.toolCallId }
+                val items = record.history.map { historyItemFromWire(it) }
+                val calls = items.filterIsInstance<HistoryItem.Captured>()
+                    .mapNotNull { it.capturedFunctionCall()?.callId }
+                val results = items.filterIsInstance<HistoryItem.ToolOutput>()
+                    .map { it.callId }
                 assertTrue(
                     "call_bash" in calls && "call_bash" in results,
                     "the persisted record must be pair-complete after the repaired turn " +

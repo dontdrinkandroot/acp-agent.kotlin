@@ -10,9 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.agent.SessionStore
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
+import net.dontdrinkandroot.acpagent.agent.*
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -76,8 +74,9 @@ class E2eShutdownTest : E2eAgentTest() {
                     SessionStore(sessionsStoreDir).load(sessionId.value),
                     "closing stdin mid-turn must persist the in-flight turn (issue #17)",
                 )
-                val userTexts = record.history.filterIsInstance<OpenAIMessage.User>()
-                    .mapNotNull { (it.content as? Content.Text)?.text() }
+                val userTexts = record.history.map { historyItemFromWire(it) }
+                    .filterIsInstance<HistoryItem.UserMessage>()
+                    .mapNotNull { it.textOrNull() }
                 assertTrue(
                     "Write the file" in userTexts,
                     "the interrupted turn's user message must survive, got $userTexts",
@@ -129,8 +128,9 @@ class E2eShutdownTest : E2eAgentTest() {
                     SessionStore(sessionsStoreDir).load(sessionId.value),
                     "session/cancel mid-turn must persist the in-flight turn (issue #17)",
                 )
-                val userTexts = record.history.filterIsInstance<OpenAIMessage.User>()
-                    .mapNotNull { (it.content as? Content.Text)?.text() }
+                val userTexts = record.history.map { historyItemFromWire(it) }
+                    .filterIsInstance<HistoryItem.UserMessage>()
+                    .mapNotNull { it.textOrNull() }
                 assertTrue(
                     "Write the file" in userTexts,
                     "the cancelled turn's user message must survive, got $userTexts",
@@ -145,10 +145,10 @@ class E2eShutdownTest : E2eAgentTest() {
 
     /** The issue #38 pairing invariant, asserted on the persisted record. */
     private fun assertPairComplete(record: net.dontdrinkandroot.acpagent.agent.SessionRecord) {
-        val callIds = record.history.filterIsInstance<OpenAIMessage.Assistant>()
-            .flatMap { it.toolCalls.orEmpty() }
-            .map { it.id }
-        val resultIds = record.history.filterIsInstance<OpenAIMessage.Tool>().map { it.toolCallId }
+        val items = record.history.map { historyItemFromWire(it) }
+        val callIds = items.filterIsInstance<HistoryItem.Captured>()
+            .mapNotNull { it.capturedFunctionCall()?.callId }
+        val resultIds = items.filterIsInstance<HistoryItem.ToolOutput>().map { it.callId }
         assertTrue(
             callIds.subtract(resultIds.toSet()).isEmpty(),
             "the persisted record must be pair-complete (calls=$callIds, results=$resultIds)",

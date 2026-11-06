@@ -18,7 +18,6 @@ import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.forModel
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
 import net.dontdrinkandroot.acpagent.tools.*
@@ -257,7 +256,7 @@ internal class AgentSessionImpl(
         val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
             ?: com.agentclientprotocol.model.ClientCapabilities()
         val instructions = loadAgentsInstructions(cwd)
-        val userContent = contentBlocksToLlmContentTopLevel(
+        val userParts = contentBlocksToInputParts(
             blocks = content,
             modelSupportsImage = modelInfo()?.architecture?.inputModalities?.contains("image") == true,
         )
@@ -267,7 +266,7 @@ internal class AgentSessionImpl(
         // Runs before `mode` is captured so the stated mode and the turn's
         // governing mode are captured together.
         state.indicateCurrentMode()
-        state.appendToHistory(OpenAIMessage.User(userContent))
+        state.appendToHistory(HistoryItem.UserMessage(userParts))
         // The title is derived from the first user message; announce it to the
         // client once, inside this turn's update stream (issue #73). Emitted
         // before the loop runs so it cannot race the prompt response, which

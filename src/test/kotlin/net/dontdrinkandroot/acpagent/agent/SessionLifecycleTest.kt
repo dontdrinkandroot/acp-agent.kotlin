@@ -8,7 +8,6 @@ import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
 import java.time.OffsetDateTime
@@ -390,8 +389,10 @@ class SessionLifecycleTest {
 
         assertEquals(
             "interrupted prompt",
-            store.load("sess_0000000000000001")?.history?.filterIsInstance<OpenAIMessage.User>()
-                ?.last()?.content?.text(),
+            store.load("sess_0000000000000001")?.history
+                ?.map { historyItemFromWire(it) }
+                ?.filterIsInstance<HistoryItem.UserMessage>()
+                ?.last()?.textOrNull(),
             "an interrupted turn must persist instead of dropping its history (issue #17)",
         )
     }

@@ -10,8 +10,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
@@ -121,7 +119,7 @@ class ToolCallExecutorTest {
         // written at prompt start only, issue #36).
         val historyAfter = state.historySnapshot
         assertTrue(
-            historyAfter.last() is OpenAIMessage.Tool,
+            historyAfter.last() is HistoryItem.ToolOutput,
             "the denied tool result must be the last history entry",
         )
         assertEquals(
@@ -437,12 +435,11 @@ class ToolCallExecutorTest {
         )
         val historyAfter = state.historySnapshot
         assertEquals(3, historyAfter.size, "history: three tool results (two completed + refused)")
-        assertTrue(historyAfter.last() is OpenAIMessage.Tool)
-        val refusedResult = historyAfter.last() as OpenAIMessage.Tool
-        val refusedContent = refusedResult.content as Content.Text
-        assertEquals("call_3", refusedResult.toolCallId)
+        assertTrue(historyAfter.last() is HistoryItem.ToolOutput)
+        val refusedResult = historyAfter.last() as HistoryItem.ToolOutput
+        assertEquals("call_3", refusedResult.callId)
         assertTrue(
-            refusedContent.text().contains(args),
+            refusedResult.output.contains(args),
             "the history error must carry the raw arguments so the model sees what repeated",
         )
     }

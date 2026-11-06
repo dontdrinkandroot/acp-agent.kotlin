@@ -64,7 +64,7 @@ internal class MockOpenAiServer(
     fun start() {
         val http = HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0)
         http.executor = Executors.newCachedThreadPool()
-        http.createContext("/chat/completions") { exchange ->
+        http.createContext("/responses") { exchange ->
             if (exchange.requestMethod != "POST") {
                 exchange.sendResponseHeaders(405, -1)
                 exchange.close()
@@ -157,64 +157,29 @@ internal class MockOpenAiServer(
         )
     )
 
+    /**
+     * A Responses-API tool-call stream: one `function_call` output item carrying
+     * [name]/[arguments], completed by the terminal event.
+     */
     private fun toolCallSse(name: String, arguments: JsonObject): String {
-        val firstTurnDeltas = if (firstTurnStreamDeltas) {
-            "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"priming the write\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
-                "data: " + "{\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"writing the file\"},\"finish_reason\":null}]}\n\n"
-        } else {
-            ""
+        val callId = "call_$name"
+        val item = buildJsonObject {
+            put("type", "function_call")
+            put("id", "fc_$name")
+            put("call_id", callId)
+            put("name", name)
+            put("arguments", arguments.toString())
         }
-        val chunk = buildJsonObject {
-            put("id", "chatcmpl-ph4-1")
-            put("object", "chat.completion.chunk")
-            put("created", 0)
-            put("model", "test-model")
-            put(
-                "choices",
-                buildJsonArray {
-                    add(
-                        buildJsonObject {
-                            put("index", 0)
-                            put("finish_reason", "tool_calls")
-                            put(
-                                "delta",
-                                buildJsonObject {
-                                    put("role", "assistant")
-                                    put(
-                                        "tool_calls",
-                                        buildJsonArray {
-                                            add(
-                                                buildJsonObject {
-                                                    put("index", 0)
-                                                    put("id", "call_$name")
-                                                    put("type", "function")
-                                                    put(
-                                                        "function",
-                                                        buildJsonObject {
-                                                            put("name", name)
-                                                            put("arguments", arguments.toString())
-                                                        },
-                                                    )
-                                                },
-                                            )
-                                        },
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            )
+        return buildString {
+            if (firstTurnStreamDeltas) {
+                append(reasoningEvent("priming the write"))
+                append(contentEvent("writing the file"))
+            }
+            append(outputItemAddedEvent(0, item))
+            append(outputItemDoneEvent(0, item))
+            append(responseDoneEvent("completed"))
+            append("data: [DONE]\n\n")
         }
-        return firstTurnDeltas +
-            "data: $chunk\n\n" +
-            "data: {\"id\":\"chatcmpl-ph4-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
-            "data: [DONE]\n\n"
     }
 
     private fun planSse(): String {
@@ -234,87 +199,83 @@ internal class MockOpenAiServer(
                 }
             )
         )
-        val chunk = buildJsonObject {
-            put("id", "chatcmpl-plan-1")
-            put("object", "chat.completion.chunk")
-            put("created", 0)
-            put("model", "test-model")
-            put(
-                "choices",
-                buildJsonArray {
-                    add(
-                        buildJsonObject {
-                            put("index", 0)
-                            put("finish_reason", "tool_calls")
-                            put(
-                                "delta",
-                                buildJsonObject {
-                                    put("role", "assistant")
-                                    put(
-                                        "tool_calls",
-                                        buildJsonArray {
-                                            add(
-                                                buildJsonObject {
-                                                    put("index", 0)
-                                                    put("id", "call_plan")
-                                                    put("type", "function")
-                                                    put(
-                                                        "function",
-                                                        buildJsonObject {
-                                                            put("name", "update_plan")
-                                                            put("arguments", arguments.toString())
-                                                        },
-                                                    )
-                                                },
-                                            )
-                                        },
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            )
-        }
-        return "data: $chunk\n\n" +
-                "data: {\"id\":\"chatcmpl-plan-1\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
-                "data: [DONE]\n\n"
+        return toolCallSse("update_plan", arguments)
     }
 
-    private fun textSse(): String {
-        return buildString {
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                    "\"model\":\"test-model\"," +
-                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"pondering \",\"content\":\"\"},\"finish_reason\":null}]}\n\n"
-            )
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                    "\"model\":\"test-model\"," +
-                        "\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the request\",\"content\":\"\"},\"finish_reason\":null}]}\n\n"
-            )
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                        "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"phase4 \"},\"finish_reason\":null}]}\n\n"
-            )
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                        "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n"
-            )
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                    "\"model\":\"test-model\"," +
-                    "\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-            )
-            append(
-                "data: " + "{\"id\":\"chatcmpl-ph4-2\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                        "\"model\":\"test-model\",\"choices\":[]," +
-                        "\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":5,\"total_tokens\":47}}\n\n"
-            )
-            append("data: [DONE]\n\n")
+    /**
+     * A Responses-API text stream: reasoning deltas, content deltas, the
+     * completed assistant message item and the terminal event carrying usage.
+     */
+    private fun textSse(): String = buildString {
+        append(reasoningEvent("pondering "))
+        append(reasoningEvent("the request"))
+        append(contentEvent("phase4 "))
+        append(contentEvent("done"))
+        val item = buildJsonObject {
+            put("type", "message")
+            put("id", "msg_text")
+            put("role", "assistant")
+            put("status", "completed")
+            put("content", buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "output_text")
+                    put("text", "phase4 done")
+                })
+            })
         }
+        append(outputItemAddedEvent(0, item))
+        append(outputItemDoneEvent(0, item))
+        append(
+            responseDoneEvent(
+                "completed",
+                buildJsonObject {
+                    put("input_tokens", 42)
+                    put("output_tokens", 5)
+                    put("total_tokens", 47)
+                },
+            )
+        )
+        append("data: [DONE]\n\n")
     }
+
+    private fun reasoningEvent(text: String): String =
+        "data: " + buildJsonObject {
+            put("type", "response.reasoning.delta")
+            put("output_index", 0)
+            put("delta", text)
+        } + "\n\n"
+
+    private fun contentEvent(text: String): String =
+        "data: " + buildJsonObject {
+            put("type", "response.content_part.delta")
+            put("output_index", 0)
+            put("delta", text)
+        } + "\n\n"
+
+    private fun outputItemAddedEvent(index: Int, item: JsonObject): String =
+        "data: " + buildJsonObject {
+            put("type", "response.output_item.added")
+            put("output_index", index)
+            put("item", item)
+        } + "\n\n"
+
+    private fun outputItemDoneEvent(index: Int, item: JsonObject): String =
+        "data: " + buildJsonObject {
+            put("type", "response.output_item.done")
+            put("output_index", index)
+            put("item", item)
+        } + "\n\n"
+
+    private fun responseDoneEvent(status: String, usage: JsonObject? = null): String =
+        "data: " + buildJsonObject {
+            // The live endpoint emits response.completed / response.incomplete,
+            // never the documented response.done (verified 2026-11-06).
+            put("type", if (status == "incomplete") "response.incomplete" else "response.completed")
+            put("response", buildJsonObject {
+                put("id", "resp_test")
+                put("model", "test-model")
+                put("status", status)
+                usage?.let { put("usage", it) }
+            })
+        } + "\n\n"
 }

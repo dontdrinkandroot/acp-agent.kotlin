@@ -5,8 +5,6 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
@@ -47,8 +45,8 @@ class SessionStateDeferredModeTest {
     }
 
     private fun modeMessages(state: SessionState): List<String> =
-        state.historySnapshot.filterIsInstance<OpenAIMessage.System>()
-            .mapNotNull { (it.content as? Content.Text)?.text() }
+        state.historySnapshot.filterIsInstance<HistoryItem.SystemMessage>()
+            .map { it.text }
             .filter { it.startsWith("Mode: ") }
 
     @Test
@@ -209,10 +207,10 @@ class SessionStateDeferredModeTest {
 
     @Test
     fun `restore parses the last indicated mode from the trail - a switch after the last message self-heals`() {
-        val trail = listOf<OpenAIMessage>(
-            OpenAIMessage.System(Content.Text("Mode: plan. Read-only. Available tools: read_file.")),
-            OpenAIMessage.User(Content.Text("first prompt")),
-            OpenAIMessage.System(Content.Text("Mode: build. Read-write. Available tools: read_file, write_file.")),
+        val trail = listOf(
+            systemMessage("Mode: plan. Read-only. Available tools: read_file."),
+            userMessage("first prompt"),
+            systemMessage("Mode: build. Read-write. Available tools: read_file, write_file."),
         )
         val state = SessionState(
             sessionId = com.agentclientprotocol.model.SessionId("sess_deferred0002"),
@@ -227,7 +225,7 @@ class SessionStateDeferredModeTest {
                 mode = "build",
                 title = "t",
                 updatedAt = 0L,
-                history = trail,
+                history = trail.map { it.toWire() },
             ),
             sessionStore = null,
             closeResources = {},
@@ -264,7 +262,7 @@ class SessionStateDeferredModeTest {
                 mode = "plan",
                 title = "t",
                 updatedAt = 0L,
-                history = listOf(OpenAIMessage.User(Content.Text("legacy prompt"))),
+                history = listOf(userMessage("legacy prompt")).map { it.toWire() },
             ),
             sessionStore = null,
             closeResources = {},

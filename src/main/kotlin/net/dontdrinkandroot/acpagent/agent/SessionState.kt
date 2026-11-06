@@ -6,9 +6,8 @@ import com.agentclientprotocol.model.SessionModeId
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonObject
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.*
 import kotlin.concurrent.Volatile
 
@@ -36,7 +35,9 @@ internal class SessionState(
 
     private val logger = KotlinLogging.logger {}
 
-    private val history = mutableListOf<OpenAIMessage>().apply { restored?.let { addAll(it.history) } }
+    private val history = mutableListOf<HistoryItem>().apply {
+        restored?.history?.forEach { add(historyItemFromWire(it)) }
+    }
     private val historyLock = Any()
     private var plan: List<PlanEntry> = restored?.plan ?: emptyList()
 
@@ -104,7 +105,6 @@ internal class SessionState(
      * the corrective message.
      */
     private var lastIndicatedMode: SessionModeId? = lastIndicatedTrailMode(restored?.history.orEmpty())
-
     /**
      * The mode the client requested while a prompt turn is in flight. It does
      * not govern anything during the turn (the turn keeps the mode it started
@@ -135,22 +135,42 @@ internal class SessionState(
      */
     var providerSelection: String = restored?.provider?.takeIf { it.isNotBlank() } ?: ""
 
-    val historySnapshot: List<OpenAIMessage>
+    val historySnapshot: List<HistoryItem>
         get() = synchronized(historyLock) { repairedViewLocked().history }
 
-    fun appendToHistory(message: OpenAIMessage) {
-        synchronized(historyLock) { history.add(message) }
+    /**
+     * The wire form of the (repaired) history - the request input, 1:1.
+     * Captured items are replayed verbatim, so a reasoning item produced by
+     * the previous iteration reaches the next one unchanged (issue #75).
+     */
+    val historyWireSnapshot: List<JsonObject>
+        get() = historySnapshot.map { it.toWire() }
+
+    fun appendToHistory(item: HistoryItem) {
+        synchronized(historyLock) { history.add(item) }
     }
 
     /**
      * Appends a tool result to the history and records its terminal outcome
      * under the same lock, so a replay snapshot can never pair a result
-     * message with a missing outcome.
+     * item with a missing outcome.
      */
-    fun appendToolResult(toolCallId: String, content: Content.Text, isError: Boolean) {
+    fun appendToolResult(toolCallId: String, content: String, isError: Boolean) {
         synchronized(historyLock) {
-            history.add(OpenAIMessage.Tool(content, toolCallId = toolCallId))
+            history.add(HistoryItem.ToolOutput(callId = toolCallId, output = content))
             toolOutcomes[toolCallId] = if (isError) TOOL_OUTCOME_FAILED else TOOL_OUTCOME_COMPLETED
+        }
+    }
+
+    /**
+     * Drops the turn's live-only reasoning items from the history. Called when
+     * a prompt turn ends (issue #75): reasoning continuity is a within-turn
+     * property, so the next prompt starts from a clean reasoning state - and
+     * nothing reasoning-shaped ever reaches the record.
+     */
+    fun dropLiveReasoning() {
+        synchronized(historyLock) {
+            history.removeAll { item -> (item as? HistoryItem.Captured)?.raw?.isReasoning == true }
         }
     }
 
@@ -165,7 +185,7 @@ internal class SessionState(
      * replay: all reads happen under the same lock so replay sees one
      * consistent picture.
      */
-    fun replaySnapshot(): Triple<List<OpenAIMessage>, List<PlanEntry>, Map<String, String>> =
+    fun replaySnapshot(): Triple<List<HistoryItem>, List<PlanEntry>, Map<String, String>> =
         synchronized(historyLock) {
             val repaired = repairedViewLocked()
             Triple(repaired.history, plan, repaired.outcomes)
@@ -179,8 +199,8 @@ internal class SessionState(
 
     /**
      * The "mode status" message that states the current mode and the tools
-     * available in it. It lives in the conversation history as an
-     * [OpenAIMessage.System] entry and is LLM-internal (never rendered by the
+     * available in it. It lives in the conversation history as a
+     * [HistoryItem.SystemMessage] entry and is LLM-internal (never rendered by the
      * client); the client UI gets its own mode notifications.
      */
     private fun modeStatusText(mode: SessionModeId): String {
@@ -208,7 +228,7 @@ internal class SessionState(
      * Applies the mode status message for [mode] to the history.
      */
     private fun appendModeStatusMessage(mode: SessionModeId) {
-        appendToHistory(OpenAIMessage.System(Content.Text(modeStatusText(mode))))
+        appendToHistory(HistoryItem.SystemMessage(modeStatusText(mode)))
     }
 
     /**
@@ -308,10 +328,11 @@ internal class SessionState(
      * [lastIndicatedMode] so the next prompt start does not append a
      * duplicate message.
      */
-    private fun lastIndicatedTrailMode(history: List<OpenAIMessage>): SessionModeId? =
-        history.filterIsInstance<OpenAIMessage.System>()
-            .mapNotNull { (it.content as? Content.Text)?.text() }
-            .lastOrNull { it.startsWith(MODE_TRAIL_PREFIX) }
+    private fun lastIndicatedTrailMode(history: List<JsonObject>): SessionModeId? =
+        history.mapNotNull { historyItemFromWire(it) }
+            .mapNotNull { it.systemTextOrNull() }
+            .filter { it.startsWith(MODE_TRAIL_PREFIX) }
+            .lastOrNull()
             ?.let { text ->
                 text.removePrefix(MODE_TRAIL_PREFIX).substringBefore('.').let { raw ->
                     SessionModeId(raw).takeIf { candidate -> candidate in ALL_MODES }
@@ -338,7 +359,7 @@ internal class SessionState(
     }
 
     fun buildRecord(): SessionRecord {
-        val snapshot: List<OpenAIMessage>
+        val snapshot: List<HistoryItem>
         val outcomes: Map<String, String>
         synchronized(historyLock) {
             val repaired = repairedViewLocked()
@@ -354,7 +375,11 @@ internal class SessionState(
             mode = currentMode.value,
             title = recordTitle,
             updatedAt = System.currentTimeMillis(),
-            history = snapshot,
+            // Reasoning items are live-only: the record is the history
+            // projection without them, so no chain-of-thought ever reaches
+            // disk (issue #75).
+            history = snapshot.filterNot { item -> (item as? HistoryItem.Captured)?.raw?.isReasoning == true }
+                .map { it.toWire() },
             model = currentModel,
             reasoning = reasoningSelection,
             provider = providerSelection,
@@ -418,11 +443,10 @@ internal class SessionState(
         closeResources()
     }
 
-    private fun deriveTitle(history: List<OpenAIMessage>): String? =
-        history.filterIsInstance<OpenAIMessage.User>()
+    private fun deriveTitle(history: List<HistoryItem>): String? =
+        history.asSequence()
+            .mapNotNull { it.userTextOrNull() }
             .firstOrNull()
-            ?.content
-            ?.textOrNull()
             ?.trim()
             ?.let { trimmed -> truncatedTitle(trimmed.ifEmpty { "(empty message)" }) }
 

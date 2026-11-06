@@ -16,7 +16,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -275,23 +278,22 @@ abstract class E2eAgentTest {
     }
 
     /**
-     * The tool-call pairing invariant (issue #38) as seen by the chat request: every
-     * assistant tool-call id must be answered by a `role: "tool"` result, or a strict
-     * provider rejects the request with 400 "No tool output found for function call".
+     * The tool-call pairing invariant (issue #38) as seen by the request: every
+     * `function_call` item must be answered by a `function_call_output`, or a
+     * strict provider rejects the request with 400 "No tool output found for
+     * function call".
      */
     internal fun assertPairComplete(body: JsonObject, context: String) {
-        val messages = body["messages"]!!.jsonArray
-        val callIds = messages.asSequence()
-            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "assistant" }
-            .flatMap { (it.jsonObject["tool_calls"] as? JsonArray ?: JsonArray(emptyList())).jsonArray }
-            .map { it.jsonObject["id"]!!.jsonPrimitive.content }
-            .toList()
-        val resultIds = messages
-            .filter { it.jsonObject["role"]?.jsonPrimitive?.content == "tool" }
-            .map { it.jsonObject["tool_call_id"]!!.jsonPrimitive.content }
+        val input = body["input"]!!.jsonArray.map { it.jsonObject }
+        val callIds = input
+            .filter { it["type"]?.jsonPrimitive?.content == "function_call" }
+            .mapNotNull { it["call_id"]?.jsonPrimitive?.content }
+        val resultIds = input
+            .filter { it["type"]?.jsonPrimitive?.content == "function_call_output" }
+            .mapNotNull { it["call_id"]?.jsonPrimitive?.content }
         assertTrue(
             callIds.subtract(resultIds.toSet()).isEmpty(),
-            "$context: every tool call in the chat request must carry a tool output " +
+            "$context: every function call in the request must carry a function call output " +
                     "(dangling=${callIds.subtract(resultIds.toSet())}, calls=$callIds, results=$resultIds)",
         )
     }

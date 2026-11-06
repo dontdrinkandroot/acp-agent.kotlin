@@ -2,8 +2,6 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionId
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.*
 
@@ -38,7 +36,7 @@ class SessionStateTitleTest {
     @Test
     fun `the derived title is announced exactly once`() {
         val state = state()
-        state.appendToHistory(OpenAIMessage.User(Content.Text("Fix the build")))
+        state.appendToHistory(userMessage("Fix the build"))
 
         assertEquals("Fix the build", state.takeTitleAnnouncement())
         assertNull(state.takeTitleAnnouncement(), "the title must be announced only once")
@@ -47,7 +45,7 @@ class SessionStateTitleTest {
     @Test
     fun `a restored title is not announced again`() {
         val state = state(record("Fix the bug"))
-        state.appendToHistory(OpenAIMessage.User(Content.Text("Continue")))
+        state.appendToHistory(userMessage("Continue"))
 
         assertNull(state.takeTitleAnnouncement(), "the client already knows the restored title")
     }
@@ -55,7 +53,7 @@ class SessionStateTitleTest {
     @Test
     fun `a restored record without a title announces it at the next turn`() {
         val state = state(record(""))
-        state.appendToHistory(OpenAIMessage.User(Content.Text("Fix the build")))
+        state.appendToHistory(userMessage("Fix the build"))
 
         assertEquals("Fix the build", state.takeTitleAnnouncement())
     }
@@ -63,7 +61,7 @@ class SessionStateTitleTest {
     @Test
     fun `the announced title is capped at 72 code points`() {
         val state = state()
-        state.appendToHistory(OpenAIMessage.User(Content.Text("x".repeat(100))))
+        state.appendToHistory(userMessage("x".repeat(100)))
 
         val announced = assertNotNull(state.takeTitleAnnouncement())
 

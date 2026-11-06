@@ -11,13 +11,27 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
-import net.dontdrinkandroot.acpagent.llm.models.OpenAITool
-import net.dontdrinkandroot.acpagent.llm.models.OpenRouterChatCompletionStreamResponse
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
+import net.dontdrinkandroot.acpagent.llm.models.ReasoningRequest
+import net.dontdrinkandroot.acpagent.llm.models.ResponsesRequest
 
-private const val CHAT_COMPLETIONS_PATH = "chat/completions"
+private const val RESPONSES_PATH = "responses"
 private const val MODELS_PATH = "models"
 private const val STREAM_END_EVENT = "[DONE]"
+
+/**
+ * The Responses API's terminal stream events: `response.completed`,
+ * `response.incomplete` (a token-limit/`max_output_tokens` cut-off) and
+ * `response.failed`. Verified against the live endpoint 2026-11-06 - the
+ * documented `response.done` name does **not** occur in practice.
+ */
+private val RESPONSE_TERMINAL_EVENTS = setOf(
+    "response.completed",
+    "response.incomplete",
+    "response.failed",
+)
 
 /**
  * Idle timeout between two data packets on the underlying socket, in
@@ -40,21 +54,6 @@ public class LlmException(message: String) : Exception(message)
  */
 private const val APP_TITLE = "DdrAcpAgent"
 private const val APP_URL = "https://github.com/dontdrinkandroot/acp-agent.kotlin"
-
-@Serializable
-internal data class OpenRouterChatCompletionRequest(
-    val model: String,
-    val messages: List<OpenAIMessage>,
-    val tools: List<OpenAITool>? = null,
-    val stream: Boolean = true,
-    val reasoning: ReasoningEffort? = null,
-    val provider: ProviderPreferences? = null,
-)
-
-@Serializable
-internal data class ReasoningEffort(
-    val effort: String,
-)
 
 /**
  * Provider preferences steering OpenRouter's provider routing (the `provider`
@@ -107,28 +106,28 @@ public class LlmClient(
         }
     }
 
-    public override fun chatCompletion(
-        messages: List<OpenAIMessage>,
-        tools: List<OpenAITool>,
+    public override fun responsesStream(
+        input: List<JsonObject>,
+        tools: List<FunctionTool>,
         reasoning: String?,
         model: String,
         provider: ProviderPreferences?,
-    ): Flow<OpenRouterChatCompletionStreamResponse> = flow {
+    ): Flow<JsonObject> = flow {
         val body = json.encodeToString(
-            OpenRouterChatCompletionRequest(
+            ResponsesRequest(
                 model = model,
-                messages = messages,
+                input = input,
                 tools = tools.ifEmpty { null },
-                reasoning = reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningEffort(it) },
+                reasoning = reasoning?.takeIf { it.isNotBlank() }?.let { ReasoningRequest(it) },
                 provider = provider,
             ),
         )
-        client.preparePost(CHAT_COMPLETIONS_PATH) {
+        client.preparePost(RESPONSES_PATH) {
             setBody(body)
         }.execute { response ->
             if (!response.status.isSuccess()) {
                 val detail = response.bodyAsText().take(500)
-                throw LlmException("chat completion failed: HTTP ${response.status.value}: $detail")
+                throw LlmException("responses request failed: HTTP ${response.status.value}: $detail")
             }
             val reader = response.bodyAsChannel()
             val current = StringBuilder()
@@ -145,7 +144,11 @@ public class LlmClient(
                             current.setLength(0)
                         } else {
                             flushEvent(current)?.let { event ->
-                                if (event.choices.any { it.finishReason != null }) completed = true
+                                if (event["type"]?.let { (it as? JsonPrimitive)?.content } in
+                                    RESPONSE_TERMINAL_EVENTS
+                                ) {
+                                    completed = true
+                                }
                                 emit(event)
                             }
                         }
@@ -156,15 +159,19 @@ public class LlmClient(
                 }
             }
             flushEvent(current)?.let { event ->
-                if (event.choices.any { it.finishReason != null }) completed = true
+                if (event["type"]?.let { (it as? JsonPrimitive)?.content } in
+                    RESPONSE_TERMINAL_EVENTS
+                ) {
+                    completed = true
+                }
                 emit(event)
             }
             if (!completed) {
                 // The connection dropped before the [DONE] sentinel or a
-                // finish_reason: the accumulated deltas are incomplete. Fail
-                // loudly instead of executing truncated tool calls or emitting
-                // an empty END_TURN for a dead stream.
-                throw LlmException("chat completion stream ended unexpectedly before [DONE]")
+                // response.done/failed event: the accumulated deltas are
+                // incomplete. Fail loudly instead of executing truncated tool
+                // calls or emitting an empty END_TURN for a dead stream.
+                throw LlmException("responses stream ended unexpectedly before completion")
             }
         }
     }
@@ -202,25 +209,34 @@ public class LlmClient(
         return payload.data.endpoints
     }
 
-    private fun flushEvent(current: StringBuilder): OpenRouterChatCompletionStreamResponse? {
+    /**
+     * Parses one SSE data payload into an event object. Raises on the
+     * error-envelope shapes (top-level `{"error": {...}}` stream events and
+     * `response.failed` events), returns null for data-less events. Unknown
+     * event types are returned as raw objects - the consumer decides what to
+     * do with them.
+     */
+    private fun flushEvent(current: StringBuilder): JsonObject? {
         val data = current.toString().trim()
         current.setLength(0)
         if (data.isEmpty() || data == STREAM_END_EVENT) return null
-        val errorObject = runCatching {
-            json.parseToJsonElement(data) as? JsonObject
-        }.getOrNull()
-            ?.get("error") as? JsonObject
-        if (errorObject != null) {
-            val message = (errorObject["message"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        val element = runCatching { json.parseToJsonElement(data) }.getOrNull()
+            ?: throw LlmException("OpenRouter stream error: undecodable event payload: ${data.take(200)}")
+        val event = element as? JsonObject
+            ?: throw LlmException("OpenRouter stream error: unexpected event payload: ${data.take(200)}")
+        (event["error"] as? JsonObject)?.let { errorObject ->
+            val message = (errorObject["message"] as? JsonPrimitive)?.content
                 ?: errorObject.toString()
             throw LlmException("OpenRouter stream error: $message")
         }
-        val response = json.decodeFromString<OpenRouterChatCompletionStreamResponse>(data)
-        response.choices.firstOrNull { it.error != null }?.let { choice ->
-            val message = choice.error?.message?.takeIf { it.isNotBlank() } ?: choice.error.toString()
-            throw LlmException("OpenRouter stream error: $message")
+        val type = (event["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (type == "response.failed") {
+            val errorObject = event["response"]?.jsonObject?.get("error") as? JsonObject
+            val message = (errorObject?.get("message") as? JsonPrimitive)?.content
+                ?: event.toString()
+            throw LlmException("OpenRouter responses error: $message")
         }
-        return response
+        return event
     }
 
     public fun close() {

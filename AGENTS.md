@@ -31,16 +31,15 @@ what actually resolves).
 | Coroutines       | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
 | IO               | kotlinx-io-core                                                                       | 0.9.2                        |
 | JSON             | kotlinx-serialization-json                                                            | 1.12.0 (declared + resolved) |
-| LLM wire models  | owned (`llm/models/LlmWireModels.kt`, no LLM framework dependency)                    | -                            |
+| LLM wire models  | owned (`llm/models/ResponsesWireModels.kt`, Responses API, no LLM framework)         | -                            |
 | UUIDv7 ids       | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
 | Logging          | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.20               |
 
 kotlin-logging 8.0.4 is declared explicitly because ktor/ACP pull 7.0.0 and 8.0.01
 transitives; pinning 8.0.4 pins the banner-suppressing API. The Koog dependency
-(`ai.koog:prompt-executor-openrouter-client`) was removed 2026-11-06: the wire types are
-owned in `llm/models/LlmWireModels.kt` (byte-equivalent to the Koog 1.3.0 types they
-replaced, pinned by `LlmWireGoldensTest`), so the LLM contract is ours (see the LLM
-provider bullet under Boundaries).
+(`ai.koog:prompt-executor-openrouter-client`) was removed 2026-11-06; the LLM wire types are
+owned in `llm/models/ResponsesWireModels.kt` (Responses API dialect, issue #75), so the LLM
+contract is ours (see the LLM provider bullet under Boundaries).
 
 ## Conventions
 
@@ -151,15 +150,16 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # path/scratch validation shared with the env layer)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
-    llm/ChatCompleter.kt             # chat-completion seam (LlmClient implements it) so the prompt
-                                     # runner is testable with a fake stream
+    llm/ChatCompleter.kt             # the Responses-API seam (LlmClient implements it) so the prompt
+                                     # runner is testable with a fake event stream
     llm/LlmWire.kt                   # the single shared `llmWireJson` (snake-case etc.) for all
                                      # wire-shaped LLM data (chat traffic + persisted history)
     llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
                                      # provider endpoints feed: tag/provider_name/pricing)
-    llm/models/LlmWireModels.kt      # owned chat-completion wire types (`OpenAIMessage`, `Content`
-                                     # string-or-parts, tools, stream chunk) - the internal LLM
-                                     # contract, byte-pinned by LlmWireGoldensTest
+    llm/models/ResponsesWireModels.kt # owned Responses API wire types (input/output items as raw
+                                     # JsonObjects, content parts, flat FunctionTool, response
+                                     # envelope, usage) - the internal LLM contract, pinned by
+                                     # LlmResponseGoldensTest
     llm/ModelLookup.kt               # List<OpenRouterModel>.forModel(id) - the single model lookup
     providerrouting/ProviderRouting.kt  # provider routing: auto (throughput sort + median
                                      # completion cap) + the manual `provider` option's
@@ -174,8 +174,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # toolCallId -> completed|failed)
     agent/SessionCwd.kt              # sessionCwdProblem: the cwd gate (absolute + existing
                                      # directory, else -32602 at new/load/resume) - issue #74
-    agent/SessionCoroutines.kt       # clientOrNull() + Content?.textOrNull() shared by the
-                                     # session facade, prompt runner and session state
+    agent/SessionCoroutines.kt       # clientOrNull(): the enclosing session's client, or null
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
@@ -185,9 +184,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # AgentSession interface (config options, prompt plumbing);
                                      # one-shot onSessionReleased hook (close/delete/failed replay);
                                      # persist-on-interrupt (prompt finally + close) - issue #17
-    agent/PromptContent.kt           # contentBlocksToLlmContentTopLevel: prompt content blocks ->
-                                     # LLM content (multimodal conversion; pure, pinned by
-                                     # AgentSessionPromptContentTest)
+    agent/PromptContent.kt           # contentBlocksToInputParts: prompt content blocks ->
+                                     # Responses input parts (multimodal conversion; pure, pinned
+                                     # by AgentSessionPromptContentTest)
     agent/ReplayUpdates.kt           # buildReplayUpdates: persisted state snapshot -> load-replay
                                      # updates (pure, pinned by ReplayHistoryTest)
     agent/ToolCallPairing.kt         # repairToolCallPairing: dangling tool calls -> synthetic
@@ -503,9 +502,10 @@ own config directory (a
   reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
   (same `NonCancellable` flush before the resources go away) and **at
   shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
-  Shutdown; issue #17). The record (`agent/SessionRecord.kt`) holds history (owned `OpenAIMessage` wire types from
-  `llm/models/LlmWireModels.kt` via the shared
-  `llmWireJson`), mode, title (first user message, 72 code points), model, reasoning, plan and
+  Shutdown; issue #17). The record (`agent/SessionRecord.kt`) holds history (Responses-API
+  wire items as raw `JsonObject`s from `llm/models/ResponsesWireModels.kt` via the shared
+  `llmWireJson`; reasoning items are never persisted - live-only, issue #75), mode, title
+  (first user message, 72 code points), model, reasoning, plan and
   `toolOutcomes` (toolCallId -> `"completed"` | `"failed"`, recorded at history-append time in
   `SessionState.appendToolResult`; lenient at replay - unknown values/legacy records fall back
   to COMPLETED). Persist and delete share a `persistMutex` so a delete never resurrects the
@@ -605,7 +605,7 @@ own config directory (a
   `E2eModeRestrictionTest` and `E2eDeferredModeSwitchTest`). The system prompt is **mode-invariant**: it holds
   a static "Modes" table (what plan/build/bash mean) and no current-mode
   statement; the current mode and the tools available in it are stated in the
-  conversation history instead — modal status messages (`OpenAIMessage.System`,
+  conversation history instead — modal status messages (a `system`-role message item,
   LLM-internal, never rendered by the client), each stating the mode's semantics ("Mode: ... Read-only /
   Read-write / ...") plus the tools available in it (`ToolRegistry.availableForMode`). **The mode status message has a
   single
@@ -718,8 +718,8 @@ own config directory (a
   Per-session `model` (default `openRouter.defaultModel`), `reasoning` effort (`category: thought_level`; empty
   `supported_efforts` -> gateway levels max..minimal;
   mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`, issue #42)
-  config options. Model switches reset reasoning and provider; changes emit updates and persist. The chat request
-  carries `reasoning: {effort}` (own wire type `ReasoningEffort` in `LlmClient`).
+  config options. Model switches reset reasoning and provider; changes emit updates and persist. The request
+  carries `reasoning: {effort}` (own wire type `ReasoningRequest` in `ResponsesWireModels.kt`).
     - **Provider option** (issue #42): flat select with `auto` (real value, default, always re-selectable) +
       the current model's provider slugs from the endpoints feed (value = endpoint `tag`, name = `provider_name`;
       blank tags and a tag literally `auto` are skipped - `auto` always means OpenRouter routing);
@@ -1101,30 +1101,35 @@ own config directory (a
   `type = "object"` pin is the SDK's own `@EncodeDefault`, not a loss). Pinned at
   the unit level (`McpBridgeTest`) and at the wire level (e2e: the schema
   reaches the chat request's `function.parameters`).
-- **LLM streaming**: OpenRouter via its OpenAI-compatible streaming API (hand-rolled line scan,
-  see Boundaries); text deltas relayed immediately, tool-call deltas merged, `delta.reasoning`
-  relayed as `agent_thought_chunk` (not persisted); empty `delta.content` (sent by
-  reasoning-capable providers alongside `delta.reasoning`)is filtered so reasoning deltas
-  emit no blank `agent_message_chunk`s. HTTP error statuses, `{"error": ...}`
-  stream events and a stream ending without `[DONE]` or a `finish_reason` raise `LlmException`
-  so a failed or truncated turn fails loudly instead of executing partial tool calls or
-  emitting an empty END_TURN. A `length`/`error` finish reason, an iteration with no text and
-  no tool calls, or an undocumented normalized finish reason whose `native_finish_reason`
-  names a token limit triggers
-  exactly one continuation pass:the partial text (if any) is kept, ALL tool calls (including complete ones) are dropped
-  and never executed - the model re-issues them
-  after the continuation -, a synthetic user "continue" prompt is appended, and the retry
-  runs even when the tool-iteration budget is exhausted. A second truncation/empty
-  completion ends the turn with an honest "response interrupted" note (+ `end_turn`,
-  no exception); `content_filter` ends immediately with a "blocked by content filtering"
-  note (never retried). An undocumented finish reason (outside OpenRouter's normalized set,
-  issue #16) is classified by usable output: with text or complete tool calls it is a
+- **LLM streaming** (Responses API dialect, issue #75): a hand-rolled SSE line scan
+  (`data:` events, `[DONE]` terminator, see Boundaries) that relays **raw event objects**;
+  the runner switches on `type` and skips unknown event types, so a new upstream event cannot
+  fail a stream. `response.reasoning*.delta` (and `response.reasoning_text.delta`, the name
+  the live endpoint uses) relay as `agent_thought_chunk`, `response.content_part.delta` /
+  `response.output_text.delta` as `agent_message_chunk`; deltas are relayed only when
+  non-empty, so a provider that interleaves empty content with reasoning emits no blank
+  chunk. `response.output_item.added`/`.done` accumulate the iteration's items -
+  `reasoning`, `message` and `function_call` - by `output_index`;
+  `response.function_call_arguments.delta` merges argument fragments.
+  Terminal events are `response.completed` / `response.incomplete` (`response.failed` and a
+  top-level `{"error":…}` raise `LlmException` in the transport). A stream that ends without
+  a terminal event raises `LlmException`, so a dead stream never executes partial tool calls
+  or ends with an empty END_TURN. Classification happens on the response object:
+  `incomplete_details.reason == "max_output_tokens"` (or `status == "incomplete"`, or an
+  iteration with no text **and** no tool calls) triggers exactly one continuation pass - the
+  partial text (if any) is kept, ALL tool calls (including complete ones) are dropped and
+  never executed (the model re-issues them after the continuation), a synthetic user
+  "continue" prompt is appended, and the retry runs even when the tool-iteration budget is
+  exhausted. A second truncation/empty completion ends the turn with an honest "response
+  interrupted" note (+ `end_turn`, no exception). `incomplete_details.reason ==
+  "content_filter"` ends immediately with a "blocked by content filtering" note (never
+  retried) - it is **not** an `error.code`, which carries transport categories
+  (`invalid_prompt`, `server_error`, ...) only. An undocumented status (outside the API's
+  set, issue #16) is classified by usable output: with text or complete tool calls it is a
   natural completion (the tool calls execute, no continuation retry), with empty output it
-  fails over to the raw `native_finish_reason` (`length`/`max_tokens`/`max_output_tokens`
-  -> truncation) and otherwise retries conservatively as empty. Both abnormal cases log to stderr (`warn` on first,
-  `error` when still
-  broken) so the problem stays visible. Replay renders the synthetic "continue" user
-  message as a normal bubble (accepted).
+  retries conservatively as empty. Both abnormal cases log to stderr (`warn` on first,
+  `error` when still broken) so the problem stays visible. Replay renders the synthetic
+  "continue" user message as a normal bubble (accepted).
   Every `agent_message_chunk`/`agent_thought_chunk` of one LLM iteration carries the same
   UUIDv7 `messageId` (time-ordered, `com.github.f4b6a3:uuid-creator`; fresh per iteration) so
   clients group the iteration's reasoning and reply into a single message; pinned e2e at
@@ -1155,7 +1160,7 @@ own config directory (a
   become base64 data URIs (mime default `image/png`) only when the model's
   `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
   are inlined as `Resource <uri>:\n<text>`, blob/audio degrade to placeholders,
-  `resource_link` renders as a markdown link (`contentBlocksToLlmContentTopLevel` in
+  `resource_link` renders as a markdown link (`contentBlocksToInputParts` in
   `agent/PromptContent.kt`).
 - **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
   `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
@@ -1433,11 +1438,14 @@ stays a task input instead of a stale constant.
   titles not re-announced, legacy empty-title records announce at the next turn, 72-code-point
   cap) and black-box in `E2eSessionPersistenceTest` (one `session_info_update` with the
   derived title on the first prompt, none on the loaded session's continuation).
-  Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open),
-  `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
-  semantics, idempotence, duplicate ids count as answered) and
-  `SessionStateRepairTest` (the three view consumers close dangling calls while
-  the stored history is never mutated; a real outcome is never overridden),
+  Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open; a captured
+  user/tool item - one the lossless parse kept verbatim - replays like its typed
+  counterpart), `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
+  semantics, idempotence, duplicate ids count as answered; the round-trip identity rule -
+  fully modeled items re-type, an image part or a multimodal tool output stays captured and
+  encodes back byte-for-byte) and `SessionStateRepairTest` (the three view consumers close
+  dangling calls while the stored history is never mutated; a real outcome is never
+  overridden; a restore reproduces the record's wire items exactly),
   `ToolCallExecutorTest` (outcome recording + immediate persistence, the repeat
   guard: third raw-identical call with the same result refused without execution/prompt,
   a single identical repeat executes, a changed result resets the streak, formatting variants
@@ -1452,11 +1460,12 @@ stays a task input instead of a stale constant.
   (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
   `SessionConfigOptionsTest` (provider option
   listing/validation/reset/self-heal, manual pick survives an outage, blank/`auto` tag exclusion),
-  `ProviderRoutingTest` (provider lookup + median price filtering), `LlmRequestTest`
-  (manual pick wire shape `order` without sort/max_price), `LlmWireGoldensTest`
-  (byte-exact wire documents for the owned chat-completion wire types - request,
-  stream chunk, choice error, `Content` serializer) and `PromptRunnerTest`
-  (request-level provider choice: manual order vs omitted auto).
+  `ProviderRoutingTest` (provider lookup + median price filtering), `LlmResponseGoldensTest`
+  (byte-exact wire documents for the Responses dialect - request items incl. verbatim
+  reasoning replay, negative contract: no temperature/max_output_tokens/store/include/
+  reasoning.context, error envelope, `incomplete` details) and `PromptRunnerTest`
+  (request-level provider choice, reasoning replay to the next iteration, reasoning dropped
+  at turn end, abnormal-completion mapping).
 - **Agent loop** — the `MAX_TURN_REQUESTS` cap + wind-down synthesis pass, auto
   provider routing (median cap, fail-open, disabled) and the manual provider option (`E2eProviderOptionTest`:
   advertisement, request wire shape, fail-open hidden,
@@ -1673,21 +1682,87 @@ communicate that with the user so we can review them.
   mechanics under Features); with `permissions.unlistedPaths = deny` an uncovered path
   is refused without any prompt. Do not execute a path-scoped file tool or mutating
   tool without the permission decision.
-- **LLM provider**: OpenRouter. The **wire types in `llm/models/LlmWireModels.kt` are the
-  internal LLM contract** - a deliberate single-provider design decision; do not wrap them
-  in domain/anti-corruption types. They were the Koog `ai.koog:prompt-executor-openrouter-client`
-  wire types until 2026-11-06, when the dependency was dropped and the consumed surface
-  became owned (byte-equivalent to the Koog 1.3.0 shapes, pinned by `LlmWireGoldensTest`).
-  `LlmClient` in `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON); both `llm` and `agent`
-  (`AgentSessionImpl`) import the owned wire types (`OpenAIMessage`, `OpenAITool`,
-  `OpenRouterChatCompletionStreamResponse`, ...).
-  - **No `temperature` is set** for chat completions (providers default it); pinned by
-    `LlmRequestTest`.
+- **LLM provider**: OpenRouter, spoken through its **Responses API** (`POST /responses`,
+  issue #75). The **wire types in `llm/models/ResponsesWireModels.kt` are the internal LLM
+  contract** - a deliberate single-provider design decision; do not wrap them in
+  domain/anti-corruption types. History: Koog `ai.koog:prompt-executor-openrouter-client`
+  wire types until 2026-11-06 (dependency dropped, consumed surface owned byte-equivalently,
+  pinned by `LlmWireGoldensTest`); the chat-completion types were then deleted outright
+  when the transport moved to the Responses dialect. `LlmClient` in
+  `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON).
+  - **Raw-item transport**: conversation items travel as `JsonObject`s, not a polymorphic
+    type hierarchy. Reasoning items must be replayed byte-verbatim (OpenRouter normalizes
+    provider-native reasoning - Anthropic thinking, Gemini thought signatures, OpenAI
+    reasoning items - and their `summary`/`content` shapes differ per provider), and raw
+    events let the transport **skip unknown event types** instead of failing on an unknown
+    discriminator. Typed where the agent constructs or reads fields: `InputMessage`,
+    `FunctionCallOutput`, `ResponseContentPart`, `FunctionTool`, `ResponsesRequest`,
+    `ResponsesResponse`, `ResponsesUsage`.
+  - **Lossless history parse (round-trip identity)**: `historyItemFromWire` re-types an item
+    only if re-encoding the typed value reproduces the raw item exactly
+    (`HistoryItem.retypedOrCaptured`); anything the typed model would lose - a prompt
+    `input_image` part, a multimodal `function_call_output.output` array, an unmodeled member
+    - stays `HistoryItem.Captured` and replays byte-for-byte. So a restored session can never
+    rewrite or drop wire data, and adding a wire feature never means patching the parser
+    branches. `JsonObject` equality is order-insensitive, so member order does not matter.
+    Consumers therefore read an item's **meaning**, not its variant
+    (`userTextOrNull`/`systemTextOrNull`/`toolCallIdOrNull`/`toolOutputTextOrNull`/
+    `assistantTextOrNull`), so a captured item still drives title derivation, the mode trail,
+    the pairing repair and load replay. `Captured` no longer means "we failed to understand
+    it", it means "we did not build it". Pinned by `ToolCallPairingRepairTest`
+    (re-typing vs. capture) and `SessionStateRepairTest` (restore -> record reproduces the
+    wire items exactly), `ReplayHistoryTest` (a captured user/tool item replays like its typed
+    counterpart).
+  - **Assistant message items are captured, not rebuilt**: in a tool-continuation
+    iteration the provider's `message` item from `response.output_item.done` is what
+    enters the history - `id` and `status` are required on assistant items in the
+    Responses input, and `annotations` and friends round-trip. Every iteration that
+    *ends* the turn synthesizes its item instead (the terminal text, continue note,
+    wind-down summary, interrupted/content-filter note), with a generated
+    `msg_<uuidv7>` id and `status: "completed"` - the history mirrors what the client
+    saw. Pinned by `PromptRunnerTest` ("the assistant message item replayed ... is
+    the provider's own item").
+  - **Reasoning continuity (the point of #75)**: every output item of an iteration
+    (reasoning, assistant message, function calls) is appended to the history in production
+    order, so the next iteration's request - built 1:1 from `historyWireSnapshot` - carries
+    the reasoning that produced the previous calls. **Live-only**: `PromptRunner.run` drops the
+    items in a `finally` (`SessionState.dropLiveReasoning`), so **every** exit path clears
+    them - including cancellation, where no terminal branch runs (a leak there would replay
+    one turn's reasoning into the next prompt) - and `buildRecord` filters them out of the
+    persisted record as well, so no chain-of-thought ever reaches disk and the next prompt
+    starts clean. Pinned by `PromptRunnerTest` (replay to iteration n+1, dropped at turn
+    end, dropped when a cancelled turn ends, absent from the record).
+  - **No `temperature` and no `max_output_tokens`** are sent (providers default them; a cap
+    interacts badly with Anthropic's reasoning budget). No `store`/`previous_response_id`
+    (the API is stateless-only and rejects them), no `include`, and no `reasoning.context`
+    (an OpenAI GPT-5.6+ extension open-weight models do not understand; under live-only
+    accumulation every request carries current-turn reasoning only, so the model default is
+    already correct). All pinned by `LlmResponseGoldensTest`.
   - Streaming is a hand-rolled line scan via `preparePost` + `bodyAsChannel().readLine()`
-    (`data:` events, `[DONE]` terminator) that emits chunks as they arrive - no LLM
-    framework in between. Every wire-shaped byte must round-trip through the shared
-    `llmWireJson`, and raw per-chunk access is needed
-    for `delta.reasoning`, `usage` and finish reasons.
+    (`data:` events, `[DONE]` terminator). **Terminal events are `response.completed`,
+    `response.incomplete` and `response.failed`** - the documented `response.done` name
+    does not occur on the live endpoint (verified 2026-11-06); missing them silently
+    kills the `usage_update` indicator and blind-folds truncation detection, so the mock
+    server and the goldens emit the real names. `response.failed` and top-level
+    `{"error":…}` events raise `LlmException`. Every wire-shaped byte round-trips through
+    the shared `llmWireJson`.
+  - **Live-verified (2026-11-06)** with a throwaway key against the real endpoint, via a
+    local capture proxy (`openRouter.baseUrl` pointed at it - no production code involved):
+    reasoning items accumulate across a tool loop (`1, 2, 3, …` per request) for
+    `openai/gpt-oss-20b` (`google-gemini-v1`) and `anthropic/claude-haiku-5.5`
+    (`anthropic-claude-v1`), no signature-related 400; a non-reasoning model
+    (`meta-llama/llama-3.1-8b-instruct`) fails open with no reasoning items; the reasoning
+    deltas arrive as `response.reasoning_text.delta` and reach the client as
+    `agent_thought_chunk`.
+  - **Pre-dialect session records: assumed gone, no compat shim.** `history` is
+    `List<JsonObject>`, so an old Chat-Completions record still *decodes* - deliberately
+    unmigrated (an item the typed model cannot reproduce is kept verbatim, see below). It is
+    also deliberately unguarded: a legacy record's `role:"tool"`/`tool_calls` items are not
+    valid Responses input, so a restored old session that used a tool fails on its first
+    turn with a provider `invalid_prompt` instead of at load time. Accepted because the agent
+    is the only writer of records (`SessionState.buildRecord` -> `HistoryItem.toWire`), so
+    such a record can only predate this dialect change; `session/delete` still cleans it up.
+    Do not add a migration - that is the compat shim this decision rules out.
 
 ## Pitfalls and learnings
 
@@ -1699,11 +1774,11 @@ communicate that with the user so we can review them.
   `org.slf4j.simpleLogger.logFile=System.err`) before `runAgent` creates the first
   logger; do not move a top-level `val logger = KotlinLogging.logger {}` ahead of it.
 - **LLM wire JSON settings are load-bearing.** The shared `llmWireJson` (`llm/LlmWire.kt`)
-  must keep `namingStrategy = JsonNamingStrategy.SnakeCase` (without it `tool_calls` /
-  `finish_reason` silently fail to parse - verified e2e) plus `ignoreUnknownKeys = true`,
+  must keep `namingStrategy = JsonNamingStrategy.SnakeCase` (without it `call_id` /
+  `output_tokens` silently fail to parse) plus `ignoreUnknownKeys = true`,
   `explicitNulls = false`, `encodeDefaults = true`. Do not create a second `Json` for LLM
-  wire-shaped data with different settings; `LlmRequestTest` pins the request shape and the
-  session store reuses the same instance for persisted history.
+  wire-shaped data with different settings; `LlmResponseGoldensTest` pins the request shape
+  and the session store reuses the same instance for persisted history.
 - **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.

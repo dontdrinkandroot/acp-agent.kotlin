@@ -1,11 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import kotlinx.serialization.SerializationException
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
 import java.nio.file.Files
 import kotlin.test.*
 
@@ -22,16 +17,12 @@ class SessionStoreTest {
         mode = "build",
         title = "Fix the bug",
         updatedAt = 1_700_000_000_000,
-        history = listOf(
-            OpenAIMessage.User(Content.Text("Fix the bug")),
-            OpenAIMessage.Assistant(
-                content = Content.Text("On it"),
-                toolCalls = listOf(
-                    OpenAIToolCall("call_1", OpenAIFunction("write_file", "{\"path\":\"a.txt\"}"))
-                ),
-            ),
-            OpenAIMessage.Tool(Content.Text("Written"), toolCallId = "call_1"),
-            OpenAIMessage.Assistant(content = Content.Text("Done")),
+        history = wireHistory(
+            userMessage("Fix the bug"),
+            assistantMessage("On it"),
+            functionCall("call_1", "write_file", "{\"path\":\"a.txt\"}"),
+            toolOutput("call_1", "Written"),
+            assistantMessage("Done"),
         ),
     )
 
@@ -42,21 +33,37 @@ class SessionStoreTest {
         store.save(record)
         val loaded = store.load(record.sessionId)
 
-        // OpenAIMessage subclasses have no structural equals; compare the wire shape instead.
-        assertEquals(
-            llmWireJson.encodeToString(record.history),
-            llmWireJson.encodeToString(loaded?.history ?: emptyList()),
-        )
+        assertEquals(record.history, loaded?.history, "the wire items round-trip verbatim")
         assertEquals(record.copy(history = emptyList()), loaded?.copy(history = emptyList()))
     }
 
     @Test
-    fun `history is persisted in wire shape with role discriminator`() {
+    fun `history is persisted in the responses wire shape`() {
         val (store, dir) = store()
         store.save(sampleRecord())
         val raw = Files.readString(dir.resolve("sess_0123456789abcdef.json"))
         assertTrue(raw.contains("\"role\":\"user\""), raw)
-        assertTrue(raw.contains("\"tool_call_id\":\"call_1\""), raw)
+        assertTrue(raw.contains("\"type\":\"function_call_output\""), raw)
+        assertTrue(raw.contains("\"call_id\":\"call_1\""), raw)
+    }
+
+    @Test
+    fun `reasoning items are stored verbatim when handed over - filtering is the state's job`() {
+        val (store, dir) = store()
+        // SessionState.buildRecord filters live-only reasoning before it ever
+        // reaches the store (pinned in SessionStateRepairTest); the store
+        // itself round-trips whatever wire items it is given.
+        val record = sampleRecord().copy(
+            history = wireHistory(
+                userMessage("Fix the bug"),
+                reasoningItem("I should look at the file"),
+                assistantMessage("Done"),
+            ),
+        )
+        store.save(record)
+        val raw = Files.readString(dir.resolve("sess_0123456789abcdef.json"))
+        assertTrue(raw.contains("\"type\":\"reasoning\""), raw)
+        assertEquals(record.history, store.load(record.sessionId)?.history)
     }
 
     @Test

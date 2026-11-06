@@ -2,23 +2,24 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.EmbeddedResourceResource
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIContentPart
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputImage
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText
 
 /**
- * Converts prompt content blocks into LLM message content. Plain text stays a
- * flat string; any multimodal block switches the message to an array of content
- * parts. Images are forwarded as base64 data URIs only when the session model
- * accepts image input, otherwise the block degrades to a text placeholder so
- * the model learns it was omitted. Pure mapping, pinned by
+ * Converts prompt content blocks into Responses-API input content parts.
+ * Text stays one `input_text` part; any multimodal block becomes its own part.
+ * Images are forwarded as base64 data URIs only when the session model accepts
+ * image input, otherwise the block degrades to a text placeholder so the model
+ * learns it was omitted. Pure mapping, pinned by
  * [AgentSessionPromptContentTest].
  */
-internal fun contentBlocksToLlmContentTopLevel(
+internal fun contentBlocksToInputParts(
     blocks: List<ContentBlock>,
     modelSupportsImage: Boolean,
-): Content {
+): List<ResponseContentPart> {
     val text = StringBuilder()
-    val parts = mutableListOf<OpenAIContentPart>()
+    val parts = mutableListOf<ResponseContentPart>()
     fun writeLine(line: String) {
         if (line.isEmpty()) return
         if (text.isNotEmpty()) text.append('\n')
@@ -27,7 +28,7 @@ internal fun contentBlocksToLlmContentTopLevel(
 
     fun flush() {
         if (text.isEmpty()) return
-        parts += OpenAIContentPart.Text(text.toString())
+        parts += InputText(text.toString())
         text.clear()
     }
 
@@ -41,7 +42,7 @@ internal fun contentBlocksToLlmContentTopLevel(
 
                 is EmbeddedResourceResource.BlobResourceContents -> {
                     flush()
-                    parts += OpenAIContentPart.Text("(binary resource ${resource.uri} omitted)")
+                    parts += InputText("(binary resource ${resource.uri} omitted)")
                 }
             }
 
@@ -52,16 +53,13 @@ internal fun contentBlocksToLlmContentTopLevel(
 
             is ContentBlock.Audio -> {
                 flush()
-                parts += OpenAIContentPart.Text("(audio content is not supported)")
+                parts += InputText("(audio content is not supported)")
             }
         }
     }
-    if (parts.isNotEmpty()) {
-        flush()
-        return Content.Parts(parts)
-    }
-    if (text.isEmpty()) return Content.Text("(empty message)")
-    return Content.Text(text.toString())
+    flush()
+    if (parts.isEmpty()) return listOf(InputText("(empty message)"))
+    return parts
 }
 
 private fun resourceLinkText(block: ContentBlock.ResourceLink): String {
@@ -71,13 +69,13 @@ private fun resourceLinkText(block: ContentBlock.ResourceLink): String {
     return "[$label](${block.uri})"
 }
 
-private fun imagePart(block: ContentBlock.Image, modelSupportsImage: Boolean): OpenAIContentPart {
+private fun imagePart(block: ContentBlock.Image, modelSupportsImage: Boolean): ResponseContentPart {
     if (!modelSupportsImage) {
-        return OpenAIContentPart.Text("(image omitted: the selected model does not support image input)")
+        return InputText("(image omitted: the selected model does not support image input)")
     }
     if (block.data.isEmpty()) {
-        return OpenAIContentPart.Text("(image omitted: no data provided)")
+        return InputText("(image omitted: no data provided)")
     }
     val mime = block.mimeType.ifEmpty { "image/png" }
-    return OpenAIContentPart.Image(OpenAIContentPart.ImageUrl("data:$mime;base64,${block.data}"))
+    return InputImage("data:$mime;base64,${block.data}")
 }

@@ -1,10 +1,9 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.*
-import net.dontdrinkandroot.acpagent.llm.models.Content
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIFunction
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIMessage
-import net.dontdrinkandroot.acpagent.llm.models.OpenAIToolCall
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.WriteFileTool
 import kotlin.test.Test
@@ -19,16 +18,13 @@ import kotlin.test.assertTrue
 class ReplayHistoryTest {
 
     private fun toolCallHistory(toolName: String) = listOf(
-        OpenAIMessage.User(Content.Text("Do it")),
-        OpenAIMessage.Assistant(
-            content = Content.Text(""),
-            toolCalls = listOf(OpenAIToolCall("call_1", OpenAIFunction(toolName, "{\"path\":\"a.txt\"}"))),
-        ),
-        OpenAIMessage.Tool(Content.Text("result text"), toolCallId = "call_1"),
+        userMessage("Do it"),
+        functionCall("call_1", toolName, "{\"path\":\"a.txt\"}"),
+        toolOutput("call_1", "result text"),
     )
 
     private fun updates(
-        history: List<OpenAIMessage>,
+        history: List<HistoryItem>,
         toolOutcomes: Map<String, String> = emptyMap(),
         plan: List<PlanEntry> = emptyList(),
         registry: ToolRegistry = ToolRegistry(),
@@ -49,6 +45,52 @@ class ReplayHistoryTest {
             (update.content.orEmpty().filterIsInstance<ToolCallContent.Content>().single().content
                 as ContentBlock.Text).text,
         )
+    }
+
+    @Test
+    fun `an item kept verbatim by the lossless parse replays like its typed counterpart`() {
+        // A prompt with an image part is not re-typed (the typed model drops the
+        // image), so it arrives as HistoryItem.Captured - replay must still show
+        // the user text, purely from the item's meaning.
+        val imagePrompt = historyItemFromWire(
+            buildJsonObject {
+                put("type", "message")
+                put("role", "user")
+                put(
+                    "content",
+                    buildJsonArray {
+                        add(buildJsonObject { put("type", "input_text"); put("text", "look at this") })
+                        add(
+                            buildJsonObject {
+                                put("type", "input_image")
+                                put("image_url", "data:image/png;base64,AAAA")
+                            }
+                        )
+                    },
+                )
+            }
+        )
+        val multimodalResult = historyItemFromWire(
+            buildJsonObject {
+                put("type", "function_call_output")
+                put("call_id", "call_1")
+                put("output", buildJsonArray { add(buildJsonObject { put("type", "input_text"); put("text", "x") }) })
+            }
+        )
+
+        val updates = updates(
+            listOf(imagePrompt, functionCall("call_1", "bash", "{}"), multimodalResult),
+            toolOutcomes = mapOf("call_1" to TOOL_OUTCOME_COMPLETED),
+        )
+
+        assertEquals(
+            listOf("look at this"),
+            updates.filterIsInstance<SessionUpdate.UserMessageChunk>()
+                .map { (it.content as ContentBlock.Text).text },
+        )
+        val result = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>().single()
+        assertEquals(ToolCallId("call_1"), result.toolCallId, "the captured result still pairs and replays")
+        assertEquals(ToolCallStatus.COMPLETED, result.status)
     }
 
     @Test
@@ -105,9 +147,8 @@ class ReplayHistoryTest {
     fun `user and agent text replay as message chunks`() {
         val updates = updates(
             listOf(
-                OpenAIMessage.User(Content.Text("hello")),
-                OpenAIMessage.Assistant(content = Content.Text("hi there")),
-                OpenAIMessage.Assistant(content = Content.Text(""), toolCalls = emptyList()),
+                userMessage("hello"),
+                assistantMessage("hi there"),
             ),
         )
 
@@ -119,7 +160,7 @@ class ReplayHistoryTest {
     fun `plan replays after the history`() {
         val plan = listOf(PlanEntry(content = "Investigate", priority = PlanEntryPriority.HIGH, status = PlanEntryStatus.PENDING))
         val updates = updates(
-            listOf(OpenAIMessage.User(Content.Text("hello"))),
+            listOf(userMessage("hello")),
             plan = plan,
         )
 
@@ -131,8 +172,8 @@ class ReplayHistoryTest {
     fun `every replayed chunk carries a message id`() {
         val updates = updates(
             listOf(
-                OpenAIMessage.User(Content.Text("hello")),
-                OpenAIMessage.Assistant(content = Content.Text("reply")),
+                userMessage("hello"),
+                assistantMessage("reply"),
             ),
         )
 

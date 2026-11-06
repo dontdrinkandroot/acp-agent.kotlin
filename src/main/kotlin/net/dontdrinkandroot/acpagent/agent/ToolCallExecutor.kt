@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.llm.models.Content
 import net.dontdrinkandroot.acpagent.tools.*
 
 private val logger = KotlinLogging.logger {}
@@ -175,7 +174,7 @@ internal class ToolCallExecutor(
                 )
             )
         )
-        state.appendToolResult(call.id, Content.Text(result.text), result.isError)
+        state.appendToolResult(call.id, result.text, result.isError)
         state.persist()
         val outcome = RepeatOutcome(result.isError, result.text)
         lastExecution = if (last != null && last.signature == signature && last.outcome == outcome) {
@@ -204,7 +203,7 @@ internal class ToolCallExecutor(
                 )
             )
         )
-        state.appendToolResult(toolCallId.value, Content.Text(message), isError = true)
+        state.appendToolResult(toolCallId.value, message, isError = true)
         state.persist()
     }
 

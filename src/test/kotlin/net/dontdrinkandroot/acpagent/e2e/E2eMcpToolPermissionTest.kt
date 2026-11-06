@@ -258,7 +258,7 @@ class E2eMcpToolPermissionTest : E2eAgentTest() {
 
                     val request = llmMock.parseChatBody(llmMock.lastRequestBody)
                     val tool = request["tools"]!!.jsonArray
-                        .map { it.jsonObject["function"]!!.jsonObject }
+                        .map { it.jsonObject }
                         .single { (it["name"] as JsonPrimitive).content == "mcp_read" }
                     val parameters = tool["parameters"]!!.jsonObject
                     assertEquals(

@@ -27,10 +27,12 @@ import kotlin.test.assertTrue
 class E2eModeIndicationTest : E2eAgentTest() {
 
     private fun systemTexts(llmMock: MockOpenAiServer, body: String): List<String> =
-        llmMock.parseChatBody(body)["messages"]!!.jsonArray
+        llmMock.parseChatBody(body)["input"]!!.jsonArray
             .map { it.jsonObject }
-            .filter { it["role"]!!.jsonPrimitive.content == "system" }
-            .map { it["content"]!!.jsonPrimitive.content }
+            .filter { it["role"]?.jsonPrimitive?.content == "system" }
+            .flatMap { item ->
+                item["content"]!!.jsonArray.map { (it.jsonObject["text"]!!).jsonPrimitive.content }
+            }
 
     private fun modeTexts(texts: List<String>): List<String> =
         texts.filter { it.startsWith("Mode: ") }
@@ -67,10 +69,10 @@ class E2eModeIndicationTest : E2eAgentTest() {
                     firstModeTexts.single().startsWith("Mode: build."),
                     "the coalesced message must state the latest mode (build), got: ${firstModeTexts.single()}",
                 )
-                val firstMessages = llmMock.parseChatBody(firstBody)["messages"]!!.jsonArray.map { it.jsonObject }
+                val firstMessages = llmMock.parseChatBody(firstBody)["input"]!!.jsonArray.map { it.jsonObject }
                 assertTrue(
-                    firstMessages.indexOfFirst { it["role"]!!.jsonPrimitive.content == "system" } <
-                            firstMessages.indexOfFirst { it["role"]!!.jsonPrimitive.content == "user" },
+                    firstMessages.indexOfFirst { it["role"]?.jsonPrimitive?.content == "system" } <
+                            firstMessages.indexOfFirst { it["role"]?.jsonPrimitive?.content == "user" },
                     "the mode message must precede the user message",
                 )
 
