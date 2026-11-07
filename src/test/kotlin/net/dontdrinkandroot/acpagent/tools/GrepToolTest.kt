@@ -290,6 +290,23 @@ class GrepToolTest {
     }
 
     @Test
+    fun `grep keeps the first 500 matches by path and line`() = runBlocking {
+        // The walk-mode cap is applied while collecting, so a broad pattern in a
+        // large tree cannot accumulate matches it would drop anyway: the result
+        // is the sorted prefix of all matches, whatever order the walk visits.
+        val dir = tmpDir()
+        java.io.File(dir, "z.txt").writeText("hit\n".repeat(600))
+        java.io.File(dir, "a.txt").writeText("hit")
+
+        val grep = GrepTool().execute(buildJsonObject { put("path", dir); put("pattern", "hit") }, testContext(dir))
+        assertFalse(grep.isError, grep.text)
+        val lines = grep.text.split("\n")
+        assertEquals(500, lines.size, "the match cap bounds the output")
+        assertEquals("a.txt:1:hit", lines.first(), "the cap keeps the earliest matches by path and line")
+        assertTrue(lines.drop(1).all { it.startsWith("z.txt:") }, grep.text.lines().take(3).toString())
+    }
+
+    @Test
     fun `grep with a relative file path echoes the relative match lines`() = runBlocking {
         val dir = tmpDir()
         WriteFileTool().execute(

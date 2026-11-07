@@ -64,7 +64,10 @@ public class GrepTool : AgentTool {
         val fileFilter = glob?.let { globToRegex(it) }
         val base = Path(root)
         var skippedBinaryOrOversized = 0
-        val matches = mutableListOf<GrepMatch>()
+        // Bounded as the walk goes: only the first MAX_MATCHES matches by
+        // path/line are kept, so a broad pattern over a large tree cannot grow
+        // the tool's memory with the repository instead of with its output.
+        val matches = BoundedMatches(MAX_MATCHES)
         walk(base, 0) { f ->
             if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) {
                 skippedBinaryOrOversized++
@@ -85,14 +88,11 @@ public class GrepTool : AgentTool {
                 }
                 val rel = relativeToRoot(root, f.toString())
                 visualLines(fileContent).forEachIndexed { idx, line ->
-                    if (regex.containsMatchIn(line)) matches += GrepMatch(rel, idx + 1, line)
+                    if (regex.containsMatchIn(line)) matches.add(GrepMatch(rel, idx + 1, truncateMatchLine(line)))
                 }
             }
         }
-        val rendered = matches
-            .sortedWith(compareBy({ it.path }, { it.line }))
-            .take(MAX_MATCHES)
-            .map { "${it.path}:${it.line}:${truncateMatchLine(it.text)}" }
+        val rendered = matches.toSortedList().map { "${it.path}:${it.line}:${it.text}" }
         return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" } + skipSuffix(skippedBinaryOrOversized))
     }
 
@@ -140,6 +140,29 @@ public class GrepTool : AgentTool {
 }
 
 private data class GrepMatch(val path: String, val line: Int, val text: String)
+
+/**
+ * The match accumulator of the directory search: keeps only the [limit]
+ * smallest matches by path and line, so the memory footprint follows the
+ * output cap instead of the size of the searched tree (a broad pattern in a
+ * large repository would otherwise collect every match before the cap is
+ * applied). The kept set is exactly the sorted prefix the cap renders, so
+ * bounding the collection does not change the output.
+ */
+private class BoundedMatches(private val limit: Int) {
+    private val kept = sortedSetOf(MATCH_ORDER)
+
+    fun add(match: GrepMatch) {
+        kept.add(match)
+        if (kept.size > limit) kept.remove(kept.last())
+    }
+
+    fun toSortedList(): List<GrepMatch> = kept.toList()
+
+    private companion object {
+        val MATCH_ORDER: Comparator<GrepMatch> = compareBy({ it.path }, { it.line })
+    }
+}
 
 private const val MAX_MATCHES = 500
 private const val MAX_MATCH_LINE_CHARS = 500

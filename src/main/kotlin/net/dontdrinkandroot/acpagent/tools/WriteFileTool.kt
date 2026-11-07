@@ -9,7 +9,7 @@ import kotlinx.serialization.json.buildJsonObject
 public class WriteFileTool : AgentTool {
     override val name = "write_file"
     override val description = "Write text content to a file (creates or overwrites). " +
-            "Files matching an exclusion rule (currently .env*.local) are refused."
+            "Files matching an exclusion rule (the .env*.local secret files and .ai/run.json) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = BUILD_AND_BASH_MODES

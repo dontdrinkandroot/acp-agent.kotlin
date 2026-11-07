@@ -176,6 +176,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # directory, else -32602 at new/load/resume) - issue #74
     agent/SessionCoroutines.kt       # clientOrNull(): the enclosing session's client, or null
     agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
+    agent/HistoryItem.kt             # the history item model in the Responses dialect: typed items the
+                                     # agent constructs (UserMessage/SystemMessage/ToolOutput) +
+                                     # `Captured` raw objects replayed byte-verbatim (reasoning,
+                                     # assistant messages, calls) - issue #75
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
                                      # (buildRecord/persist/delete) + title announcement
@@ -926,7 +930,9 @@ own config directory (a
   defeating the window/past-EOF guards and rendering negative line numbers; it is now a
   clean `'line'`/`'startLine' must be at most 2147483647` validation error before any I/O.
   `list_dir`/`glob` list at most
-  500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500,
+  500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500 **while collecting** (only the 500
+  smallest by path/line are kept, so a broad pattern
+  over a large tree cannot grow the tool's memory with the repository),
   truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
   files over 1 MB and excluded files (see File-access exclusions), and reports skips as
   `...(N binary, oversized or excluded files skipped)`.
@@ -1687,8 +1693,8 @@ communicate that with the user so we can review them.
   contract** - a deliberate single-provider design decision; do not wrap them in
   domain/anti-corruption types. History: Koog `ai.koog:prompt-executor-openrouter-client`
   wire types until 2026-11-06 (dependency dropped, consumed surface owned byte-equivalently,
-  pinned by `LlmWireGoldensTest`); the chat-completion types were then deleted outright
-  when the transport moved to the Responses dialect. `LlmClient` in
+  pinned by `LlmWireGoldensTest`, now `LlmResponseGoldensTest`); the chat-completion types
+  were then deleted outright when the transport moved to the Responses dialect. `LlmClient` in
   `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON).
   - **Raw-item transport**: conversation items travel as `JsonObject`s, not a polymorphic
     type hierarchy. Reasoning items must be replayed byte-verbatim (OpenRouter normalizes

@@ -33,6 +33,10 @@ private val RESPONSE_TERMINAL_EVENTS = setOf(
     "response.failed",
 )
 
+/** True for the event types that end a response stream ([RESPONSE_TERMINAL_EVENTS]). */
+private fun JsonObject.isTerminalResponseEvent(): Boolean =
+    (this["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content in RESPONSE_TERMINAL_EVENTS
+
 /**
  * Idle timeout between two data packets on the underlying socket, in
  * milliseconds. A live SSE stream keeps sending data, so an active response
@@ -132,40 +136,32 @@ public class LlmClient(
             val reader = response.bodyAsChannel()
             val current = StringBuilder()
             var completed = false
+
+            // One flush path for both event boundaries (a blank line and the end
+            // of the stream), so a stream whose last event is not followed by a
+            // blank line - e.g. a connection closed right after `data: [DONE]` -
+            // still counts as complete instead of failing as a dead stream.
+            suspend fun flush(): Boolean {
+                if (current.toString().trim() == STREAM_END_EVENT) {
+                    current.setLength(0)
+                    return true
+                }
+                val event = flushEvent(current) ?: return false
+                emit(event)
+                return event.isTerminalResponseEvent()
+            }
+
             var line: String?
             while (true) {
                 line = reader.readLine()
                 if (line == null) break
                 when {
-                    line.isBlank() -> {
-                        val data = current.toString().trim()
-                        if (data == STREAM_END_EVENT) {
-                            completed = true
-                            current.setLength(0)
-                        } else {
-                            flushEvent(current)?.let { event ->
-                                if (event["type"]?.let { (it as? JsonPrimitive)?.content } in
-                                    RESPONSE_TERMINAL_EVENTS
-                                ) {
-                                    completed = true
-                                }
-                                emit(event)
-                            }
-                        }
-                    }
-
+                    line.isBlank() -> if (flush()) completed = true
                     line.startsWith(":") -> Unit
                     line.startsWith("data:") -> current.append(line.removePrefix("data:").trim())
                 }
             }
-            flushEvent(current)?.let { event ->
-                if (event["type"]?.let { (it as? JsonPrimitive)?.content } in
-                    RESPONSE_TERMINAL_EVENTS
-                ) {
-                    completed = true
-                }
-                emit(event)
-            }
+            if (flush()) completed = true
             if (!completed) {
                 // The connection dropped before the [DONE] sentinel or a
                 // response.done/failed event: the accumulated deltas are

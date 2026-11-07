@@ -11,7 +11,8 @@ import java.nio.file.Path
  *
  * Rule semantics follow gitignore conventions: a bare name (no '/') matches at
  * any depth, a rooted pattern matches against the cwd-relative path. The
- * default rule set is the fixed `.env*.local` secret-file exclusion. The
+ * default rule set holds the `.env*.local` secret-file exclusion and the
+ * rooted `.ai/run.json` privilege-boundary exclusion. The
  * designed future source is a gitignore-style `.aiignore` in the project root:
  * its parsed patterns would feed [Companion.of], and no tool code changes.
  */

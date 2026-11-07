@@ -329,7 +329,7 @@ internal class SessionState(
      * duplicate message.
      */
     private fun lastIndicatedTrailMode(history: List<JsonObject>): SessionModeId? =
-        history.mapNotNull { historyItemFromWire(it) }
+        history.map { historyItemFromWire(it) }
             .mapNotNull { it.systemTextOrNull() }
             .filter { it.startsWith(MODE_TRAIL_PREFIX) }
             .lastOrNull()

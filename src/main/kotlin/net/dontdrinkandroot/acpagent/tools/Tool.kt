@@ -192,9 +192,10 @@ public class ToolContext internal constructor(
     internal val fileStore: FileStore = LocalFileStore(),
     internal val bashTimeoutSeconds: Int = 600,
     /**
-     * The file-access exclusion policy (currently the fixed `.env*.local`
-     * rule; the designed future source is `.aiignore`): direct targets
-     * matching a rule are refused, listings/searches hide matches.
+     * The file-access exclusion policy (the fixed `.env*.local` secret rule and
+     * the `.ai/run.json` privilege-boundary rule; the designed future source is
+     * `.aiignore`): direct targets matching a rule are refused,
+     * listings/searches hide matches.
      */
     internal val fileExclusions: FileAccessExclusions = FileAccessExclusions.DEFAULT,
     /**

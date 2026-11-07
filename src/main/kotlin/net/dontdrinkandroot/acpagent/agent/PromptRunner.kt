@@ -15,6 +15,7 @@ import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
 import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesResponse
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesUsage
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
@@ -119,13 +120,7 @@ internal class PromptRunner(
                         state.appendToHistory(assistantMessageItem(partial))
                     }
                     state.appendToHistory(
-                        HistoryItem.UserMessage(
-                            listOf(
-                                net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText(
-                                    if (empty) CONTINUE_EMPTY_PROMPT else CONTINUE_TRUNCATED_PROMPT
-                                )
-                            )
-                        )
+                        userMessageItem(if (empty) CONTINUE_EMPTY_PROMPT else CONTINUE_TRUNCATED_PROMPT)
                     )
                 }
 
@@ -170,11 +165,7 @@ internal class PromptRunner(
         // synthesis pass (tools omitted, so no tool call is possible) so the user
         // gets a summary of what was done and what remains instead of an abrupt stop.
         val windDownMessageId = newMessageId()
-        state.appendToHistory(
-            HistoryItem.UserMessage(
-                listOf(net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText(WIND_DOWN_PROMPT))
-            )
-        )
+        state.appendToHistory(userMessageItem(WIND_DOWN_PROMPT))
         val windDown = streamIteration(emitter, emptyList(), windDownMessageId, instructions)
         usage = windDown.usage ?: usage
 
@@ -256,19 +247,7 @@ internal class PromptRunner(
             else -> ProviderPreferences(order = listOf(slug))
         }
 
-        val systemMessage = buildJsonObject {
-            put("type", "message")
-            put("role", "system")
-            put(
-                "content",
-                kotlinx.serialization.json.buildJsonArray {
-                    add(buildJsonObject {
-                        put("type", "input_text")
-                        put("text", systemPrompt.build(instructions))
-                    })
-                }
-            )
-        }
+        val systemMessage = HistoryItem.SystemMessage(systemPrompt.build(instructions)).toWire()
         val input = listOf(systemMessage) + state.historyWireSnapshot
 
         chatCompleter.responsesStream(
@@ -431,7 +410,6 @@ internal class PromptRunner(
         var callId: String = ""
         var name: String = ""
         var arguments: String = ""
-        var complete: Boolean = false
 
         fun applyItem(item: JsonObject) {
             item.stringField("call_id")?.takeIf { it.isNotBlank() }?.let { callId = it }
@@ -513,8 +491,12 @@ internal fun assistantMessageItem(text: String): HistoryItem.Captured = HistoryI
     }
 )
 
+/** A user message item the agent writes itself (the continuation and wind-down prompts). */
+internal fun userMessageItem(text: String): HistoryItem =
+    HistoryItem.UserMessage(listOf(ResponseContentPart.InputText(text)))
+
 internal fun JsonObject.intField(name: String): Int? =
-    (this[name] as? JsonPrimitive)?.takeIf { it.isString.not() }?.content?.toIntOrNull()
+    (this[name] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()
 
 private fun logAbnormalRetry(iteration: StreamedIteration, iterations: Int) {
     logger.warn {

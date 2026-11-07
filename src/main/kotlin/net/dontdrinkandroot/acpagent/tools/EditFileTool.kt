@@ -7,7 +7,7 @@ public class EditFileTool : AgentTool {
     override val name = "edit_file"
     override val description = "Replace an exact substring in a file (old_string must match exactly once). " +
             "Matching is raw: a CRLF file contains \\r\\n line breaks, so old_string spanning lines must include them. " +
-            "Files matching an exclusion rule (currently .env*.local) are refused."
+            "Files matching an exclusion rule (the .env*.local secret files and .ai/run.json) are refused."
     override val kind = ToolKind.EDIT
     override val mutating = true
     override val modes = BUILD_AND_BASH_MODES

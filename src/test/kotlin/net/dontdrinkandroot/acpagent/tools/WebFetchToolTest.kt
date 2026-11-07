@@ -99,6 +99,17 @@ class WebFetchToolTest {
     }
 
     @Test
+    fun `a carriage return before the newline is not rendered`() = runBlocking {
+        // CRLF is a Windows-authored text file: the terminator is "\r\n", and
+        // read_file strips the carriage return at render time - web_fetch must
+        // agree, or every line of the fetched text ends in an invisible CR.
+        serve("/crlf.txt", "text/plain", "one\r\ntwo\r\n")
+        val result = fetch("$baseUrl/crlf.txt")
+        assertFalse(result.isError, result.text)
+        assertEquals(listOf("   1│one", "   2│two"), result.text.lines())
+    }
+
+    @Test
     fun `an empty non-html body is an empty read not a phantom line`() = runBlocking {
         // Fold-in of #48: "" must render the explicit empty-read message
         // (same as the HTML path), never `   1│`.

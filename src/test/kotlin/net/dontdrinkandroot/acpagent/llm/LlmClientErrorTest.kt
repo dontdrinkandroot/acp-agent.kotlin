@@ -149,6 +149,31 @@ data: [DONE]
     }
 
     @Test
+    fun `a stream ending right after the done sentinel counts as complete`() = runBlocking {
+        // An SSE event is terminated by a blank line, but a server that closes
+        // the connection immediately after `data: [DONE]` (no trailing blank
+        // line) has completed the stream - the sentinel alone says so. Only the
+        // blank-line boundary used to honour it, so such a stream failed as dead.
+        val server = server(
+            sse(
+                """data: {"type":"response.content_part.delta","delta":"hi"}
+
+data: [DONE]"""
+            )
+        )
+        try {
+            val events = client(server.address.port).responsesStream(
+                input = userInput(),
+                tools = emptyList(),
+            ).toList()
+            assertEquals(1, events.size)
+            assertEquals("response.content_part.delta", events.single()["type"]!!.jsonPrimitive.content)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `stream with response done completes and unknown events are skipped`() = runBlocking {
         val server = server(
             sse(

@@ -69,7 +69,11 @@ public class WebFetchTool : AgentTool {
         }
         val window = all.drop(start - 1).take(limit)
         val body = window.mapIndexed { index, line ->
-            "${(start + index).toString().padStart(4)}│${truncateLine(line)}"
+            // CRLF content (a Windows-authored text file) terminates its lines
+            // with "\r\n"; read_file strips the carriage return at render time,
+            // so web_fetch does the same and the two line renderings agree.
+            val cleaned = if (line.endsWith("\r")) line.dropLast(1) else line
+            "${(start + index).toString().padStart(4)}│${truncateLine(cleaned)}"
         }.joinToString("\n")
         val complete = start + window.size - 1 >= all.size
         val text = if (complete) {

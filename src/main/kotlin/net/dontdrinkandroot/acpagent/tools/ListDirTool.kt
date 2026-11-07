@@ -9,7 +9,7 @@ public class ListDirTool : AgentTool {
     override val name = "list_dir"
     override val description =
         "List the contents of a directory. Entries matching an exclusion rule " +
-                "(currently .env*.local) are omitted."
+                "(the .env*.local secret files and .ai/run.json) are omitted."
     override val kind = ToolKind.READ
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
