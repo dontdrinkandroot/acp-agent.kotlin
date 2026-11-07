@@ -69,27 +69,33 @@ internal fun isWithinAnyRoot(sessionCwd: String, roots: List<String>, path: Stri
  */
 private fun resolvedPath(p: Path): Path? {
     val abs = p.toAbsolutePath().normalize()
-    var suffix: Path? = null
+    var tailSource = abs
+    var pendingNames = 0
     val seen = mutableSetOf<Path>()
     var probe: Path = abs
     while (true) {
         if (!seen.add(probe)) return null
         val resolved = runCatching { probe.toRealPath() }.getOrNull()
-        if (resolved != null) {
-            return if (suffix == null) resolved else resolved.resolve(suffix)
-        }
+        if (resolved != null) return resolved.withTail(tailSource, pendingNames)
         if (Files.isSymbolicLink(probe)) {
             val target = probe.readSymbolicLink()
-            probe = (if (target.isAbsolute) target else probe.parent.resolve(target)).normalize()
-            if (suffix != null) {
-                probe = probe.resolve(suffix)
-                suffix = null
-            }
+            val next = (if (target.isAbsolute) target else probe.parent.resolve(target)).normalize()
+            probe = next.withTail(tailSource, pendingNames)
+            tailSource = probe
+            pendingNames = 0
             continue
         }
         val parent = probe.parent
         if (parent == null || parent == probe) return null
-        suffix = if (suffix == null) probe.fileName else probe.fileName.resolve(suffix)
+        pendingNames++
         probe = parent
     }
 }
+
+/**
+ * Appends the last [count] names of [source] to this path in a single step -
+ * rebuilding the tail once instead of once per walked-up level keeps the
+ * redundant work off the walk-up.
+ */
+private fun Path.withTail(source: Path, count: Int): Path =
+    if (count == 0) this else resolve(source.subpath(source.nameCount - count, source.nameCount))

@@ -72,4 +72,14 @@ class ContainmentTest {
         val dir = Files.createTempDirectory("acp-containment")
         assertTrue(isWithin(dir.toString(), dir.resolve("to-be-created.txt").toString()))
     }
+
+    @Test
+    fun `deep not yet existing path is resolved against its existing ancestor`() {
+        val base = Files.createTempDirectory("acp-containment")
+        val project = Files.createDirectory(base.resolve("project"))
+        val deep = (1..64).fold(project) { path, level -> path.resolve("level$level") }
+        val deepOutside = (1..64).fold(base) { path, level -> path.resolve("level$level") }
+        assertTrue(isWithin(project.toString(), deep.toString()))
+        assertFalse(isWithin(project.toString(), deepOutside.toString()))
+    }
 }
