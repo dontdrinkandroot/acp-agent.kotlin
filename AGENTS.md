@@ -785,7 +785,15 @@ own config directory (a
   match the basename at any depth. The designed future source is a gitignore-style
   `.aiignore` in the project root feeding `FileAccessExclusions.of()` - matching, error
   text, hiding and the prompt section already consume a rule list, so plumbing it changes
-  no tool code. Not excluded on purpose: `bash`/`run` commands (not inspected) and
+  no tool code. **It is one merged list, not a search-only prune list** (issue #77): a
+  matched path is refused to `read_file`/`edit_file`/`write_file`/`delete_file` (and to
+  `move_file`/`move_directory` as source and destination) exactly like `.ai/run.json`, so
+  naming an excluded path is no escape hatch. Directory patterns consequently need
+  gitignore's ancestor semantics - a rule matching a directory covers everything beneath
+  it, which the current `Rule.matches` lacks (it compares the exact cwd-relative path) -
+  and the search/list roots need validating as well: `list_dir`/`glob`/`grep` only filter
+  the children they visit, so an excluded directory named as `path` would still be walked.
+  Not excluded on purpose: `bash`/`run` commands (not inspected) and
   `delete_directory` (no content flow into the model context; `move_file`/`move_directory`
   do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded (
   issue #70)**: it is not a secret but a privilege
@@ -932,7 +940,11 @@ own config directory (a
   `list_dir`/`glob` list at most
   500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500 **while collecting** (only the 500
   smallest by path/line are kept, so a broad pattern
-  over a large tree cannot grow the tool's memory with the repository),
+  over a large tree cannot grow the tool's memory with the repository) **and stops
+  reading once that prefix is settled** (`BoundedMatches.admits`: a file whose relative
+  path sorts after the largest kept match is not read or scanned - the saving is
+  walk-order dependent, the kept set is not; a late-sorting binary/oversized file is
+  therefore cap-pruned instead of counted in the skip note),
   truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
   files over 1 MB and excluded files (see File-access exclusions), and reports skips as
   `...(N binary, oversized or excluded files skipped)`.

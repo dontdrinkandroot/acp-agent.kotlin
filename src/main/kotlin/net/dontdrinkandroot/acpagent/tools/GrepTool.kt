@@ -73,7 +73,16 @@ public class GrepTool : AgentTool {
                 skippedBinaryOrOversized++
                 return@walk
             }
-            if (fileFilter != null && !fileFilter.matches(relativeToRoot(root, f.toString()))) return@walk
+            val rel = relativeToRoot(root, f.toString())
+            if (fileFilter != null && !fileFilter.matches(rel)) return@walk
+            // Early exit: once the cap is full, a file sorting after the
+            // largest kept match cannot contribute, so its read and regex scan
+            // are skipped. How much this saves depends on the walk order (which
+            // is filesystem-dependent); the kept set does not. Because this
+            // check runs before the size/binary checks, a late-sorting
+            // binary/oversized file is cap-pruned instead of counted in the
+            // skip note.
+            if (!matches.admits(rel)) return@walk
             val size = SystemFileSystem.metadataOrNull(f)?.size ?: 0
             if (size > MAX_GREP_FILE_BYTES) {
                 skippedBinaryOrOversized++
@@ -86,7 +95,6 @@ public class GrepTool : AgentTool {
                     skippedBinaryOrOversized++
                     return@walk
                 }
-                val rel = relativeToRoot(root, f.toString())
                 visualLines(fileContent).forEachIndexed { idx, line ->
                     if (regex.containsMatchIn(line)) matches.add(GrepMatch(rel, idx + 1, truncateMatchLine(line)))
                 }
@@ -139,7 +147,7 @@ public class GrepTool : AgentTool {
     }.getOrNull()
 }
 
-private data class GrepMatch(val path: String, val line: Int, val text: String)
+internal data class GrepMatch(val path: String, val line: Int, val text: String)
 
 /**
  * The match accumulator of the directory search: keeps only the [limit]
@@ -147,15 +155,24 @@ private data class GrepMatch(val path: String, val line: Int, val text: String)
  * output cap instead of the size of the searched tree (a broad pattern in a
  * large repository would otherwise collect every match before the cap is
  * applied). The kept set is exactly the sorted prefix the cap renders, so
- * bounding the collection does not change the output.
+ * bounding the collection does not change the output. [admits] is the walk's
+ * early exit over the same invariant.
  */
-private class BoundedMatches(private val limit: Int) {
+internal class BoundedMatches(private val limit: Int) {
     private val kept = sortedSetOf(MATCH_ORDER)
 
     fun add(match: GrepMatch) {
         kept.add(match)
         if (kept.size > limit) kept.remove(kept.last())
     }
+
+    /**
+     * Whether a file at [relativePath] can still contribute to the kept
+     * prefix: every path does while the cap has room, and once it is full only
+     * paths at or before the largest kept match (whose earlier lines may still
+     * sort into the prefix).
+     */
+    fun admits(relativePath: String): Boolean = kept.size < limit || relativePath <= kept.last().path
 
     fun toSortedList(): List<GrepMatch> = kept.toList()
 

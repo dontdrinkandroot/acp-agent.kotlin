@@ -307,6 +307,45 @@ class GrepToolTest {
     }
 
     @Test
+    fun `a full match accumulator admits only paths that can still enter the kept prefix`() {
+        // The early exit of the directory walk: once the cap is full, a file
+        // whose relative path sorts after the largest kept match cannot
+        // contribute anything - every match inside it would be inserted and
+        // evicted again immediately.
+        val matches = BoundedMatches(2)
+        assertTrue(matches.admits("zz.txt"), "an empty accumulator admits every path")
+
+        matches.add(GrepMatch("b.txt", 1, "hit"))
+        matches.add(GrepMatch("m.txt", 4, "hit"))
+        assertTrue(matches.admits("b.txt"), "a path at or before the largest kept match can still contribute")
+        assertFalse(
+            matches.admits("z.txt"),
+            "a path sorting after the largest kept match is refused, so its read is skipped"
+        )
+    }
+
+    @Test
+    fun `a late-sorting subtree cannot displace the kept prefix`() = runBlocking {
+        // Whatever the walk order, the kept prefix is the earliest matches by
+        // path and line: the files below z/ sort after a.txt's 600 matches and
+        // must never show up once the cap is full.
+        val dir = tmpDir()
+        java.io.File(dir, "a.txt").writeText("hit\n".repeat(600))
+        java.io.File(dir, "z").mkdirs()
+        java.io.File(dir, "z/late.txt").writeText("hit\n".repeat(50))
+
+        val grep = GrepTool().execute(buildJsonObject { put("path", dir); put("pattern", "hit") }, testContext(dir))
+        assertFalse(grep.isError, grep.text)
+        val lines = grep.text.split("\n")
+        assertEquals(500, lines.size, "the match cap bounds the output")
+        assertEquals(
+            (1..500).map { "a.txt:$it:hit" },
+            lines,
+            "the kept prefix is the sorted prefix, not the walk order"
+        )
+    }
+
+    @Test
     fun `grep with a relative file path echoes the relative match lines`() = runBlocking {
         val dir = tmpDir()
         WriteFileTool().execute(
