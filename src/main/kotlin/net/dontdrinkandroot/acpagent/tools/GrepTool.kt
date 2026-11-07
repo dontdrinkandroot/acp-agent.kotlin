@@ -1,10 +1,8 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
-import kotlinx.io.readString
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
 
@@ -50,7 +48,7 @@ public class GrepTool : AgentTool {
                 searchDirectory(path, regex, glob, context)
             } else {
                 val regex = Regex(pattern)
-                searchSingleFile(path, rawPath, meta.size, regex, context)
+                searchSingleFile(path, rawPath, regex, context)
             }
         }
     }
@@ -63,14 +61,14 @@ public class GrepTool : AgentTool {
     private fun searchDirectory(root: String, regex: Regex, glob: String?, context: ToolContext): ToolResult {
         val fileFilter = glob?.let { globToRegex(it) }
         val base = Path(root)
-        var skippedBinaryOrOversized = 0
+        var skippedBinaryOrExcluded = 0
         // Bounded as the walk goes: only the first MAX_MATCHES matches by
         // path/line are kept, so a broad pattern over a large tree cannot grow
         // the tool's memory with the repository instead of with its output.
         val matches = BoundedMatches(MAX_MATCHES)
         walk(base, 0) { f ->
             if (context.fileExclusions.matchingRuleForPath(context.cwd, f.toString()) != null) {
-                skippedBinaryOrOversized++
+                skippedBinaryOrExcluded++
                 return@walk
             }
             val rel = relativeToRoot(root, f.toString())
@@ -79,42 +77,32 @@ public class GrepTool : AgentTool {
             // largest kept match cannot contribute, so its read and regex scan
             // are skipped. How much this saves depends on the walk order (which
             // is filesystem-dependent); the kept set does not. Because this
-            // check runs before the size/binary checks, a late-sorting
-            // binary/oversized file is cap-pruned instead of counted in the
-            // skip note.
+            // check runs before the read/binary checks, a late-sorting binary
+            // file is cap-pruned instead of counted in the skip note.
             if (!matches.admits(rel)) return@walk
-            val size = SystemFileSystem.metadataOrNull(f)?.size ?: 0
-            if (size > MAX_GREP_FILE_BYTES) {
-                skippedBinaryOrOversized++
+            // The scan stages its matches and discards them when the file
+            // turns out binary (NUL sniff over the whole file, issue #24).
+            val scan = scanStagedMatches(f, rel, regex) ?: return@walk
+            if (scan.binary) {
+                skippedBinaryOrExcluded++
                 return@walk
             }
-            readMatchingLines(f)?.let { fileContent ->
-                if (fileContent.contains('\u0000')) {
-                    // Binary file (NUL sniff): regex matches here would be
-                    // mojibake noise for the model.
-                    skippedBinaryOrOversized++
-                    return@walk
-                }
-                visualLines(fileContent).forEachIndexed { idx, line ->
-                    if (regex.containsMatchIn(line)) matches.add(GrepMatch(rel, idx + 1, truncateMatchLine(line)))
-                }
-            }
+            scan.matches.toSortedList().forEach { matches.add(it) }
         }
         val rendered = matches.toSortedList().map { "${it.path}:${it.line}:${it.text}" }
-        return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" } + skipSuffix(skippedBinaryOrOversized))
+        return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" } + skipSuffix(skippedBinaryOrExcluded))
     }
 
     /**
      * Searches a single explicitly named file (ripgrep model): the glob filter
      * does not apply to an explicit file path; exclusion rules and symlinks
-     * are refused; an unreadable, oversized or binary file is reported through
+     * are refused; an unreadable or binary file is reported through
      * the shared skip note instead of a bare "No matches". Match lines echo
      * the path argument as given.
      */
     private fun searchSingleFile(
         path: String,
         rawPath: String,
-        fileSize: Long,
         regex: Regex,
         context: ToolContext,
     ): ToolResult {
@@ -122,30 +110,49 @@ public class GrepTool : AgentTool {
         context.fileExclusions.matchingRuleForTarget(context.cwd, path)?.let {
             return ToolResult(exclusionError(path, it), true)
         }
-        val unsearchable = !Files.isReadable(java.nio.file.Path.of(path)) || fileSize > MAX_GREP_FILE_BYTES
-        val content = if (unsearchable) null else readMatchingLines(Path(path))
-        if (content == null || content.contains('\u0000')) {
+        val scan =
+            if (Files.isReadable(java.nio.file.Path.of(path))) scanStagedMatches(Path(path), rawPath, regex) else null
+        if (scan == null || scan.binary) {
             // Binary content (NUL sniff) would surface mojibake matches; a
             // named-but-unsearchable file must not read as a bare "No matches".
             return ToolResult("No matches" + skipSuffix(1))
         }
-        val rendered = mutableListOf<String>()
-        visualLines(content).forEachIndexed { idx, line ->
-            if (regex.containsMatchIn(line) && rendered.size < MAX_MATCHES) {
-                rendered += "$rawPath:${idx + 1}:${truncateMatchLine(line)}"
-            }
-        }
+        val rendered = scan.matches.toSortedList().map { "${it.path}:${it.line}:${it.text}" }
         return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" })
     }
 
     /**
-     * Reads [file] as text; null when it cannot be read. The read failure
-     * stays silent: unreadable files are skipped like the oversized ones.
+     * Streams [file] line by line and stages at most [MAX_MATCHES] matches of
+     * [regex] labeled with [pathLabel] (issue #24: no whole-file
+     * materialization). Matching runs on each line's kept prefix
+     * ([MAX_LINE_ACCUMULATION_BYTES], see [StreamingLineReader]) - a match
+     * past the cap inside one line is the documented trade-off. A NUL byte
+     * anywhere in the file (including clamped tails) marks it binary and the
+     * staged matches are discarded by the caller. Null when the file cannot
+     * be read (skipped silently like before).
      */
-    private fun readMatchingLines(file: Path): String? = runCatching {
-        SystemFileSystem.source(file).buffered().use { it.readString() }
+    private fun scanStagedMatches(file: Path, pathLabel: String, regex: Regex): StagedScan? = runCatching {
+        val staged = BoundedMatches(MAX_MATCHES)
+        val reader = StreamingLineReader(file)
+        try {
+            while (!reader.sawNul) {
+                // readLine() advances lineNumber past the line it returns, so
+                // the number of the line being read must be captured first.
+                val lineNumber = reader.lineNumber
+                val line = reader.readLine() ?: break
+                if (regex.containsMatchIn(line.text)) {
+                    staged.add(GrepMatch(pathLabel, lineNumber, truncateMatchLine(line.text)))
+                }
+            }
+            StagedScan(binary = reader.sawNul, matches = staged)
+        } finally {
+            reader.close()
+        }
     }.getOrNull()
 }
+
+/** Result of [GrepTool] staging: the per-file matches plus the binary verdict. */
+private class StagedScan(val binary: Boolean, val matches: BoundedMatches)
 
 internal data class GrepMatch(val path: String, val line: Int, val text: String)
 
@@ -183,10 +190,9 @@ internal class BoundedMatches(private val limit: Int) {
 
 private const val MAX_MATCHES = 500
 private const val MAX_MATCH_LINE_CHARS = 500
-private const val MAX_GREP_FILE_BYTES = 1L * 1024 * 1024
 
 private fun truncateMatchLine(line: String): String =
     if (line.length > MAX_MATCH_LINE_CHARS) line.take(MAX_MATCH_LINE_CHARS) + "..." else line
 
 private fun skipSuffix(count: Int): String =
-    if (count > 0) "\n...($count binary, oversized or excluded files skipped)" else ""
+    if (count > 0) "\n...($count binary or excluded files skipped)" else ""

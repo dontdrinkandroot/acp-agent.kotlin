@@ -64,15 +64,32 @@ class ReadFileToolTest {
         assertEquals(2000, lines[1].removePrefix("   2│").removeSuffix("... [truncated]").length)
     }
 
+    /**
+     * The size cap is no longer a usability wall (issue #24): windowed reads
+     * stream, so a file over 20 MB is inspectable - with the exact footer
+     * total and the per-line markers - instead of refused wholesale.
+     */
     @Test
-    fun `read refuses files over the size cap`() = runBlocking {
+    fun `a windowed read of a file over the old size cap succeeds with an exact total`() = runBlocking {
         val dir = tmpDir()
-        val path = "$dir/huge.bin"
-        java.io.FileOutputStream(path).use { it.write(ByteArray(21 * 1024 * 1024) { 0 }) } // 21 MB of NULs
-        val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 1) }, testContext(dir))
-        assertTrue(read.isError)
-        assertTrue(read.text.contains("too large"), read.text)
-        assertTrue(read.text.contains("bash"), read.text)
+        val path = "$dir/huge.txt"
+        java.io.BufferedOutputStream(java.io.FileOutputStream(path)).use { out ->
+            repeat(3000) { i ->
+                out.write(("L$i-" + "p".repeat(6997) + "\n").toByteArray())
+            }
+        }
+        val read = ReadFileTool().execute(
+            buildJsonObject { put("path", path); put("line", 2); put("limit", 2) },
+            testContext(dir)
+        )
+        assertFalse(read.isError, read.text)
+        val lines = read.text.split("\n")
+        assertEquals(4, lines.size, read.text)
+        assertTrue(lines[0].startsWith("   2│L1-"), lines[0])
+        assertTrue(lines[0].endsWith("... [truncated]"), lines[0])
+        assertTrue(lines[1].startsWith("   3│L2-"), lines[1])
+        assertTrue(lines[1].endsWith("... [truncated]"), lines[1])
+        assertEquals("(Showing lines 2-3 of 3000. Use line=4 and limit to continue.)", lines[3])
     }
 
     @Test
@@ -162,6 +179,26 @@ class ReadFileToolTest {
         val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 10) }, testContext(dir))
         assertFalse(read.isError, read.text)
         assertEquals("(empty content)", read.text)
+    }
+
+    /**
+     * The per-line clamp must cover the client fs-proxy path too (issue #24
+     * review): [LocalFileStore] clamps in the store, but the proxy passes
+     * content through - without a render-time clamp a minified single line
+     * floods the model context unclamped and unmarked.
+     */
+    @Test
+    fun `a huge single line from the fs proxy is clamped at render with a marker`() = runBlocking {
+        val dir = tmpDir()
+        val longLine = "z".repeat(5000)
+        val ctx = testContext(dir, fileStore = ClientFileStore(RecordingFsClient(readContent = longLine)))
+        val read = ReadFileTool().execute(buildJsonObject { put("path", "$dir/minified.txt"); put("limit", 3) }, ctx)
+        assertFalse(read.isError, read.text)
+        val lines = read.text.split("\n")
+        assertEquals(1, lines.size, read.text)
+        assertTrue(lines[0].startsWith("   1│z"), lines[0])
+        assertTrue(lines[0].endsWith("... [truncated]"), lines[0])
+        assertEquals(2000, lines[0].removePrefix("   1│").removeSuffix("... [truncated]").length)
     }
 
     @Test

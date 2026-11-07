@@ -230,29 +230,38 @@ class GrepToolTest {
         assertEquals("Refusing to search a symlink: $dir/link.txt", grep.text)
     }
 
+    /**
+     * A binary file is skipped even when it contains matching text: the scan
+     * stages its matches and discards them on the NUL verdict (issue #24).
+     */
     @Test
     fun `grep skips a binary file as path with the skip note`() = runBlocking {
         val dir = tmpDir()
-        java.io.FileOutputStream("$dir/blob.bin").use { it.write(byteArrayOf(0, 1, 2, 3)) }
+        java.io.FileOutputStream("$dir/blob.bin").use { it.write("needle\n\u0000\u0001\u0002".toByteArray()) }
 
         val grep = GrepTool().execute(
             buildJsonObject { put("path", "$dir/blob.bin"); put("pattern", "needle") },
             testContext(dir)
         )
         assertFalse(grep.isError, "a binary file must be skipped, not an error: ${grep.text}")
-        assertEquals("No matches\n...(1 binary, oversized or excluded files skipped)", grep.text)
+        assertEquals("No matches\n...(1 binary or excluded files skipped)", grep.text)
     }
 
+    /**
+     * The 1 MB skip is gone (issue #24): a large single file is searched like
+     * any other (its single giant line clamps visibly), while an unreadable
+     * one is still reported through the skip note.
+     */
     @Test
-    fun `grep skips an oversized or unreadable file as path with the skip note`() = runBlocking {
+    fun `grep searches a large file as path and skips an unreadable one with the note`() = runBlocking {
         val dir = tmpDir()
-        // over the 1 MB cap
+        // way over the old 1 MB cap, one giant line
         java.io.FileOutputStream("$dir/big.log").use { it.write(ByteArray(1024 * 1024 + 1) { 'x'.code.toByte() }) }
         java.io.FileOutputStream("$dir/locked.txt").use { it.write("needle".toByteArray()) }
         val nioLocked = java.nio.file.Path.of("$dir/locked.txt")
         nioLocked.toFile().setReadable(false)
         // Read-trusting environments (e.g. tests running as root) cannot exercise
-        // the unreadable half; the oversized half still runs everywhere.
+        // the unreadable half; the large-file half still runs everywhere.
         if (java.nio.file.Files.isReadable(nioLocked)) {
             println("Skipping unreadable-file case: process can read chmod-000 files (likely running as root)")
         }
@@ -261,16 +270,44 @@ class GrepToolTest {
             buildJsonObject { put("path", "$dir/big.log"); put("pattern", "x") },
             testContext(dir)
         )
-        assertFalse(grep.isError, "an oversized file must be skipped, not an error: ${grep.text}")
-        assertEquals("No matches\n...(1 binary, oversized or excluded files skipped)", grep.text)
+        assertFalse(grep.isError, grep.text)
+        assertEquals("$dir/big.log:1:" + "x".repeat(500) + "...", grep.text)
         if (!java.nio.file.Files.isReadable(nioLocked)) {
             val locked = GrepTool().execute(
                 buildJsonObject { put("path", "$dir/locked.txt"); put("pattern", "needle") },
                 testContext(dir)
             )
             assertFalse(locked.isError, "an unreadable file must be skipped, not an error: ${locked.text}")
-            assertEquals("No matches\n...(1 binary, oversized or excluded files skipped)", locked.text)
+            assertEquals("No matches\n...(1 binary or excluded files skipped)", locked.text)
         }
+    }
+
+    /**
+     * The matching trade-off of the streaming scan (issue #24): matching runs
+     * on the reader's kept prefix ([MAX_LINE_ACCUMULATION_BYTES]), so a
+     * needle past the accumulation cap *inside one line* is not found -
+     * documented and deliberate (gemini-cli's grep has the same blindness
+     * past its display clamp). The prefix itself still matches and renders
+     * with its visible truncation marker.
+     */
+    @Test
+    fun `grep matches within the kept line prefix and misses matches past the accumulation cap`() = runBlocking {
+        val dir = tmpDir()
+        java.io.FileOutputStream("$dir/past.txt").use {
+            it.write(("x".repeat(MAX_LINE_ACCUMULATION_BYTES + 100) + "needle\n").toByteArray())
+        }
+        java.io.FileOutputStream("$dir/within.txt").use {
+            it.write(("needle" + "x".repeat(70_000) + "\n").toByteArray())
+        }
+
+        val grep = GrepTool().execute(buildJsonObject { put("path", dir); put("pattern", "needle") }, testContext(dir))
+        assertFalse(grep.isError, grep.text)
+        assertTrue(grep.text.startsWith("within.txt:1:needle"), grep.text)
+        assertTrue(grep.text.endsWith("..."), "a clamped match line must be truncated visibly: ${grep.text}")
+        assertFalse(
+            grep.text.contains("past.txt"),
+            "a match past the accumulation cap is the documented trade-off: ${grep.text}"
+        )
     }
 
     @Test
@@ -380,11 +417,11 @@ class GrepToolTest {
     }
 
     @Test
-    fun `grep skips binary and oversized files with a note`() = runBlocking {
+    fun `grep searches large files and skips binary ones with a note`() = runBlocking {
         val dir = tmpDir()
         // NUL byte -> binary sniff
         java.io.FileOutputStream("$dir/blob.bin").use { it.write(byteArrayOf(0, 1, 2, 3)) }
-        // over the 1 MB cap
+        // way over the old 1 MB cap, one giant line
         java.io.FileOutputStream("$dir/big.log").use { it.write(ByteArray(1024 * 1024 + 1) { 'x'.code.toByte() }) }
         WriteFileTool().execute(
             buildJsonObject { put("path", "$dir/a.txt"); put("content", "findme") },
@@ -396,8 +433,8 @@ class GrepToolTest {
         assertFalse(grep.isError, grep.text)
         assertTrue(grep.text.contains("a.txt:1:findme"), grep.text)
         assertFalse(grep.text.contains("blob.bin"), grep.text)
-        assertFalse(grep.text.contains("big.log"), grep.text)
-        assertTrue(grep.text.contains("binary, oversized or excluded files skipped"), grep.text)
+        assertTrue(grep.text.contains("big.log:1:"), "a large file must be searched: ${grep.text}")
+        assertTrue(grep.text.contains("binary or excluded files skipped"), grep.text)
     }
 
     @Test
@@ -442,7 +479,7 @@ class GrepToolTest {
         assertFalse(grep.isError, grep.text)
         assertTrue(grep.text.contains("code.txt:1:SECRET=1"), grep.text)
         assertFalse(grep.text.contains(".env.local"), grep.text)
-        assertTrue(grep.text.contains("binary, oversized or excluded files skipped"), grep.text)
+        assertTrue(grep.text.contains("binary or excluded files skipped"), grep.text)
     }
 
     @Test

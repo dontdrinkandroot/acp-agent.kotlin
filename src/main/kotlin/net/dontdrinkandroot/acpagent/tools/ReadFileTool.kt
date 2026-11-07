@@ -59,7 +59,8 @@ public class ReadFileTool : AgentTool {
 
     /**
      * Renders the read window as 1-indexed numbered lines: a fixed-width line
-     * number followed by a '│' delimiter, then the line content verbatim —
+     * number followed by a '│' delimiter, then the line content verbatim
+     * (clamped at [MAX_LINE_CHARS] via [truncateLine] - see the body) —
      * leading indentation is preserved exactly after the '│'. CRLF carriage
      * returns and the phantom trailing empty line (a trailing newline is a
      * line terminator, not an extra empty line) are stripped so CRLF and
@@ -75,7 +76,12 @@ public class ReadFileTool : AgentTool {
         if (lines.isEmpty()) return "(empty content)"
         val body = lines.mapIndexed { index, text ->
             val cleaned = if (text.endsWith("\r")) text.dropLast(1) else text
-            "${(start + index).toString().padStart(4)}│$cleaned"
+            // The shared per-line cap at the render boundary (issue #24): the
+            // local store already clamps, but the client fs proxy passes lines
+            // through verbatim - clamping here covers both backends
+            // identically (truncateLine is idempotent over an already-clamped
+            // line: take(2000) drops exactly the re-appended suffix).
+            "${(start + index).toString().padStart(4)}│${truncateLine(cleaned)}"
         }.joinToString("\n")
         return if (footer) {
             val shownEnd = start + lines.size - 1

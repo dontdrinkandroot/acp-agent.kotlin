@@ -244,7 +244,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
                                      # ClientFileStore (fs proxy,
                                      # windowing: whole-file fallback + EOF probe, fixes #6),
-                                     # StreamingLineReader (SourceLine = text + terminator status) +
+                                     # StreamingLineReader (SourceLine = text + terminator status +
+                                     # truncated; 64 KB per-line accumulation cap + NUL sniff,
+                                     # issue #24) + countVisualLines (newline byte scan for exact
+                                     # totals) +
                                      # the shared truncateLine line cap and visualLines/rawVisualLines (visual-line
                                      # convention: trailing newline = terminator, "" = 0 lines)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
@@ -949,13 +952,23 @@ own config directory (a
   and the output captured so far is snapshotted, never discarded (before this, such a command
   surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
   output. `read_file` requires `limit` (1..2000 lines; anything else is
-  rejected before I/O), refuses files over **20 MB** (hardcoded, with a "use bash" hint),
-  refuses non-regular files (`not a regular file: <path>` - a FIFO/device would otherwise
+  rejected before I/O), refuses non-regular files (`not a regular file: <path>` - a FIFO/device would otherwise
   block on `open(2)` or stream forever),
-  truncates lines over **2000 chars** with `... [truncated]`, and errors with
-  `line N is past the end of the file (M lines)` when `line` is beyond EOF (the local store
-  streams via the byte-level `StreamingLineReader` - a chunked `InputStreamReader` was
-  observed to spin forever on zero-char reads under JDK 25). `read_file`'s `line` and
+  truncates lines over **2000 chars** with `... [truncated]` (clamped in
+  `ReadFileTool.formatRead` at the render boundary, so the client fs-proxy path clamps
+  identically), and errors with
+  `line N is past the end of the file (M lines)` when `line` is beyond EOF. There is **no
+  whole-file size cap on `read_file`** (issue #24): the local store streams via the
+  byte-level `StreamingLineReader` (a chunked `InputStreamReader` was
+  observed to spin forever on zero-char reads under JDK 25) and early-exits once the window
+  is complete, so a windowed read of a huge file is cheap; the footer's exact `total` and
+  the past-EOF count come from a newline byte scan (`countVisualLines`, no decoding).
+  Per-line accumulation is capped at **64 KB** (`MAX_LINE_ACCUMULATION_BYTES`: the kept
+  prefix is stored, the tail is skip-scanned to the next `\n` and the line is marked
+  truncated) - the no-newline-file (minified bundle) memory bound, and the cap that keeps
+  the file caps off `read_file`/`grep`; the kept prefix is always >= 16384 chars, so the
+  2000/500-char display caps always mark a clamped line visibly (never silent truncation).
+  `read_file`'s `line` and
   `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE` (issue #45): a value outside
   the Int range used to overflow at the `toInt()` narrowing to a negative start line,
   defeating the window/past-EOF guards and rendering negative line numbers; it is now a
@@ -966,11 +979,16 @@ own config directory (a
   over a large tree cannot grow the tool's memory with the repository) **and stops
   reading once that prefix is settled** (`BoundedMatches.admits`: a file whose relative
   path sorts after the largest kept match is not read or scanned - the saving is
-  walk-order dependent, the kept set is not; a late-sorting binary/oversized file is
+  walk-order dependent, the kept set is not; a late-sorting binary file is
   therefore cap-pruned instead of counted in the skip note),
-  truncates each matched line at 500 chars (`...` suffix), skips binary files (NUL sniff),
-  files over 1 MB and excluded files (see File-access exclusions), and reports skips as
-  `...(N binary, oversized or excluded files skipped)`.
+  truncates each matched line at 500 chars (`...` suffix), and skips binary files (NUL sniff
+  over the whole file via `StreamingLineReader.sawNul` - the per-file matches are staged and
+  discarded on the binary verdict) and excluded files (see File-access exclusions),
+  reporting skips as
+  `...(N binary or excluded files skipped)`. `grep` streams its lines (no whole-file
+  `split`, issue #24) and there is **no 1 MB file skip** anymore; matching runs on each
+  line's kept 64 KB prefix, so a match past the accumulation cap *inside one line* is the
+  documented trade-off (pinned by `GrepToolTest`).
   `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
   operation for `edit_file` matching and the diff pre-reads - display reads (`readFile`) may
   be truncated, raw reads must not be. Its exception types are part of the contract (`FileAbsentException` = no such
@@ -1528,10 +1546,12 @@ stays a task input instead of a stale constant.
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
 timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` upper bound at
-`Int.MAX_VALUE` (issue #45), 20 MB size refusal, 2000-char-per-line
+`Int.MAX_VALUE` (issue #45), no size refusal on windowed reads with `readRaw`'s kept 20 MB
+cap, the 64 KB per-line accumulation cap + NUL sniff of `StreamingLineReader` and the
+`countVisualLines` byte scan (issue #24), 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
-binary/oversized skips, the `.git` walker skip) are unit-tested in
-`BashToolTest`/`ReadFileToolTest`/`ListDirToolTest`/`GrepToolTest`; move/delete
+binary/excluded skips, the `.git` walker skip) are unit-tested in
+`BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
 payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip,
 the strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
