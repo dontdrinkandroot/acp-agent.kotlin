@@ -1,7 +1,9 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import kotlinx.serialization.SerializationException
+import net.dontdrinkandroot.acpagent.tools.STALE_TEMP_AGE_MILLIS
 import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import kotlin.test.*
 
 class SessionStoreTest {
@@ -105,6 +107,63 @@ class SessionStoreTest {
         assertEquals("plan", store.load("sess_0123456789abcdef")?.mode)
         assertEquals(1, dir.toFile().list { _, name -> name.endsWith(".json") }?.size)
         assertEquals(0, dir.toFile().list { _, name -> name.endsWith(".tmp") }?.size)
+    }
+
+    @Test
+    fun `save sweeps stale session temp files and keeps in-flight ones`() {
+        val (store, dir) = store()
+        val stale = dir.resolve("session-stale123.tmp")
+        Files.writeString(stale, "orphaned history")
+        Files.setLastModifiedTime(
+            stale,
+            FileTime.fromMillis(System.currentTimeMillis() - 2 * STALE_TEMP_AGE_MILLIS),
+        )
+        val inFlight = dir.resolve("session-fresh456.tmp")
+        Files.writeString(inFlight, "concurrent save")
+
+        store.save(sampleRecord())
+
+        assertFalse(Files.exists(stale), "a crashed save's temp file is swept")
+        assertTrue(Files.exists(inFlight), "a concurrent save's in-flight temp file stays")
+        assertEquals("build", store.load("sess_0123456789abcdef")?.mode)
+    }
+
+    @Test
+    fun `the temp sweep is throttled - saves within the interval do not rescan`() {
+        val (store, dir) = store()
+        store.save(sampleRecord())
+        val later = dir.resolve("session-later999.tmp")
+        Files.writeString(later, "orphaned after the first sweep")
+        Files.setLastModifiedTime(
+            later,
+            FileTime.fromMillis(System.currentTimeMillis() - 2 * STALE_TEMP_AGE_MILLIS),
+        )
+
+        store.save(sampleRecord().copy(mode = "plan"))
+
+        assertTrue(
+            Files.exists(later),
+            "save runs after every tool call - a rescan per save would rescan the same debris"
+        )
+    }
+
+    @Test
+    fun `the temp sweep runs again once the interval elapsed`() {
+        var clock = System.currentTimeMillis()
+        val dir = Files.createTempDirectory("acp-agent-session-store")
+        val store = SessionStore(dir) { clock }
+        store.save(sampleRecord())
+        val later = dir.resolve("session-later999.tmp")
+        Files.writeString(later, "orphaned after the first sweep")
+        Files.setLastModifiedTime(
+            later,
+            FileTime.fromMillis(System.currentTimeMillis() - 2 * STALE_TEMP_AGE_MILLIS),
+        )
+
+        clock += 2 * STALE_TEMP_AGE_MILLIS
+        store.save(sampleRecord().copy(mode = "plan"))
+
+        assertFalse(Files.exists(later), "debris of crashed sibling processes self-heals on later sweeps")
     }
 
     @Test

@@ -237,7 +237,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
     tools/WebContentConverter.kt     # jsoup HTML -> line-based text (block tags, pre, li), pass-through otherwise
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
-    tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move), isSymbolicLink
+    tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move),
+                                     # sweepStaleTempFiles (crash-orphaned *.tmp, issue #20),
+                                     # isSymbolicLink
     tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
     tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
                                      # ClientFileStore (fs proxy,
@@ -506,7 +508,19 @@ own config directory (a
   reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
   (same `NonCancellable` flush before the resources go away) and **at
   shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
-  Shutdown; issue #17). The record (`agent/SessionRecord.kt`) holds history (Responses-API
+  Shutdown; issue #17). **Crash-orphaned temp files are swept** (issue #20): the `finally`
+  of the atomic write covers in-process failures only - a SIGKILL between write and move
+  strands `session-*.tmp` files (0600, holding full history, invisible to `list()`, never
+  cleaned before). `save()`/`list()` therefore run `sweepStaleTempFiles`
+  (`tools/AtomicWrite.kt`) at most once per `STALE_TEMP_AGE_MILLIS` (1h - `save` runs after
+  every tool call, an unconditional scan would rescan the same debris on every persist; the
+  throttle still self-heals against debris of crashed sibling processes sharing the sessions
+  dir) and deletes only regular `<namePrefix><random>.tmp` files last modified more than 1h
+  ago - a concurrent writer's fresh temp, symlinks and other names are untouched (the age
+  gate is load-bearing: several agent processes share one sessions directory).
+  `writeAtomically` sweeps the target's stale temps on every call (unthrottled on purpose:
+  its only caller is the rare `.ai/run.json` write, so `run.json*.tmp` debris in the project
+  dir is cleaned the same way). The record (`agent/SessionRecord.kt`) holds history (Responses-API
   wire items as raw `JsonObject`s from `llm/models/ResponsesWireModels.kt` via the shared
   `llmWireJson`; reasoning items are never persisted - live-only, issue #75), mode, title
   (first user message, 72 code points), model, reasoning, plan and
@@ -1483,7 +1497,9 @@ stays a task input instead of a stale constant.
   identical call in a new turn executes again; abnormal-end note chunks: content_filter
   and truncated/wind-down ends always emit their note to the client, streamed partial
   text is never re-emitted - issue #30),
-  `SessionStoreTest` (outcome round-trip + legacy decode), `SessionStateProviderSelectionTest`
+  `SessionStoreTest` (outcome round-trip + legacy decode; the issue #20 stale-temp sweep:
+  a crashed save's temp file is swept while a concurrent save's in-flight temp stays, the
+  sweep is throttled to once per interval and resets after it), `SessionStateProviderSelectionTest`
   (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
   `SessionConfigOptionsTest` (provider option
   listing/validation/reset/self-heal, manual pick survives an outage, blank/`auto` tag exclusion),
@@ -1533,7 +1549,10 @@ fallback) is pinned in `PermissionAndFileStoreTest` (strict `SlicingFsClient` /
 `FailingProbeFsClient` doubles) and `ReadFileToolTest` (rendering). The
 calc expression language (operator precedence incl. right-associative `^`,
 functions/constants, positional error messages, length/nesting caps) is unit-tested in
-`CalcExpressionTest`/`CalcToolTest`.
+`CalcExpressionTest`/`CalcToolTest`. The stale-temp sweep of crashed atomic writes (issue #20) is pinned in
+`AtomicWriteTest` (stale temps of the name prefix deleted, fresh
+temps and unrelated names kept, symlinks/directories never touched, and the
+`writeAtomically` sweep of the target's temp naming).
 
 **Tool schema pins**: every registered local tool pins its `parameters` schema as an
 encoded string (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive —

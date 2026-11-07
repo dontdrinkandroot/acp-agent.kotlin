@@ -2,18 +2,22 @@ package net.dontdrinkandroot.acpagent.agent
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.SerializationException
-import kotlinx.serialization.encodeToString
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.tools.STALE_TEMP_AGE_MILLIS
+import net.dontdrinkandroot.acpagent.tools.TEMP_SUFFIX
 import net.dontdrinkandroot.acpagent.tools.moveAtomically
+import net.dontdrinkandroot.acpagent.tools.sweepStaleTempFiles
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.atomic.AtomicLong
 
 internal const val SESSION_ID_PREFIX = "sess_"
 internal const val SESSION_ID_LENGTH = SESSION_ID_PREFIX.length + 16
 private const val STATE_DIR_NAME = "state"
 private const val APP_STATE_DIR = "ddr-acp-agent"
 private const val SESSIONS_DIR = "sessions"
+private const val SESSION_TEMP_PREFIX = "session-"
 
 /**
  * Reports whether [id] is a session id this agent could have minted
@@ -32,18 +36,24 @@ internal fun isValidSessionId(id: String): Boolean =
  * Persists session records under the XDG state directory, one file per session.
  * Writes are atomic (temp file + move) and best-effort POSIX-restricted.
  */
-internal class SessionStore(private val sessionsDir: Path) {
+internal class SessionStore(
+    private val sessionsDir: Path,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+) {
 
     constructor() : this(resolveSessionsDir())
 
     private val logger = KotlinLogging.logger {}
+
+    private val lastTempSweepAt = AtomicLong(0)
 
     fun save(record: SessionRecord) {
         val id = record.sessionId
         require(isValidSessionId(id)) { "invalid session id \"$id\"" }
         Files.createDirectories(sessionsDir)
         applyPosixPermissions(sessionsDir, "rwx------")
-        val temp = Files.createTempFile(sessionsDir, "session-", ".tmp")
+        sweepStaleTempFilesIfDue()
+        val temp = Files.createTempFile(sessionsDir, SESSION_TEMP_PREFIX, TEMP_SUFFIX)
         try {
             applyPosixPermissions(temp, "rw-------")
             Files.writeString(temp, llmWireJson.encodeToString(record))
@@ -70,6 +80,7 @@ internal class SessionStore(private val sessionsDir: Path) {
      */
     fun list(): List<SessionRecord> {
         if (!Files.isDirectory(sessionsDir)) return emptyList()
+        sweepStaleTempFilesIfDue()
         val records = mutableListOf<SessionRecord>()
         Files.newDirectoryStream(sessionsDir).use { entries ->
             for (entry in entries) {
@@ -91,6 +102,22 @@ internal class SessionStore(private val sessionsDir: Path) {
     }
 
     private fun path(id: String): Path = sessionsDir.resolve("$id.json")
+
+    /**
+     * Sweeps crash-orphaned temp files at most once per [STALE_TEMP_AGE_MILLIS]:
+     * `save` runs after every executed tool call, so an unconditional scan
+     * would rescan the same debris on every persist. The throttle still
+     * self-heals against temp files of crashed sibling processes sharing this
+     * directory (host and container agents see one sessions directory).
+     */
+    private fun sweepStaleTempFilesIfDue() {
+        val now = nowMillis()
+        val last = lastTempSweepAt.get()
+        if (now - last < STALE_TEMP_AGE_MILLIS) return
+        if (lastTempSweepAt.compareAndSet(last, now)) {
+            sweepStaleTempFiles(sessionsDir, SESSION_TEMP_PREFIX, now)
+        }
+    }
 
     private fun applyPosixPermissions(path: Path, permissions: String) {
         runCatching {
