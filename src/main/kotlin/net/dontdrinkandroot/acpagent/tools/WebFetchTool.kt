@@ -16,8 +16,9 @@ public class WebFetchTool : AgentTool {
                 "source code) pass through. Each line is prefixed with a fixed-width 1-based line number and " +
                 "a '│' delimiter. When the window does not cover the whole content a footer shows the shown " +
                 "range and the 'startLine' to continue from. Non-text content (PDF, images, archives) is " +
-                "refused with a hint to download it via bash instead. Private/loopback hosts are refused " +
-                "unless the operator has enabled them (tools.webFetch.allowPrivate)."
+                "refused with a hint to download it via bash instead. Non-public hosts (loopback, private " +
+                "ranges, CGNAT, IPv6 unique-local, multicast, ...) are refused unless the operator has " +
+                "enabled them (tools.webFetch.allowPrivate)."
     override val kind = ToolKind.FETCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(

@@ -817,7 +817,16 @@ own config directory (a
   `tools.bash.timeoutSeconds`, whole process tree) + `web_fetch` (HTTP (S) GET via a
   per-call ktor CIO client, `requestTimeout = 0` + 60s socket idle; manual redirect
   loop (max 5) with per-hop SSRF re-validation - loopback/link-local/site-local/
-  any-local IPs and `localhost`/`*.local`/`.internal` by name refused unless
+  any-local IPs, multicast and the IANA special-purpose ranges the InetAddress
+  flags miss (CGNAT `100.64/10` incl. Tailscale + the Alibaba metadata service,
+  IPv6 ULA `fc00::/7` incl. `fd00:ec2::254`, benchmarking `198.18/15`, `0.0.0.0/8`,
+  `192.0.0/24`, `192.88.99/24`, `240/4`, the three TEST-NETs, `100::/64`,
+  `100:0:0:1::/64`, `2001::/23` (Teredo, IPv6 benchmarking, ...), `3fff::/20`,
+  `5f00::/16`; the IPv6 transition prefixes `64:ff9b::/96`, `64:ff9b:1::/48`
+  (NAT64) and `2002::/16` (6to4) are blocked because they embed an IPv4 address
+  a relay would translate back to a private target; table `SPECIAL_PURPOSE_NETWORKS`,
+  IPv4-mapped literals arrive as `Inet4Address` via the JDK) and `localhost`/`*.local`/
+  `.internal` by name refused unless
   `tools.webFetch.allowPrivate: true`, residual validate-then-fetch TOCTOU documented;
   only http/https; gzip/deflate via `ktor-client-encoding` - the encoders must be
   registered in the `install(ContentEncoding)` config block, the bare plugin rejects
@@ -1492,8 +1501,11 @@ stays a task input instead of a stale constant.
   HTML conversion, JSON pass-through, paging + footer, declared-binary refusal,
   NUL sniff, gzip, redirects, SSRF block/opt-out, scheme refusal, oversize,
   strict args, HTTP error statuses, tool metadata; the redirect-hop SSRF
-  re-validation (public host redirecting into a private host) is pinned against
-  a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; RFC 5737 IP literal);
+  re-validation (public host redirecting into a private host) and the
+  special-purpose range table (blocked samples + the adjacent addresses just
+  outside every range, so a prefix-mask off-by-one fails; a bracketed IPv6
+  literal, and the IPv4-mapped literal as a regression pin) are pinned against
+  a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; public IP literals);
   black-box e2e in
   `E2eWebFetchTest` (prompt-free plan-mode fetch with
   `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).

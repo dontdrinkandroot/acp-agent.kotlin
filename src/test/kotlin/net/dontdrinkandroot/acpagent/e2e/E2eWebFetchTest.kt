@@ -120,7 +120,7 @@ class E2eWebFetchTest : E2eAgentTest() {
                     assertEquals(ToolCallStatus.FAILED, resultUpdates.last().status)
                     val output = resultUpdates.last().rawOutput.toString()
                     assertTrue(
-                        output.contains("private or loopback"),
+                        output.contains("non-public"),
                         "the SSRF guard must refuse the loopback host: $output",
                     )
                     assertTrue(

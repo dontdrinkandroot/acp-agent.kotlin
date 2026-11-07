@@ -7,6 +7,7 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
+import net.dontdrinkandroot.acpagent.tools.WebFetcher.SPECIAL_PURPOSE_NETWORKS
 import net.dontdrinkandroot.acpagent.tools.WebFetcher.defaultClient
 import java.net.InetAddress
 import java.nio.charset.Charset
@@ -176,16 +177,17 @@ internal object WebFetcher {
         normalize(java.net.URI(base).resolve(location).toString())
 
     /**
-     * SSRF guard: only http(s) URLs, and hosts resolving to loopback,
-     * link-local, site-local (private ranges) or any-local (0.0.0.0) addresses
-     * are refused - unless [allowPrivate] opted out
+     * SSRF guard: only http(s) URLs, and hosts resolving to a non-public
+     * address are refused - unless [allowPrivate] opted out
      * (`tools.webFetch.allowPrivate`, also what tests against a local mock
-     * server need). `localhost` and friends are blocked by name even without
-     * DNS. Every redirect hop is validated again: `resolve` + this prevent a
-     * public URL from redirecting the fetch into the private network.
-     * Residual risk (documented, accepted for v1): validate-then-fetch has a
-     * TOCTOU window a DNS rebinding attack could exploit; full DNS pinning is
-     * not exposed by the ktor CIO engine.
+     * server need). Non-public means the InetAddress loopback/link-local/
+     * site-local/any-local/multicast flags plus the special-purpose ranges the
+     * flags miss (see [SPECIAL_PURPOSE_NETWORKS]). `localhost` and friends are
+     * blocked by name even without DNS. Every redirect hop is validated again:
+     * `resolve` + this prevent a public URL from redirecting the fetch into the
+     * private network. Residual risk (documented, accepted for v1):
+     * validate-then-fetch has a TOCTOU window a DNS rebinding attack could
+     * exploit; full DNS pinning is not exposed by the ktor CIO engine.
      */
     internal fun validateHop(url: String, allowPrivate: Boolean) {
         val parsed = java.net.URI(url).toURL()
@@ -194,15 +196,98 @@ internal object WebFetcher {
         if (looksPrivateByName(host)) throw WebFetchException(blockedMessage(host))
         val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull().orEmpty()
         if (addresses.isEmpty()) return // DNS unavailable: cannot prove it private; caps still bound the fetch
-        if (addresses.any { it.isLoopbackAddress || it.isLinkLocalAddress || it.isSiteLocalAddress || it.isAnyLocalAddress }) {
-            throw WebFetchException(blockedMessage(host))
-        }
+        if (addresses.any(::isNonPublic)) throw WebFetchException(blockedMessage(host))
     }
+
+    /**
+     * True for the addresses the tool must not reach: the [InetAddress]
+     * classification flags (loopback, link-local, site-local, any-local),
+     * multicast and the IANA special-purpose registry ranges the flags miss.
+     * The flags alone leave holes - CGNAT (`100.64.0.0/10`,
+     * e.g. Tailscale nodes and the Alibaba metadata service), IPv6 unique-local
+     * (`fc00::/7`, e.g. the `fd00:ec2::254` metadata service) and benchmarking
+     * (`198.18.0.0/15`) - and `isAnyLocalAddress` matches only the literal
+     * `0.0.0.0`, not the rest of `0.0.0.0/8` ("this network", which Linux routes
+     * to the local host). An IPv4-mapped literal never arrives here as IPv6:
+     * the JDK converts `::ffff:127.0.0.1` to an [java.net.Inet4Address].
+     */
+    internal fun isNonPublic(address: InetAddress): Boolean =
+        address.isLoopbackAddress ||
+                address.isLinkLocalAddress ||
+                address.isSiteLocalAddress ||
+                address.isAnyLocalAddress ||
+                address.isMulticastAddress ||
+                SPECIAL_PURPOSE_NETWORKS.any { it.contains(address) }
 
     private fun looksPrivateByName(host: String): Boolean {
         val name = host.lowercase(Locale.ROOT)
         return name == "localhost" || name.endsWith(".localhost") || name.endsWith(".local") || name.endsWith(".internal")
     }
+
+    /**
+     * A CIDR block, matched on the raw address bytes so IPv4 and IPv6 never
+     * compare against each other.
+     */
+    private class Network private constructor(private val prefix: ByteArray, private val prefixBits: Int) {
+
+        fun contains(address: InetAddress): Boolean {
+            val candidate = address.address
+            if (candidate.size != prefix.size) return false
+            val wholeBytes = prefixBits / 8
+            for (index in 0 until wholeBytes) {
+                if (candidate[index] != prefix[index]) return false
+            }
+            val remainingBits = prefixBits % 8
+            if (remainingBits == 0) return true
+            val mask = (0xFF shl (8 - remainingBits)) and 0xFF
+            return (candidate[wholeBytes].toInt() and mask) == (prefix[wholeBytes].toInt() and mask)
+        }
+
+        companion object {
+            fun of(cidr: String): Network {
+                val (literal, prefixBits) = cidr.split('/')
+                val prefix = InetAddress.getByName(literal).address
+                val bits = prefixBits.toInt()
+                require(bits in 0..prefix.size * 8) { "'$cidr' has an out-of-range prefix length" }
+                return Network(prefix, bits)
+            }
+        }
+    }
+
+    /**
+     * The IANA special-purpose registry entries this tool must not reach (IPv4
+     * and IPv6, diffable against `iana-ipv4/ipv6-special-registry`). The
+     * [InetAddress] flags already cover loopback, link-local, site-local
+     * (including the deprecated `fec0::/10`), any-local and multicast, so the
+     * table holds what they miss - plus every transition prefix that embeds an
+     * IPv4 address (`64:ff9b::/96`, `64:ff9b:1::/48`, `2002::/16`), because a
+     * relay would carry the request to a private v4 target. Entries the
+     * registry marks globally reachable (AS112, AMT, the PCP/TURN/DNS-SD
+     * anycast addresses) are not listed for their own sake; `192.0.0.0/24` and
+     * `2001::/23` block them as part of a blanket range, which costs nothing
+     * because nothing in those ranges serves fetchable content.
+     */
+    private val SPECIAL_PURPOSE_NETWORKS: List<Network> = listOf(
+        "0.0.0.0/8",          // "this network" (only the literal 0.0.0.0 is any-local)
+        "100.64.0.0/10",      // shared address space (CGNAT, Tailscale, Alibaba metadata)
+        "192.0.0.0/24",       // IETF protocol assignments
+        "192.0.2.0/24",       // TEST-NET-1
+        "192.88.99.0/24",     // 6to4 relay anycast (deprecated)
+        "198.18.0.0/15",      // benchmarking
+        "198.51.100.0/24",    // TEST-NET-2
+        "203.0.113.0/24",     // TEST-NET-3
+        "240.0.0.0/4",        // reserved + limited broadcast
+        "64:ff9b::/96",       // NAT64 translation
+        "64:ff9b:1::/48",     // local-use NAT64 translation
+        "100::/64",           // discard-only
+        "100:0:0:1::/64",     // dummy prefix
+        "2001::/23",          // IETF protocol assignments (Teredo, benchmarking, AMT, AS112, ORCHID, ...)
+        "2001:db8::/32",      // documentation
+        "2002::/16",          // 6to4 (embeds an IPv4 address)
+        "3fff::/20",          // documentation
+        "5f00::/16",          // SRv6 segment identifiers
+        "fc00::/7",           // unique local (the IPv6 counterpart of 10/8)
+    ).map(Network::of)
 
     /**
      * Content types the tool can render as text. Anything else (PDF, images,
@@ -254,6 +339,6 @@ internal object WebFetcher {
     }
 
     private fun blockedMessage(host: String): String =
-        "refusing to fetch private or loopback host '$host' " +
+        "refusing to fetch non-public host '$host' " +
                 "(the operator can allow it via tools.webFetch.allowPrivate)"
 }

@@ -26,7 +26,8 @@ edits your project, runs commands, and talks to LLMs via
 - **Web fetch** — a built-in, prompt-free `web_fetch` tool retrieves HTTP(S) pages
   as line-numbered text (HTML converted, JSON/markdown passed through), paged like
   `read_file`. Binary payloads are refused loudly (download via `bash` instead),
-  and private/loopback hosts are blocked unless you opt in with
+  and non-public hosts (private ranges, loopback, CGNAT, IPv6 unique-local,
+  multicast, ...) are blocked unless you opt in with
   `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=true`.
 - **Run configurations** — project-defined commands in `.ai/run.json` (also surfaced to the
   model as `run` tool configs) execute prompt-free in every mode; the model's `args` array is
@@ -220,7 +221,7 @@ Every key has a derived env variable: the path in UPPER_SNAKE, prefixed with
 | `DDR_ACP_AGENT_TOOLS_FS_PROXY`                      | `true`                         | `false` forces local file access even when the client offers the fs proxy.                                                                                                   |
 | `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`             | `100`                          | Tool-calling LLM iterations per prompt before a final text-only summary (>= 1).                                                                                              |
 | `DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`          | `600`                          | Shell command timeout, 1-3600 seconds (whole process tree is killed).                                                                                                        |
-| `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE`       | `false`                        | `true` lets `web_fetch` reach private/loopback hosts (blocked by default to prevent SSRF).                                                                                   |
+| `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE`       | `false`                        | `true` lets `web_fetch` reach private/loopback/CGNAT/ULA hosts (non-public addresses are blocked by default to prevent SSRF).                                                |
 | `DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS`               | `true`                         | `false` treats all MCP tools as untrusted: always ask, even when the server claims read-only.                                                                                |
 | `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`    | *(none)*                       | Comma-separated absolute paths: the read-only path tools run there without a prompt. Under the docker launcher this list **is** the read-only mount list.                    |
 | `DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES`    | *(none)*                       | Comma-separated absolute paths: the mutating path tools run there without a prompt (implies readable). Under the docker launcher this list **is** the read-write mount list. |
