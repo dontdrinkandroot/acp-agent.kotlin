@@ -100,16 +100,19 @@ internal suspend fun executeMove(
     successPrefix: String,
     collectEvidence: suspend (source: String, destination: String) -> MoveEvidence,
 ): ToolResult {
+    // Both arguments are decoded before either is resolved (issue #80): a
+    // missing destination is reported before an excluded source, exactly the
+    // error precedence this flow had before the shared seam.
     val rawSource = arguments.stringArg("source") ?: return ToolResult(arguments.argError("source"), true)
     val rawDestination = arguments.stringArg("destination")
         ?: return ToolResult(arguments.argError("destination"), true)
-    val source = absoluteToolPath(context.cwd, rawSource)
-    val destination = absoluteToolPath(context.cwd, rawDestination)
-    context.fileExclusions.matchingRuleForTarget(context.cwd, source)?.let {
-        return ToolResult(exclusionError(source, it), true)
+    val source = when (val target = resolveToolTarget(context, rawSource)) {
+        is ToolTarget.Rejected -> return target.error
+        is ToolTarget.Resolved -> target.path
     }
-    context.fileExclusions.matchingRuleForTarget(context.cwd, destination)?.let {
-        return ToolResult(exclusionError(destination, it), true)
+    val destination = when (val target = resolveToolTarget(context, rawDestination)) {
+        is ToolTarget.Rejected -> return target.error
+        is ToolTarget.Resolved -> target.path
     }
     return executeSafely("Move failed") {
         val fs = SystemFileSystem

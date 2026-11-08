@@ -107,9 +107,10 @@ public class GrepTool : AgentTool {
         context: ToolContext,
     ): ToolResult {
         if (isSymbolicLink(path)) return ToolResult("Refusing to search a symlink: $path", true)
-        context.fileExclusions.matchingRuleForTarget(context.cwd, path)?.let {
-            return ToolResult(exclusionError(path, it), true)
-        }
+        // The exclusion gate only: the search root itself is deliberately not
+        // checked in execute() (directory roots follow the walk-side rules).
+        val target = resolveToolTarget(context, path)
+        if (target is ToolTarget.Rejected) return target.error
         val scan =
             if (Files.isReadable(java.nio.file.Path.of(path))) scanStagedMatches(Path(path), rawPath, regex) else null
         if (scan == null || scan.binary) {

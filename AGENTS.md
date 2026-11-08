@@ -237,6 +237,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
     tools/WebContentConverter.kt     # jsoup HTML -> line-based text (block tags, pre, li), pass-through otherwise
     tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
+    tools/ToolTarget.kt              # resolveToolTarget: the single path-tool prologue seam
+                                     # (path arg decode -> absoluteToolPath -> exclusion refusal,
+                                     # issue #80); ToolTarget = Resolved path | Rejected error
     tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move),
                                      # sweepStaleTempFiles (crash-orphaned *.tmp, issue #20),
                                      # isSymbolicLink
@@ -791,7 +794,10 @@ own config directory (a
   threaded as `ToolContext.fileExclusions`): files whose
   cwd-relative path matches an exclusion glob rule are refused to direct-target tools (`read_file`/`edit_file`/
   `write_file`/`delete_file` hard-error before any I/O - no client
-  fs proxy round trip, no permission prompt, uniform incl. new-file writes) and hidden from
+  fs proxy round trip, no permission prompt, uniform incl. new-file writes) through the single
+  `resolveToolTarget` seam (`tools/ToolTarget.kt`, issue #80 - the choke point every path-tool
+  prologue calls; `move_*` checks source and destination there, `grep`'s single-file branch
+  too) and hidden from
   listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
   in the walk callback; `grep` folds them into the existing skip suffix, while a single-file
   grep `path` is refused like a direct target). The default rule

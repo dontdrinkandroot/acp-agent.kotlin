@@ -21,10 +21,10 @@ public class EditFileTool : AgentTool {
         arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
-        val path = absoluteToolPath(context.cwd, rawPath)
-        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
-        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
+        val path = when (val target = resolveToolTarget(context, arguments)) {
+            is ToolTarget.Rejected -> return target.error
+            is ToolTarget.Resolved -> target.path
+        }
         val oldString =
             arguments.stringArg("old_string") ?: return ToolResult(arguments.argError("old_string"), true)
         if (oldString.isEmpty()) return ToolResult("old_string must not be empty", true)

@@ -27,10 +27,10 @@ public class ReadFileTool : AgentTool {
         arguments.stringArg("path")
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
-        val rawPath = arguments.stringArg("path") ?: return ToolResult(arguments.argError("path"), true)
-        val path = absoluteToolPath(context.cwd, rawPath)
-        val excludedRule = context.fileExclusions.matchingRuleForTarget(context.cwd, path)
-        if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
+        val path = when (val target = resolveToolTarget(context, arguments)) {
+            is ToolTarget.Rejected -> return target.error
+            is ToolTarget.Resolved -> target.path
+        }
         if (arguments.isNullArg("line")) return ToolResult(arguments.argError("line", "an integer"), true)
         val line = arguments.longArg("line")
         val limit = arguments.longArg("limit")
