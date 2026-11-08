@@ -5,6 +5,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,7 +30,7 @@ class SessionStateRepairTest {
         sessionId = SessionId("sess_repairtest000001"),
         cwd = "/project",
         toolRegistry = ToolRegistry(),
-        config = Config("k", "m", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
         restored = SessionRecord(
             sessionId = "sess_repairtest000001",
             cwd = "/project",
@@ -148,7 +149,7 @@ class SessionStateRepairTest {
             sessionId = SessionId("sess_roundtrip000001"),
             cwd = "/project",
             toolRegistry = ToolRegistry(),
-            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
             restored = SessionRecord(
                 sessionId = "sess_roundtrip000001",
                 cwd = "/project",

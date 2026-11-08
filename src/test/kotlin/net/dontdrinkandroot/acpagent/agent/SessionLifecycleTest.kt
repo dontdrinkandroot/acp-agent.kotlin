@@ -7,6 +7,7 @@ import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
@@ -25,7 +26,7 @@ class SessionLifecycleTest {
             sessionId = SessionId(sessionId),
             cwd = cwd,
             toolRegistry = ToolRegistry(),
-            config = Config("k", "m", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
             llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
             sessionStore = store,

@@ -43,7 +43,30 @@ class ConfigTest {
 
     @Test
     fun `the api key is read from the default location and trimmed`() {
-        assertEquals("sk-default", load().openRouterApiKey)
+        assertEquals("sk-default", load().openRouterApiKey.value)
+    }
+
+    @Test
+    fun `a rendered config carries no key material`() {
+        val config = load()
+        val rendered = config.toString()
+
+        assertFalse(rendered.contains("sk-default"), "the rendered config must not contain the key: $rendered")
+        assertFalse(rendered.contains("sk-"), "the rendered config must not contain any key fragment: $rendered")
+        assertTrue(rendered.contains("openRouterApiKey=***"), "the field must stay visible but redacted: $rendered")
+        assertTrue(rendered.contains("openRouterModel="), "other fields must still render: $rendered")
+        assertTrue(rendered.contains("openRouterBaseUrl="), "other fields must still render: $rendered")
+    }
+
+    @Test
+    fun `a secret renders redacted and exposes its value explicitly`() {
+        val secret = Secret("sk-super-secret")
+
+        assertEquals("***", secret.toString())
+        assertEquals("sk-super-secret", secret.value)
+        assertFalse("$secret".contains("sk-super-secret"), "interpolation must not leak the key")
+        assertEquals(Secret("a"), Secret("a"), "equality follows the wrapped value")
+        assertNotEquals(Secret("a"), Secret("b"), "distinct values must not compare equal")
     }
 
     @Test
@@ -65,7 +88,7 @@ class ConfigTest {
             env = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to envKey.toString()),
             configJson = """{"openRouter": {"apiKeyFile": "/does/not/matter"}}""",
         )
-        assertEquals("sk-env", config.openRouterApiKey)
+        assertEquals("sk-env", config.openRouterApiKey.value)
     }
 
     @Test
@@ -73,7 +96,7 @@ class ConfigTest {
         val fileKey = Files.createTempFile("acp-file-key", ".txt")
         writeKeyFile(fileKey, "sk-file")
         val config = load(configJson = """{"openRouter": {"apiKeyFile": "$fileKey"}}""")
-        assertEquals("sk-file", config.openRouterApiKey)
+        assertEquals("sk-file", config.openRouterApiKey.value)
     }
 
     @Test
@@ -347,7 +370,7 @@ class ConfigTest {
     fun `a blank config file selection falls back to the default name`() {
         // The env layer trims everywhere else: a blank value must not count as
         // an "explicit selection" (a missing profile is fatal, the default is not).
-        assertEquals("sk-default", load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "  ")).openRouterApiKey)
+        assertEquals("sk-default", load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "  ")).openRouterApiKey.value)
     }
 
     @Test
@@ -378,7 +401,7 @@ class ConfigTest {
         writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-xdg")
         assertEquals(
             "sk-xdg",
-            Config.load(env = mapOf("XDG_CONFIG_HOME" to xdg.toString()), home = home).openRouterApiKey,
+            Config.load(env = mapOf("XDG_CONFIG_HOME" to xdg.toString()), home = home).openRouterApiKey.value,
         )
     }
 }

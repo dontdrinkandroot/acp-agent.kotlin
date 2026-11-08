@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.OpenRouterEndpoint
 import net.dontdrinkandroot.acpagent.llm.OpenRouterEndpointPricing
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
@@ -209,7 +210,7 @@ class SessionConfigOptionsTest {
         sessionId = com.agentclientprotocol.model.SessionId("sess_configtest0001"),
         cwd = "/tmp",
         toolRegistry = net.dontdrinkandroot.acpagent.tools.ToolRegistry(),
-        config = Config("k", "test-model", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
         restored = restored,
         sessionStore = null,
         closeResources = {},
@@ -232,7 +233,7 @@ class SessionConfigOptionsTest {
             sessionId = com.agentclientprotocol.model.SessionId("sess_configtest0001"),
             cwd = "/tmp",
             toolRegistry = registry,
-            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
             restored = null,
             sessionStore = null,
             closeResources = {},

@@ -5,6 +5,7 @@ import com.agentclientprotocol.model.ToolKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
@@ -37,7 +38,7 @@ class SessionStateDeferredModeTest {
             sessionId = com.agentclientprotocol.model.SessionId("sess_deferred0001"),
             cwd = "/tmp",
             toolRegistry = registry,
-            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
             restored = null,
             sessionStore = null,
             closeResources = {},
@@ -219,7 +220,7 @@ class SessionStateDeferredModeTest {
             toolRegistry = ToolRegistry().apply {
                 register(ToolStub("read_file", mutating = false, modes = emptyList(), mutableListOf()))
             },
-            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
             restored = SessionRecord(
                 sessionId = "sess_deferred0002",
                 cwd = "/tmp",
@@ -256,7 +257,7 @@ class SessionStateDeferredModeTest {
             toolRegistry = ToolRegistry().apply {
                 register(ToolStub("read_file", mutating = false, modes = emptyList(), mutableListOf()))
             },
-            config = Config("k", "test-model", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
             restored = SessionRecord(
                 sessionId = "sess_deferred0003",
                 cwd = "/tmp",

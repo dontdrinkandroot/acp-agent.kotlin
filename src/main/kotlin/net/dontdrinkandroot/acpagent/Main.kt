@@ -90,7 +90,7 @@ public fun runAgent() {
             }
         }
         val llm = LlmClient(
-            apiKey = config.openRouterApiKey,
+            apiKey = config.openRouterApiKey.value,
             baseUrl = config.openRouterBaseUrl,
         )
         val models = try {

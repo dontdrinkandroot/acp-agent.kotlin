@@ -149,6 +149,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     config/ConfigFile.kt             # strict config.json parser (ConfigFile, UnlistedPaths,
                                      # path/scratch validation shared with the env layer)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
+    config/Secret.kt                 # Secret value class: renders *** everywhere, .value is
+                                     # the explicit accessor (issue #78 - Config stays loggable)
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
     llm/ChatCompleter.kt             # the Responses-API seam (LlmClient implements it) so the prompt
                                      # runner is testable with a fake event stream
@@ -466,7 +468,11 @@ an error), comma-separated in env, deduped, and a missing directory only warns.
 `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE` > `openRouter.apiKeyFile` >
 `<config dir>/openrouter.key` > fail listing the tried sources. Every key file
 must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
-refused with the path (`requireOwnerOnly` in `Config.kt`).
+refused with the path (`requireOwnerOnly` in `Config.kt`). The resolved value is
+held as a `Secret` (`config/Secret.kt`, issue #78): `Config` stays freely
+loggable - every implicit rendering (`toString`, string interpolation, a
+data-class dump) prints `***` - and only an explicit `.value` reaches the key (the single production site is the
+`LlmClient` hand-off in `Main.kt`).
 
 **Directory permission tiers** (`agent/PermissionPolicy.kt`, `permissionDecision`):
 the session cwd is implicitly read+write; `readableDirectories` covers the

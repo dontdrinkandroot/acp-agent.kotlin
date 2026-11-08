@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.tools.*
 import java.nio.file.Files
 import kotlin.test.Test
@@ -67,7 +68,7 @@ class ToolCallExecutorTest {
         sessionId = SessionId("sess_tooltest000001"),
         cwd = "/project",
         toolRegistry = ToolRegistry(),
-        config = Config("k", "m", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
         restored = restored,
         sessionStore = null,
         closeResources = {},
@@ -196,7 +197,7 @@ class ToolCallExecutorTest {
             sessionId = sessionId,
             cwd = "/project",
             toolRegistry = ToolRegistry(),
-            config = Config("k", "m", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
             restored = null,
             sessionStore = store,
             closeResources = {},

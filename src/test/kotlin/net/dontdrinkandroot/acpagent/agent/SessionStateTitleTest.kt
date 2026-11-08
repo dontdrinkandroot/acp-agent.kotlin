@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionId
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.*
 
@@ -19,7 +20,7 @@ class SessionStateTitleTest {
         sessionId = SessionId("sess_titletest000001"),
         cwd = "/project",
         toolRegistry = ToolRegistry(),
-        config = Config("k", "m", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
         restored = restored,
         sessionStore = null,
         closeResources = {},

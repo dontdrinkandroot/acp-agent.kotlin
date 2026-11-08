@@ -5,6 +5,7 @@ import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.Test
@@ -18,7 +19,7 @@ class AgentSessionModesTest {
         sessionId = SessionId("sess_test"),
         cwd = "/tmp",
         toolRegistry = ToolRegistry(),
-        config = Config("test-key", "test-model", "http://127.0.0.1:1"),
+        config = Config(Secret("test-key"), "test-model", "http://127.0.0.1:1"),
         llm = LlmClient("test-key", "http://127.0.0.1:1"),
         todayProvider = { "2026-09-03" },
     )

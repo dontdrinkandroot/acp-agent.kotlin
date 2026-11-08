@@ -11,6 +11,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
@@ -206,7 +207,7 @@ class PromptRunnerTest {
         sessionId = SessionId("sess_prompttest0001"),
         cwd = "/project",
         toolRegistry = toolRegistry,
-        config = Config("k", "test-model", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
         restored = null,
         sessionStore = null,
         closeResources = {},

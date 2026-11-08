@@ -6,6 +6,7 @@ import com.agentclientprotocol.model.Implementation
 import com.agentclientprotocol.model.SessionId
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
@@ -31,7 +32,7 @@ class AgentSupportImplTest {
             sessionId = SessionId("sess_0000000000000001"),
             cwd = "/tmp",
             toolRegistry = ToolRegistry(),
-            config = Config("k", "m", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
             llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
         )
@@ -56,7 +57,7 @@ class AgentSupportImplTest {
             sessionId = SessionId("sess_0000000000000001"),
             cwd = "/tmp",
             toolRegistry = ToolRegistry(),
-            config = Config("k", "m", "http://127.0.0.1:1"),
+            config = Config(Secret("k"), "m", "http://127.0.0.1:1"),
             llm = LlmClient("k", "http://127.0.0.1:1"),
             todayProvider = { "2026-09-04" },
             closeResources = { closed = true },

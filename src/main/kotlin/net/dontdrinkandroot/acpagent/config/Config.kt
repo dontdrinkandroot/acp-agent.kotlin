@@ -10,9 +10,13 @@ import java.nio.file.attribute.PosixFilePermission
  * by `config.json`, overridden by the `DDR_ACP_AGENT_*` environment variables.
  * The value is immutable and resolved once at startup ([load]); there is no
  * live reload.
+ *
+ * The instance is safe to log: [openRouterApiKey] is a [Secret], so the
+ * generated `toString()` (and every other implicit rendering) prints `***`
+ * instead of the key (issue #78).
  */
 public data class Config(
-    val openRouterApiKey: String,
+    val openRouterApiKey: Secret,
     val openRouterModel: String,
     val openRouterBaseUrl: String,
     val autoThroughputSortingEnabled: Boolean = true,
@@ -94,7 +98,7 @@ public data class Config(
             val envValues = EnvValues(env)
 
             return Config(
-                openRouterApiKey = resolveApiKey(envValues, file.openRouter?.apiKeyFile, configDir),
+                openRouterApiKey = Secret(resolveApiKey(envValues, file.openRouter?.apiKeyFile, configDir)),
                 openRouterModel = envValues.string("openRouter.defaultModel")
                     ?: file.openRouter?.defaultModel ?: DEFAULT_MODEL,
                 openRouterBaseUrl = envValues.string("openRouter.baseUrl")

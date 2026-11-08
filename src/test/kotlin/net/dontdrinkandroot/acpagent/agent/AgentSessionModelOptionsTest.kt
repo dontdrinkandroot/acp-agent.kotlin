@@ -5,6 +5,7 @@ import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ReasoningCapability
@@ -29,7 +30,7 @@ class AgentSessionModelOptionsTest {
         sessionId = SessionId("sess_modeltest000001"),
         cwd = "/tmp",
         toolRegistry = ToolRegistry(),
-        config = Config("k", "test-model", "http://127.0.0.1:1"),
+        config = Config(Secret("k"), "test-model", "http://127.0.0.1:1"),
         llm = LlmClient("k", "http://127.0.0.1:1"),
         todayProvider = { "2026-09-04" },
         restored = restored,
