@@ -16,14 +16,15 @@ import kotlin.test.assertTrue
 /**
  * Mode status messages are written exclusively at prompt start: a mode
  * request (idle or deferred mid-turn) flips the governing mode but touches
- * no history; the single [SessionState.indicateCurrentMode] writer appends
- * the `Mode:` message when - and only when - the mode changed since the last
- * indicated one. The trail therefore never contains a mode that did not
- * govern a turn (issue #36).
+ * no history; the single [SessionState.indicateCurrentMode] writer asks
+ * [ModeState] which mode must be stated and appends the `Mode:` message when -
+ * and only when - the mode changed since the last indicated one. The trail
+ * therefore never contains a mode that did not govern a turn (issue #36).
  *
  * Deferred mid-turn switching keeps its latest-wins pending slot: the switch
  * applies (and notifies the client) at turn end, but its message also waits
- * for the next prompt start.
+ * for the next prompt start. The machine lives in [SessionState.mode]
+ * (issue #83); the trail stays on [SessionState].
  */
 class SessionStateDeferredModeTest {
 
@@ -66,32 +67,32 @@ class SessionStateDeferredModeTest {
     @Test
     fun `requesting a mode during a prompt defers it - current mode, history and notifications unchanged`() {
         val (state, _, _) = stateAndRegistry()
-        state.setPromptActive(true)
-        state.requestMode(SessionModeId("build"))
+        state.mode.setPromptActive(true)
+        state.mode.requestMode(SessionModeId("build"))
 
         // The turn continues under the old mode: current mode defers, history
         // untouched (no message until the next prompt start in any case).
-        assertEquals(SessionModeId("plan"), state.currentMode)
+        assertEquals(SessionModeId("plan"), state.mode.currentMode)
         assertEquals(emptyList(), modeMessages(state))
-        assertEquals(SessionModeId("plan"), state.modeConfigValue())
-        state.setPromptActive(false)
+        assertTrue(state.mode.hasPendingMode(), "the request must be held as pending, not applied")
+        state.mode.setPromptActive(false)
     }
 
     @Test
     fun `idle switches flip the mode without appending history`() {
         val (state, _, _) = stateAndRegistry()
-        state.requestMode(SessionModeId("build"))
-        state.requestMode(SessionModeId("bash"))
+        state.mode.requestMode(SessionModeId("build"))
+        state.mode.requestMode(SessionModeId("bash"))
 
-        assertEquals(SessionModeId("bash"), state.currentMode)
+        assertEquals(SessionModeId("bash"), state.mode.currentMode)
         assertEquals(emptyList(), modeMessages(state), "idle switches only flip - the message waits for prompt start")
     }
 
     @Test
     fun `prompt start indicates the latest mode once after multiple idle switches`() {
         val (state, _, _) = stateAndRegistry()
-        state.requestMode(SessionModeId("build"))
-        state.requestMode(SessionModeId("bash"))
+        state.mode.requestMode(SessionModeId("build"))
+        state.mode.requestMode(SessionModeId("bash"))
 
         state.indicateCurrentMode()
 
@@ -108,8 +109,8 @@ class SessionStateDeferredModeTest {
     fun `flipping back to the last indicated mode adds no message at prompt start`() {
         val (state, _, _) = stateAndRegistry()
         state.indicateCurrentMode() // plan is in the trail
-        state.requestMode(SessionModeId("build"))
-        state.requestMode(SessionModeId("plan")) // blip back to the indicated mode
+        state.mode.requestMode(SessionModeId("build"))
+        state.mode.requestMode(SessionModeId("plan")) // blip back to the indicated mode
 
         state.indicateCurrentMode()
 
@@ -120,7 +121,7 @@ class SessionStateDeferredModeTest {
         )
 
         // A genuine change after the blip still appends exactly one message.
-        state.requestMode(SessionModeId("bash"))
+        state.mode.requestMode(SessionModeId("bash"))
         state.indicateCurrentMode()
         assertEquals(2, modeMessages(state).size)
         assertTrue(modeMessages(state).last().startsWith("Mode: bash."))
@@ -129,13 +130,13 @@ class SessionStateDeferredModeTest {
     @Test
     fun `flush applies the latest pending mode exactly once - message still waits for prompt start`() {
         val (state, _, _) = stateAndRegistry()
-        state.setPromptActive(true)
-        state.requestMode(SessionModeId("bash"))
-        state.requestMode(SessionModeId("build")) // latest change wins
+        state.mode.setPromptActive(true)
+        state.mode.requestMode(SessionModeId("bash"))
+        state.mode.requestMode(SessionModeId("build")) // latest change wins
 
-        assertTrue(state.flushPendingMode(), "flush must report the applied switch")
-        assertEquals(SessionModeId("build"), state.currentMode)
-        assertEquals(SessionModeId("build"), state.modeConfigValue())
+        assertTrue(state.mode.flushPendingMode(), "flush must report the applied switch")
+        assertEquals(SessionModeId("build"), state.mode.currentMode)
+        assertTrue(!state.mode.hasPendingMode(), "the flush must consume the pending switch")
         assertEquals(emptyList(), modeMessages(state), "flush flips, only prompt start writes the message")
 
         state.indicateCurrentMode()
@@ -147,7 +148,7 @@ class SessionStateDeferredModeTest {
             modeMessages(state),
         )
         // Flushing again (no pending) is a no-op.
-        assertTrue(!state.flushPendingMode())
+        assertTrue(!state.mode.flushPendingMode())
         state.indicateCurrentMode()
         assertEquals(1, modeMessages(state).size)
     }
@@ -155,17 +156,17 @@ class SessionStateDeferredModeTest {
     @Test
     fun `cancelling a prompt drops the pending mode without applying or rendering anything`() {
         val (state, _, _) = stateAndRegistry()
-        state.setPromptActive(true)
-        state.requestMode(SessionModeId("bash"))
+        state.mode.setPromptActive(true)
+        state.mode.requestMode(SessionModeId("bash"))
 
-        state.cancelPrompt()
+        state.mode.cancelPrompt()
 
-        assertEquals(SessionModeId("plan"), state.currentMode)
-        assertEquals(SessionModeId("plan"), state.modeConfigValue())
+        assertEquals(SessionModeId("plan"), state.mode.currentMode)
+        assertTrue(!state.mode.hasPendingMode(), "cancel must drop the pending switch")
         assertEquals(emptyList(), modeMessages(state))
         // The next prompt starts clean again; flush afterwards is a no-op.
-        state.setPromptActive(false)
-        assertTrue(!state.flushPendingMode())
+        state.mode.setPromptActive(false)
+        assertTrue(!state.mode.flushPendingMode())
         state.indicateCurrentMode()
         assertEquals(
             listOf(
@@ -179,16 +180,16 @@ class SessionStateDeferredModeTest {
     @Test
     fun `requesting a mode while idle applies it immediately without rendering`() {
         val (state, _, _) = stateAndRegistry()
-        state.requestMode(SessionModeId("bash"))
+        state.mode.requestMode(SessionModeId("bash"))
 
-        assertEquals(SessionModeId("bash"), state.currentMode)
+        assertEquals(SessionModeId("bash"), state.mode.currentMode)
         assertEquals(emptyList(), modeMessages(state))
     }
 
     @Test
     fun `same-value mode requests are no-ops`() {
         val (state, _, _) = stateAndRegistry()
-        state.requestMode(SessionModeId("plan")) // idle, same as current
+        state.mode.requestMode(SessionModeId("plan")) // idle, same as current
         state.indicateCurrentMode()
         assertEquals(
             listOf(
@@ -197,10 +198,10 @@ class SessionStateDeferredModeTest {
             ),
             modeMessages(state),
         )
-        state.setPromptActive(true)
-        state.requestMode(SessionModeId("plan"))
-        state.setPromptActive(false)
-        assertTrue(!state.flushPendingMode())
+        state.mode.setPromptActive(true)
+        state.mode.requestMode(SessionModeId("plan"))
+        state.mode.setPromptActive(false)
+        assertTrue(!state.mode.flushPendingMode())
         state.indicateCurrentMode()
         assertEquals(1, modeMessages(state).size)
     }

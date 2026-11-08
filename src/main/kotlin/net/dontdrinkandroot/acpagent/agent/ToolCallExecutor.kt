@@ -221,7 +221,7 @@ internal class ToolCallExecutor(
             PermissionDecision.PROMPT -> Unit
         }
         if (client == null) return PermissionOutcome.ALLOWED
-        state.permanentPermissions[tool.name]?.let { granted ->
+        state.permissionDecisionFor(tool.name)?.let { granted ->
             return if (granted) PermissionOutcome.ALLOWED else PermissionOutcome.DENIED
         }
         val options = listOf(
@@ -249,8 +249,8 @@ internal class ToolCallExecutor(
             when (val outcome = response.outcome) {
                 is RequestPermissionOutcome.Selected -> {
                     when (outcome.optionId.value) {
-                        "allow_always" -> state.permanentPermissions[tool.name] = true
-                        "reject_always" -> state.permanentPermissions[tool.name] = false
+                        "allow_always" -> state.grantAlways(tool.name)
+                        "reject_always" -> state.rejectAlways(tool.name)
                     }
                     if (outcome.optionId.value.startsWith("allow")) {
                         PermissionOutcome.ALLOWED

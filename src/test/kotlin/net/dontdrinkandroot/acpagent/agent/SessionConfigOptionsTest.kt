@@ -243,7 +243,7 @@ class SessionConfigOptionsTest {
 
         assertEquals(0, s.historySnapshot.size, "no seed: indication happens at prompt start")
 
-        s.requestMode(SessionModeId("build"))
+        s.mode.requestMode(SessionModeId("build"))
         assertEquals(0, s.historySnapshot.size, "switches only flip - the message waits for prompt start")
 
         // At prompt start exactly one message for the latest mode is appended,
@@ -266,7 +266,7 @@ class SessionConfigOptionsTest {
         val s = state()
         val o = options(s)
         o.apply(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
-        assertEquals(SessionModeId("build"), s.currentMode)
+        assertEquals(SessionModeId("build"), s.mode.currentMode)
         val e = assertFailsWith<JsonRpcException> {
             o.apply(SessionConfigId("mode"), SessionConfigOptionValue.of("bogus"))
         }

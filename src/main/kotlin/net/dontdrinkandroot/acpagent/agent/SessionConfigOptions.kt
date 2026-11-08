@@ -111,7 +111,7 @@ internal class SessionConfigOptions(
             SessionConfigOption.select(
                 id = "mode",
                 name = "Session Mode",
-                currentValue = state.currentMode.value,
+                currentValue = state.mode.currentMode.value,
                 options = SessionConfigSelectOptions.Flat(
                     availableModes.map { mode ->
                         SessionConfigSelectOption(
@@ -204,7 +204,7 @@ internal class SessionConfigOptions(
                 if (availableModes.none { it.id == modeId }) {
                     jsonRpcInvalidParams("unknown mode \"${modeId.value}\"")
                 }
-                state.requestMode(modeId)
+                state.mode.requestMode(modeId)
             }
 
             "model" -> applyModel(value.stringValue("model"))

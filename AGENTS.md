@@ -183,10 +183,14 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # builders (assistantMessageItem/userMessageItem/functionCallItem),
                                      # StreamToolCall and the raw-item field readers (stringField/
                                      # intField/jsonObjectOrNull)
-    agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
+    agent/SessionState.kt            # mutable session state (history, plan, title, model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
                                      # (buildRecord/persist/delete) + title announcement
-                                     # (takeTitleAnnouncement, once per title - issue #73)
+                                     # (takeTitleAnnouncement, once per title - issue #73) +
+                                     # the mode trail/status-text bridge (indicateCurrentMode)
+    agent/ModeState.kt               # the mode machine (issue #83): current/pending/indicated
+                                     # mode + prompt-active deferral, history-free; SessionState
+                                     # owns the `Mode:` trail and the status text
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
                                      # AgentSession interface (config options, prompt plumbing);
                                      # one-shot onSessionReleased hook (close/delete/failed replay);
@@ -630,6 +634,7 @@ own config directory (a
   the #39 session) stays unguarded - that needs the full per-signature fix still tracked by #39.
   The session is a thin
   SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
+  `ModeState` (the mode machine incl. deferred switching - issue #83),
   `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
   (one tool-call lifecycle: mode gate -> unknown tool -> repeat guard -> permission -> execution
   -> updates) and `PromptRunner`
@@ -665,9 +670,9 @@ own config directory (a
     messages (pre-#36) gets one message at its next prompt instead of staying
     silent forever. **Mode
   switches are deferred**: a `mode` request while a prompt turn is running only
-  records a pending mode on `SessionState` (`requestMode`, latest wins) and is
-  applied as a single flush when the turn hands control back
-  (`flushPendingMode` in the prompt flow's try, before `setPromptActive (false)`),
+    records a pending mode in `ModeState` (`SessionState.mode.requestMode`, latest wins) and is
+  applied as a single flush when the turn hands control back (`SessionState.mode.flushPendingMode()` in the prompt
+    flow's try, before `setPromptActive(false)`),
     with one `current_mode_update` at that point (the flush flips the mode only -
     its status message waits for the next prompt start); the `finally` drops whatever is
   still pending and clears `promptActive` (so a cancelled turn never leaks its
@@ -1096,12 +1101,15 @@ own config directory (a
   symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
   `reject_once` apply once. The permanent branches are pinned by
-  `ToolCallExecutorTest` (allow_always/reject_always short-circuit + map writes,
+  `ToolCallExecutorTest` (allow_always/reject_always short-circuit + the grants,
   allow_once contrast) and `E2eFileStoreTest` (two prompts, one session grant);
-  the map is **session-memory only** (not in `SessionRecord`, evaporates on
+  the grants are **session-memory only** (not in `SessionRecord`, evaporate on
   restart) - deliberately pinned so the over-grant redesign (issue #3, per-path
   keys) must change these pins explicitly rather than silently regress the
-  contract. **Tool-call titles**: the JetBrains ACP client renders only the `title` of a tool call
+  contract. `SessionState` owns them behind `grantAlways`/`rejectAlways`/
+  `permissionDecisionFor` (issue #83) and exposes a read-only view, so
+  `ToolCallExecutor` never mutates the map directly. **Tool-call titles**: the JetBrains ACP client renders only the
+  `title` of a tool call
   in
   permission prompts and progress - it ignores the `rawInput` field that carries the actual
   arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with **Observed (JetBrains,

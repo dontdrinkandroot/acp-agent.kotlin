@@ -18,10 +18,13 @@ internal const val TOOL_OUTCOME_FAILED = "failed"
 
 /**
  * The single source of truth for a session's mutable state and its record
- * lifecycle: conversation history, plan, title, mode/model/reasoning
- * selection, permanent permissions and the persisted [SessionRecord]. The
- * [AgentSessionImpl] facade keeps the SDK-facing wiring; everything that
- * changes between turns lives here so it is testable in isolation.
+ * lifecycle: conversation history, plan, title, model/reasoning selection,
+ * the permission grants and the persisted [SessionRecord]. Mode selection and
+ * its deferred switching live in the composed [ModeState] (issue #83); the
+ * `Mode:` trail message and its status text stay here, since they are history
+ * and tool-registry concerns. The [AgentSessionImpl] facade keeps the
+ * SDK-facing wiring; everything that changes between turns lives here so it is
+ * testable in isolation.
  */
 internal class SessionState(
     private val sessionId: SessionId,
@@ -56,9 +59,14 @@ internal class SessionState(
      * Session-memory only on purpose: unlike mode/model/reasoning this map is
      * not part of [SessionRecord] and evaporates on restart - pinned by
      * `ToolCallExecutorTest` so issue #3's redesign must change that pin
-     * deliberately, not accidentally.
+     * deliberately, not accidentally. Mutated only through [grantAlways] /
+     * [rejectAlways] (issue #83): the exposed map is read-only so the
+     * decision logic stays in one place.
      */
-    val permanentPermissions = mutableMapOf<String, Boolean>()
+    private val permissionGrants = mutableMapOf<String, Boolean>()
+
+    /** Read-only view of [permissionGrants] for diagnostics and the pins. */
+    val permanentPermissions: Map<String, Boolean> = java.util.Collections.unmodifiableMap(permissionGrants)
 
     /**
      * Dangling tool-call ids already warned about: the repaired view warns
@@ -88,38 +96,14 @@ internal class SessionState(
     private var announcedTitle: String? = title
 
     /**
-     * A restored session starts in its persisted mode, which is also reported
-     * as the default mode of the restored session.
+     * The session's mode selection and deferred-switch state (issue #83). The
+     * trail message and the status text stay here, because both are history
+     * and tool-registry concerns; the machine only decides.
      */
-    val initialMode: SessionModeId = restoredModeOrDefault(restored)
-
-    var currentMode: SessionModeId = initialMode
-
-    /**
-     * The mode whose [modeStatusText] is currently in the conversation
-     * history. Restored sessions parse it from the trail's last `Mode:`
-     * message (nothing new is persisted; the record's [SessionRecord.mode]
-     * stays the source of truth for the governing mode), so a switch that was
-     * applied after the last message - e.g. a turn-end flush persisted but a
-     * crash before the next prompt - self-heals: the next prompt start writes
-     * the corrective message.
-     */
-    private var lastIndicatedMode: SessionModeId? = lastIndicatedTrailMode(restored?.history.orEmpty())
-    /**
-     * The mode the client requested while a prompt turn is in flight. It does
-     * not govern anything during the turn (the turn keeps the mode it started
-     * with, so tool gating stays consistent); the latest request wins and it
-     * is applied when the agent turns control back to the user.
-     */
-    @Volatile
-    private var pendingMode: SessionModeId? = null
-
-    /**
-     * True while a prompt turn is running; mode flushes are deferred until the
-     * turn ends, so a switch never applies mid-iteration.
-     */
-    @Volatile
-    private var promptActive = false
+    val mode = ModeState(
+        initialMode = restoredModeOrDefault(restored),
+        lastIndicatedMode = lastIndicatedTrailMode(restored?.history.orEmpty()),
+    )
 
     var currentModel: String = initialModelId(restored, config)
 
@@ -222,7 +206,7 @@ internal class SessionState(
      * (e.g. in a restored session whose history trail lacks status messages)
      * instead of inferring it from tool availability.
      */
-    fun modeStatusTextForCurrent(): String = modeStatusText(currentMode)
+    fun modeStatusTextForCurrent(): String = modeStatusText(mode.currentMode)
 
     /**
      * Applies the mode status message for [mode] to the history.
@@ -232,90 +216,21 @@ internal class SessionState(
     }
 
     /**
-     * The mode reported by the "mode" config option: the currently governing
-     * mode, never a still-pending one (the client is not told about a pending
-     * switch, so it is never ahead of the loop's tool gating).
-     */
-    fun modeConfigValue(): SessionModeId = currentMode
-
-    /**
-     * Starts/ends a prompt turn. While active, [requestMode] defers the switch
-     * until [flushPendingMode] (turn end) or drops it on [cancelPrompt].
-     */
-    fun setPromptActive(active: Boolean) {
-        promptActive = active
-    }
-
-    /**
-     * True while a mode request is deferred (a turn is running and the switch
-     * has not been flushed yet).
-     */
-    fun hasPendingMode(): Boolean = pendingMode != null
-
-    /**
-     * Records a mode request. While a prompt turn is running the request only
-     * updates the pending mode (latest wins) and applies nothing; idle, it
-     * flips the current mode immediately (the client is notified by the
-     * caller). Same-value requests are no-ops in both cases. Neither branch
-     * touches the history - the `Mode:` message is written once, at prompt
-     * start, by [indicateCurrentMode] (issue #36).
-     */
-    fun requestMode(mode: SessionModeId) {
-        synchronized(historyLock) {
-            if (mode == currentMode) {
-                pendingMode = null
-                return
-            }
-            if (promptActive) {
-                pendingMode = mode
-            } else {
-                currentMode = mode
-            }
-        }
-    }
-
-    /**
-     * Applies the pending mode (if any) exactly once: flips the current mode
-     * and clears the pending. Returns true when a mode was actually applied
-     * (so the caller knows to announce+persist it). The mode status message
-     * is NOT written here - it waits for the next prompt start
-     * ([indicateCurrentMode]), like every other switch (issue #36). No-op and
-     * false when nothing is pending.
-     */
-    fun flushPendingMode(): Boolean {
-        synchronized(historyLock) {
-            val pending = pendingMode ?: return false
-            pendingMode = null
-            if (pending == currentMode) return false
-            currentMode = pending
-            return true
-        }
-    }
-
-    /**
      * The single writer of mode status messages: appends the `Mode:` message
-     * for the current mode iff it changed since the last indicated one (the
+     * for the governing mode iff it changed since the last indicated one (the
      * trail's last message, parsed from the record at restore). Called at
      * prompt start before the user message is appended, so every `Mode:`
      * message in the trail is immediately followed by a turn that ran under
      * it and no trail ever contains a mode that governed nothing (issue #36).
+     *
+     * The decision belongs to [ModeState] (issue #83); the append runs under
+     * the history lock, so the trail and the indicated mode cannot drift apart
+     * while a record snapshot is taken.
      */
     fun indicateCurrentMode() {
         synchronized(historyLock) {
-            if (currentMode == lastIndicatedMode) return
-            appendModeStatusMessage(currentMode)
-            lastIndicatedMode = currentMode
-        }
-    }
-
-    /**
-     * Drops a pending mode without applying it. Called when a turn is
-     * cancelled: the client was never told about the pending switch, so no
-     * update needs to be undone.
-     */
-    fun cancelPrompt() {
-        synchronized(historyLock) {
-            pendingMode = null
+            val modeToIndicate = mode.takeModeToIndicate() ?: return
+            appendModeStatusMessage(modeToIndicate)
         }
     }
 
@@ -325,8 +240,8 @@ internal class SessionState(
      * the trail carries no mode message (a fresh session, or a legacy record
      * from before the feature). The record's [SessionRecord.mode] stays the
      * source of truth for the governing mode - this only seeds
-     * [lastIndicatedMode] so the next prompt start does not append a
-     * duplicate message.
+     * [ModeState]'s last-indicated mode so the next prompt start does not
+     * append a duplicate message.
      */
     private fun lastIndicatedTrailMode(history: List<JsonObject>): SessionModeId? =
         history.map { historyItemFromWire(it) }
@@ -372,7 +287,7 @@ internal class SessionState(
         return SessionRecord(
             sessionId = sessionId.value,
             cwd = cwd,
-            mode = currentMode.value,
+            mode = mode.currentMode.value,
             title = recordTitle,
             updatedAt = System.currentTimeMillis(),
             // Reasoning items are live-only: the record is the history
@@ -411,6 +326,19 @@ internal class SessionState(
         }
         return RepairedView(repair.history, outcomes)
     }
+
+    /** Records an `allow_always` decision for [toolName] (issue #83: the only writer). */
+    fun grantAlways(toolName: String) {
+        permissionGrants[toolName] = true
+    }
+
+    /** Records a `reject_always` decision for [toolName]. */
+    fun rejectAlways(toolName: String) {
+        permissionGrants[toolName] = false
+    }
+
+    /** The permanent decision for [toolName], or null when the tool was never granted or rejected. */
+    fun permissionDecisionFor(toolName: String): Boolean? = permissionGrants[toolName]
 
     /**
      * Writes the session record to disk. Failures are logged but never

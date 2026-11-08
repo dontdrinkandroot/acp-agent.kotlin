@@ -147,7 +147,7 @@ internal class AgentSessionImpl(
         models = models,
     )
 
-    override val defaultMode: SessionModeId = state.initialMode
+    override val defaultMode: SessionModeId = state.mode.initialMode
 
     @OptIn(UnstableApi::class)
     override val configOptions: List<SessionConfigOption>
@@ -209,9 +209,9 @@ internal class AgentSessionImpl(
         // (the flush announces it); announcing it here would put the client
         // ahead of the loop's tool gating. Everything else (model, reasoning)
         // applies immediately and is announced immediately.
-        if (state.hasPendingMode()) return
+        if (state.mode.hasPendingMode()) return
         val client = clientOrNull() ?: return
-        client.notify(SessionUpdate.CurrentModeUpdate(state.currentMode))
+        client.notify(SessionUpdate.CurrentModeUpdate(state.mode.currentMode))
         client.notify(SessionUpdate.ConfigOptionUpdate(configOptions))
     }
 
@@ -274,7 +274,7 @@ internal class AgentSessionImpl(
         state.takeTitleAnnouncement()?.let { title ->
             emit(Event.SessionUpdateEvent(SessionUpdate.SessionInfoUpdate(title = title)))
         }
-        val mode = state.currentMode
+        val mode = state.mode.currentMode
 
         val toolContext = ToolContext(
             cwd = cwd,
@@ -288,7 +288,7 @@ internal class AgentSessionImpl(
             modeStatusText = { state.modeStatusTextForCurrent() },
         )
 
-        state.setPromptActive(true)
+        state.mode.setPromptActive(true)
         var turnCompleted = false
         try {
             promptRunner.run(this, mode, instructions, toolContext)
@@ -296,21 +296,21 @@ internal class AgentSessionImpl(
             // ran (latest wins) as a single flush, then persist + announce it.
             // The flush flips the mode only - its status message waits for the
             // next prompt start (indicateCurrentMode).
-            val changed = state.flushPendingMode()
+            val changed = state.mode.flushPendingMode()
             state.persist()
             turnCompleted = true
             if (changed) {
                 // The turn is over - clear the active flag so the flush is
                 // announced (notifyModeState skips it while a turn is active).
-                state.setPromptActive(false)
+                state.mode.setPromptActive(false)
                 notifyModeState()
             }
         } finally {
             // Drop whatever is still pending (a cancelled turn must not leak its
             // requested mode into the next turn, where it would apply uninvited)
             // and clear the active flag even when the flow is cancelled.
-            state.cancelPrompt()
-            state.setPromptActive(false)
+            state.mode.cancelPrompt()
+            state.mode.setPromptActive(false)
             if (!turnCompleted) {
                 // An interrupted turn (session/cancel, a closing client) still
                 // did work the record must keep: the user message, the streamed
