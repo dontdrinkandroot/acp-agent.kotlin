@@ -145,11 +145,11 @@ public fun JsonObject.isNullArg(name: String): Boolean = this[name] is JsonNull
 public data class ToolResult(
     val text: String,
     val isError: Boolean = false,
-    val diff: ToolResultDiff? = null,
+    val diffs: List<ToolResultDiff> = emptyList(),
 )
 
 /**
- * An optional file-change payload for [ToolResult], emitted as a
+ * One file-change payload of a [ToolResult], emitted as a
  * `ToolCallContent.Diff` content block on the completed tool-call update so
  * clients can render the modification without relying on the client fs proxy.
  * `oldText` is null for new files.
@@ -159,12 +159,6 @@ public data class ToolResultDiff(
     val newText: String,
     val oldText: String? = null,
 )
-
-/**
- * Upper bound for old-content payloads carried by [ToolResultDiff] so a
- * write/delete of an oversized file cannot blow up the wire payload.
- */
-internal const val MAX_DIFF_CONTENT_LENGTH = 100_000
 
 internal val MODE_PLAN = SessionModeId("plan")
 internal val MODE_BUILD = SessionModeId("build")

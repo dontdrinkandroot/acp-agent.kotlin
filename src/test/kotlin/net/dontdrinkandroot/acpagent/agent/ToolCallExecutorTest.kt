@@ -10,10 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.tools.AgentTool
-import net.dontdrinkandroot.acpagent.tools.ToolContext
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import net.dontdrinkandroot.acpagent.tools.ToolResult
+import net.dontdrinkandroot.acpagent.tools.*
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -97,6 +94,36 @@ class ToolCallExecutorTest {
         emitter.events.filterIsInstance<Event.SessionUpdateEvent>()
             .map { it.update }
             .filterIsInstance<SessionUpdate.ToolCallUpdate>()
+
+    @Test
+    fun `every diff of a tool result reaches the completed update as its own diff block`() = runBlocking {
+        // Issue #56: delete_directory/move_* produce one diff per affected
+        // file - all of them must reach the wire, in result order.
+        val tool = object : RecordingTool("multidiff", false) {
+            override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
+                ToolResult(
+                    "done",
+                    diffs = listOf(
+                        ToolResultDiff("/project/a.txt", "", "old-a"),
+                        ToolResultDiff("/project/b.txt", "new-b", null),
+                    ),
+                )
+        }
+        val registry = ToolRegistry().apply { register(tool) }
+        val executor = ToolCallExecutor(registry, state())
+        val emitter = RecordingEmitter()
+        execute(executor, emitter, StreamToolCall("call_1", "multidiff", "{}"))
+
+        val update = toolCallUpdates(emitter).single()
+        assertEquals(ToolCallStatus.COMPLETED, update.status)
+        assertEquals(
+            listOf(
+                ToolCallContent.Diff("/project/a.txt", "", "old-a"),
+                ToolCallContent.Diff("/project/b.txt", "new-b", null),
+            ),
+            update.content.orEmpty().filterIsInstance<ToolCallContent.Diff>(),
+        )
+    }
 
     @Test
     fun `disabled tool is refused before execution and does not reach history`() = runBlocking {

@@ -6,7 +6,10 @@ import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class DeleteFileToolTest {
 
@@ -18,7 +21,40 @@ class DeleteFileToolTest {
         val result = DeleteFileTool().execute(buildJsonObject { put("path", path) }, testContext(dir))
         assertFalse(result.isError, result.text)
         assertFalse(SystemFileSystem.exists(Path(path)))
-        assertEquals(ToolResultDiff(path, "", "bye"), result.diff)
+        assertEquals(listOf(ToolResultDiff(path, "", "bye")), result.diffs)
+    }
+
+    @Test
+    fun `delete_file carries the diff even when the client fs proxy is active`() = runBlocking {
+        // Issues #56/#58: delete is local-disk-only (ACP has no fs delete), so
+        // the client renders nothing for it - the diff must not be suppressed by
+        // the proxy's rendersChange flag. The baseline comes from the store
+        // (the content the user's view had), like every diff pre-read.
+        val dir = tmpDir()
+        val path = "$dir/gone.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "bye") }, testContext(dir))
+        val proxyCtx = testContext(dir, fileStore = ClientFileStore(RecordingFsClient(readContent = "editor buffer")))
+        val result = DeleteFileTool().execute(buildJsonObject { put("path", path) }, proxyCtx)
+        assertFalse(result.isError, result.text)
+        assertEquals(listOf(ToolResultDiff(path, "", "editor buffer")), result.diffs)
+    }
+
+    @Test
+    fun `delete over the diff cap reports the omitted diff in the result text`() = runBlocking {
+        // Issue #57: a dropped diff must be visible - the result text names the
+        // drop and its reason, so neither the model nor a transcript reader
+        // mistakes a cap hit for a tool that never reports diffs.
+        val dir = tmpDir()
+        val path = "$dir/big.txt"
+        WriteFileTool().execute(
+            buildJsonObject { put("path", path); put("content", "x".repeat(100_001)) },
+            testContext(dir)
+        )
+        val result = DeleteFileTool().execute(buildJsonObject { put("path", path) }, testContext(dir))
+        assertFalse(result.isError, result.text)
+        assertTrue(result.diffs.isEmpty(), "oversized content must not be pushed onto the wire")
+        assertTrue(result.text.startsWith("Deleted $path "), result.text)
+        assertTrue(result.text.contains("(diff omitted: original content is"), result.text)
     }
 
     @Test
@@ -34,7 +70,7 @@ class DeleteFileToolTest {
         WriteFileTool().execute(buildJsonObject { put("path", bigPath); put("content", big) }, testContext(dir))
         val bigResult = DeleteFileTool().execute(buildJsonObject { put("path", bigPath) }, testContext(dir))
         assertFalse(bigResult.isError, bigResult.text)
-        assertNull(bigResult.diff, "oversized content must not be pushed onto the wire")
+        assertTrue(bigResult.diffs.isEmpty(), "oversized content must not be pushed onto the wire")
     }
 
     @Test
@@ -87,9 +123,11 @@ class DeleteFileToolTest {
         assertFalse(delete.isError, delete.text)
         assertTrue(recordingStore.writes.isEmpty(), "delete must operate on the local disk")
         // The diff pre-read is best-effort: a failing store read drops only the
-        // diff, the delete still succeeds (do not narrow the catch to
-        // FileStoreException - that would block deletes over a broken pre-read).
-        assertNull(delete.diff, "a failed diff pre-read must not fail the delete")
+        // diff - with its reason named (issue #57) - and the delete still
+        // succeeds (do not narrow the catch to FileStoreException - that would
+        // block deletes over a broken pre-read).
+        assertTrue(delete.diffs.isEmpty(), "a failed diff pre-read must not fail the delete")
+        assertTrue(delete.text.contains("(diff omitted: cannot read original: permission denied"), delete.text)
     }
 
     @Test

@@ -52,6 +52,61 @@ class E2eWireConformanceTest : E2eAgentTest() {
         }
     }
 
+    @Test
+    fun `e2e wire conformance - delete_directory result carries the removed content as diff blocks on the wire`() =
+        runBlocking {
+            // Issue #56: the tree deletion is invisible to the client without
+            // change evidence - the completed tool_call_update must carry
+            // {"type":"diff"} blocks with the removed content (the rollback
+            // baseline), visible on the raw wire.
+            withE2eAgent("wire-delete-dir", { projectDir ->
+                val tree = File(projectDir, "tree").apply {
+                    mkdirs()
+                    File(this, "a.txt").writeText("ay")
+                }
+                MockOpenAiServer(
+                    targetPath = tree.absolutePath,
+                    toolCalls = listOf(
+                        MockToolCall("delete_directory", pathArgs(tree.absolutePath)),
+                        null,
+                    ),
+                )
+            }) {
+                val connection = connect()
+                try {
+                    connection.client.initialize(testClientInfo())
+                    val ops = TestClientOperations()
+                    val session = newSession(connection.client, projectDir, ops)
+                    session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
+                    val events = collectPrompt(
+                        session,
+                        listOf(ContentBlock.Text("Delete the tree directory using the delete_directory tool.")),
+                    )
+                    val updates = events.filterIsInstance<Event.SessionUpdateEvent>().map { it.update }
+                    val resultUpdate = updates.filterIsInstance<SessionUpdate.ToolCallUpdate>().last()
+                    assertEquals(ToolCallStatus.COMPLETED, resultUpdate.status)
+                    val content =
+                        requireNotNull(resultUpdate.content) { "completed tool_call_update must carry content" }
+                    assertTrue(
+                        content.any {
+                            it is ToolCallContent.Diff &&
+                                    it.path == File(projectDir, "tree/a.txt").absolutePath &&
+                                    it.newText == "" &&
+                                    it.oldText == "ay"
+                        },
+                        "delete_directory must report the removed content as a diff block, got: $content",
+                    )
+                    assertTrue(
+                        connection.wireLines.any { it.contains("\"type\":\"diff\"") },
+                        "the diff block must reach the raw wire",
+                    )
+                    println("[ok] delete_directory result carries diff blocks on the wire")
+                } finally {
+                    connection.close()
+                }
+            }
+        }
+
     private suspend fun runScenario(
         process: Process,
         tmpDir: File,

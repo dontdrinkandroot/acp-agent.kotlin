@@ -241,6 +241,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # sweepStaleTempFiles (crash-orphaned *.tmp, issue #20),
                                      # isSymbolicLink
     tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
+    tools/DiffPolicy.kt              # shared tool-diff emission policy (issue #58):
+                                     # emitsToolDiff/toolResultDiff/DiffOutcome +
+                                     # mutationResult notes (issue #57) + TreeDiffCollector
+                                     # (bounded per-file/tree diffs, issue #56)
     tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
                                      # ClientFileStore (fs proxy,
                                      # windowing: whole-file fallback + EOF probe, fixes #6),
@@ -811,7 +815,11 @@ own config directory (a
   and the search/list roots need validating as well: `list_dir`/`glob`/`grep` only filter
   the children they visit, so an excluded directory named as `path` would still be walked.
   Not excluded on purpose: `bash`/`run` commands (not inspected) and
-  `delete_directory` (no content flow into the model context; `move_file`/`move_directory`
+  `delete_directory` - the delete itself may remove an excluded file (issue #71's
+  containing-directory residual), but its content never flows: the tree diff evidence (`TreeDiffCollector` in
+  `tools/DiffPolicy.kt`) skips exclusion-matched files without
+  emitting their bytes (warned to stderr, counted in the `(original content reported for
+  M of N files)` note), and the result text carries no file content (`move_file`/`move_directory`
   do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded (
   issue #70)**: it is not a secret but a privilege
   boundary. Permissions are path-scoped (`permissionDecision` allows every in-project target
@@ -912,9 +920,13 @@ own config directory (a
   `'x' must not be null` error (previously `null` was silently coerced to the string
   "null" - e.g. written into files or run as a shell command), an absent key stays
   `Missing 'x'`. Tool-call diffs describe the **whole file** (`edit_file` was fragment-only
-  before, which clients like Zed misrender) and are **skipped when the client fs proxy is
-  active** (the client renders the change itself; also removes the stale pre-read
-  round-trip). listing/search always use the local disk (ACP
+  before, which clients like Zed misrender). The emission rule is the shared policy in
+  `tools/DiffPolicy.kt` (issue #58): diffs are suppressed **only** for changes the client
+  fs proxy renders itself (`write_file`/`edit_file` written through `ClientFileStore` -
+  avoids a stale duplicate and the pre-read round-trip); every local-only mutation (`delete_file`, `delete_directory`,
+  `move_file`, `move_directory` - ACP has no fs
+  move/delete, so the proxy renders nothing for them) **always** carries its diffs, which
+  are then the client's only rollback baseline (issue #56). listing/search always use the local disk (ACP
   has no client-side search), and so
   do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
   `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
@@ -925,6 +937,16 @@ own config directory (a
   deletes recursively but is refused when the tree contains any symlink (kotlinx-io follows
   links, so a link could smuggle the recursive delete outside the approved project); the
   symlink scan and the recursive delete are depth-capped (64) like the search walker.
+  Every moved file is reported as a delete+add diff pair (the v1 encoding of a rename:
+  source removal `newText = ""`, destination addition `oldText = null`) and every deleted
+  file of a `delete_directory` as a removal diff, collected by `TreeDiffCollector`
+  (`tools/DiffPolicy.kt`) in sorted path order within the bounded tree budget (see Output
+  caps) and read through the store - the user's view - like the single-file pre-reads;
+  exclusion-matched files (`.env*.local`, `.ai/run.json`) are skipped without emitting
+  content (the exclusion boundary: their bytes never flow into tool results), and binary (NUL) or unreadable files are
+  skipped too - all skips are warned and counted; the
+  result text states the rename fact (`(content unchanged)`) and, when the evidence is
+  partial, `(original content reported for M of N files)`.
   The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
   object files are binary noise for content searches) and symlinks. The asymmetry is
   deliberate: a **named** search root may resolve through a symlink (the permission layer
@@ -996,7 +1018,13 @@ own config directory (a
   `FileTooLargeException`; plain `FileStoreException` = exists but unreadable), because a
   diff's `oldText = null` means "new file" in ACP. `LocalFileStore` opens **only regular
   files** (`metadata.isRegularFile`): a FIFO/device reports size -1, passes the size cap and
-  then blocks on `open(2)` or streams without end. MCP tool results are intentionally uncapped.
+  then blocks on `open(2)` or streams without end. **Diff payloads are capped** so a
+  tree mutation cannot blow up the wire: 100k chars per side (`MAX_DIFF_CONTENT_LENGTH`),
+  at most 50 files per call (`MAX_DIFF_FILES`) and 1 MiB of aggregate diff payload per
+  call (`MAX_DIFF_TOTAL_LENGTH`, the caps compose) - the reported prefix is deterministic (sorted path order,
+  `TreeDiffCollector` in `tools/DiffPolicy.kt`), skips are counted in
+  the `(original content reported for M of N files)` note and every dropped diff is
+  visible in the result text and on stderr (issue #57). MCP tool results are intentionally uncapped.
 - **Permissions (path-aware, tiered)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
   `session/request_permission` (unless the tier below covers it). `permissions.readableDirectories`
@@ -1095,11 +1123,17 @@ own config directory (a
   the full old/new content (was fragment-only, which
   Zed-style clients misrender), `write_file` best-effort pre-reads the old
   content (`oldText = null` **only** for a genuinely absent file - `FileAbsentException`, so an
-  existing-but-unreadable file never claims to be new, issue #55; skipped on any other read
-  failure or when either side exceeds 100k chars), `delete_file` carries the removed content as
-  `newText = ""`. All diff blocks are **skipped when the client fs proxy is active**
-  (the client renders the change itself; avoids a stale duplicate and a pre-read
-  round-trip). Path-scoped tool calls carry `locations`
+  existing-but-unreadable file never claims to be new, issue #55), `delete_file`/`delete_directory`
+  carry the removed content as `newText = ""` and every moved file is reported as a
+  delete+add pair (`move_file`/`move_directory`, issue #56). Diff blocks are suppressed **only** for changes the client
+  fs proxy renders itself (write/edit through the proxy -
+  avoids a stale duplicate and the pre-read round-trip); local-only mutations always carry
+  theirs, since the proxy renders nothing for them (the shared rule in
+  `tools/DiffPolicy.kt`, issue #58). **A dropped diff is never silent** (issue #57): every
+  skip (size cap, pre-read failure, binary tree file) appends a fact-based
+  `(diff omitted: <reason>)` note to the result text and logs a `warn` with path and
+  reason, and tree mutations state `(original content reported for M of N files)` when
+  their evidence is partial; happy-path result texts are unchanged. Path-scoped tool calls carry `locations`
   (`tool_call`, `request_permission` and load replay) for the client's follow-along
   surface. `rawOutput` keeps the plain result for wire compat. The spec's optional
   programmatic `tool_call.name` is **not** emitted: no `acp` SDK release up to 0.34.0 carries
@@ -1553,7 +1587,16 @@ truncation and past-EOF error, listing caps, grep match/line caps and the
 binary/excluded skips, the `.git` walker skip) are unit-tested in
 `BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
-payloads, local-disk-only), the whole-file diff convention and the fs-proxy diff skip,
+payloads, local-disk-only), the whole-file diff convention and the shared diff policy (issue #58: store-rendered
+write/edit suppressed, local-only ops always emit - pinned by
+the `delete_file` fs-proxy flip in `DeleteFileToolTest`), the omitted-diff notes (issue #57: cap sizes and pre-read
+errors named in the result text, in
+`WriteFileToolTest`/`EditFileToolTest`/`DeleteFileToolTest`), the tree/move diff evidence (issue #56: delete+add rename
+pairs, the bounded tree caps and the `M of N` note, in
+`DeleteDirectoryToolTest`/`MoveFileToolTest`/`MoveDirectoryToolTest` (incl. the 50-file and
+aggregate-budget caps and the excluded-file content skip), multi-diff emission
+in `ToolCallExecutorTest`; the wire pin `E2eWireConformanceTest` - a `delete_directory`
+result carries `{"type":"diff"}` blocks on the raw wire),
 the strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
 mapping, `title` annotation) are unit-tested in
 the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,

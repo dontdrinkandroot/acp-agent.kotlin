@@ -136,17 +136,21 @@ agent configuration:
 
 ```json
 "DdrAcpAgent": {
-  "command": "/srv/git/github.com/dontdrinkandroot/acp-agent.kotlin/ddr-acp-agent-docker",
-  "env": {
-    "DDR_ACP_AGENT_TOOLS_FS_PROXY": "0"
-  }
+  "command": "/srv/git/github.com/dontdrinkandroot/acp-agent.kotlin/ddr-acp-agent-docker"
 }
 ```
 
 Tips:
 
-- `DDR_ACP_AGENT_TOOLS_FS_PROXY: "0"` disables the editor fs proxy (useful when the proxy
-  misbehaves in your client); the agent then reads/writes files directly.
+- The editor fs proxy is on by default whenever the client offers it: reads and
+  writes go through the editor (unsaved buffers are visible) and the client
+  renders `write_file`/`edit_file` changes itself, so the agent skips its own
+  diff blocks for those two. `DDR_ACP_AGENT_TOOLS_FS_PROXY: "0"` disables the
+  proxy (e.g. when it misbehaves in your client); the agent then reads/writes
+  files directly and emits whole-file diffs for every mutation — with the
+  baseline read from disk, which can disagree with unsaved editor buffers.
+  Move/delete change evidence is unaffected either way: those tools never go
+  through the proxy and always report their diffs.
 - The project working directory is whatever the IDE/editor passes as `cwd` —
   normally the opened project root. It must be an existing directory: a session
   whose `cwd` is missing or is not a directory is refused instead of running

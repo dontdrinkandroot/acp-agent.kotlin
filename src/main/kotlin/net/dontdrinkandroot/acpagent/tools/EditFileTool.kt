@@ -44,25 +44,25 @@ public class EditFileTool : AgentTool {
             )
             val updated = content.replace(oldString, newString)
             context.fileStore.writeFile(path, updated)
-            ToolResult("Edited $path", diff = editResultDiff(path, content, updated, context))
+            mutationResult("Edited $path", path, editDiffOutcome(path, content, updated, context))
         }
     }
 }
 
 /**
- * The edit result carries a whole-file `Diff` content block (old/new full
+ * The edit change evidence: a whole-file `Diff` content block (old/new full
  * content), consistent with write_file and delete_file, so clients can render
- * the change as a file diff. Skipped when the client fs proxy is active (the
- * client renders the modification itself) and when either side exceeds
- * [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane.
+ * the change as a file diff. A change the client fs proxy renders itself
+ * carries no diff (issue #58, the shared rule in `DiffPolicy.kt`), and either
+ * side over [MAX_DIFF_CONTENT_LENGTH] is dropped with a visible note to keep
+ * the wire payload sane (issue #57).
  */
-private fun editResultDiff(
+private fun editDiffOutcome(
     path: String,
     oldContent: String,
     newContent: String,
     context: ToolContext,
-): ToolResultDiff? {
-    if (context.fileStore.rendersChange) return null
-    if (oldContent.length > MAX_DIFF_CONTENT_LENGTH || newContent.length > MAX_DIFF_CONTENT_LENGTH) return null
-    return ToolResultDiff(path, newContent, oldContent)
+): DiffOutcome {
+    if (!emitsToolDiff(context.fileStore.rendersChange)) return DiffOutcome.Suppressed
+    return toolResultDiff(path, newContent, oldContent)
 }

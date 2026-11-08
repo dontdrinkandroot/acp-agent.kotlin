@@ -9,7 +9,10 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WriteFileToolTest {
 
@@ -21,7 +24,7 @@ class WriteFileToolTest {
         val write =
             WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "new") }, testContext(dir))
         assertFalse(write.isError, write.text)
-        assertEquals(ToolResultDiff(path, "new", "old"), write.diff)
+        assertEquals(listOf(ToolResultDiff(path, "new", "old")), write.diffs)
     }
 
     @Test
@@ -33,7 +36,8 @@ class WriteFileToolTest {
         val write =
             WriteFileTool().execute(buildJsonObject { put("path", path); put("content", "small") }, testContext(dir))
         assertFalse(write.isError, write.text)
-        assertEquals(null, write.diff, "oversized old content must not be pushed onto the wire")
+        assertTrue(write.diffs.isEmpty(), "oversized old content must not be pushed onto the wire")
+        assertTrue(write.text.contains("(diff omitted: original content is"), write.text)
     }
 
     @Test
@@ -47,7 +51,7 @@ class WriteFileToolTest {
         val write =
             WriteFileTool().execute(buildJsonObject { put("path", path); put("content", big) }, testContext(dir))
         assertFalse(write.isError, write.text)
-        assertEquals(null, write.diff, "oversized new content must not be pushed onto the wire")
+        assertTrue(write.diffs.isEmpty(), "oversized new content must not be pushed onto the wire")
     }
 
     @Test
@@ -70,7 +74,8 @@ class WriteFileToolTest {
         )
         val write = WriteFileTool().execute(buildJsonObject { put("path", "$dir/f.txt"); put("content", "x") }, ctx)
         assertFalse(write.isError, write.text)
-        assertEquals(null, write.diff, "a read failure must not fail the write or emit a diff")
+        assertTrue(write.diffs.isEmpty(), "a read failure must not fail the write or emit a diff")
+        assertTrue(write.text.contains("(diff omitted: cannot read original: boom"), write.text)
     }
 
     @Test
@@ -98,7 +103,7 @@ class WriteFileToolTest {
         )
         val write = WriteFileTool().execute(buildJsonObject { put("path", "$dir/f.txt"); put("content", "x") }, ctx)
         assertFalse(write.isError, write.text)
-        assertNull(write.diff, "an unreadable existing file must not be reported as a new file")
+        assertTrue(write.diffs.isEmpty(), "an unreadable existing file must not be reported as a new file")
     }
 
     @Test
@@ -112,7 +117,24 @@ class WriteFileToolTest {
             proxyCtx,
         )
         assertFalse(write.isError, write.text)
-        assertNull(write.diff, "the client fs proxy renders the change; no diff block")
+        assertTrue(write.diffs.isEmpty(), "the client fs proxy renders the change; no diff block")
+    }
+
+    @Test
+    fun `write over the diff cap reports the omitted diff in the result text`() = runBlocking {
+        // Issue #57: a dropped diff must be visible - the result text names the
+        // drop and its reason, so neither the model nor a transcript reader
+        // mistakes a cap hit for a tool that never reports diffs.
+        val dir = tmpDir()
+        val path = "$dir/big-new.txt"
+        val big = "x".repeat(100_001)
+        val write =
+            WriteFileTool().execute(buildJsonObject { put("path", path); put("content", big) }, testContext(dir))
+        assertFalse(write.isError, write.text)
+        assertTrue(write.diffs.isEmpty(), "oversized new content must not be pushed onto the wire")
+        assertTrue(write.text.startsWith("Written $path "), write.text)
+        assertTrue(write.text.contains("(diff omitted: new content is"), write.text)
+        assertTrue(write.text.contains("limit"), write.text)
     }
 
     @Test

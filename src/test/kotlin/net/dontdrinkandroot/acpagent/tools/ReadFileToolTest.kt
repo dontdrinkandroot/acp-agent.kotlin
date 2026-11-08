@@ -22,8 +22,9 @@ class ReadFileToolTest {
         )
         assertFalse(write.isError, write.text)
         assertTrue(write.text.contains("Written"))
-        assertEquals(path, write.diff?.path, "write to a new file must carry a diff with the target path")
-        assertEquals(null, write.diff?.oldText, "a new file has no old content")
+        val newFileDiff = write.diffs.single()
+        assertEquals(path, newFileDiff.path, "write to a new file must carry a diff with the target path")
+        assertEquals(null, newFileDiff.oldText, "a new file has no old content")
 
         val read = ReadFileTool().execute(buildJsonObject { put("path", path); put("limit", 3) }, testContext(dir))
         assertFalse(read.isError, read.text)

@@ -10,7 +10,10 @@ import kotlinx.serialization.json.JsonObject
  * Deletes a directory and everything below it. The tree is scanned for
  * symlinks first and the deletion is refused when any is found: kotlinx-io
  * follows links, so a link inside the tree could otherwise smuggle the
- * recursive delete outside the project the permission flow approved.
+ * recursive delete outside the project the permission flow approved. Every
+ * deleted file's removed content is reported as a removal diff, bounded and
+ * in sorted path order (`DiffPolicy.kt`, issue #56), so the client has a
+ * rollback baseline for the tree.
  */
 public class DeleteDirectoryTool : AgentTool {
     override val name = "delete_directory"
@@ -42,8 +45,12 @@ public class DeleteDirectoryTool : AgentTool {
             containsSymlink(fs, target, 0)?.let { link ->
                 return@executeSafely ToolResult("Refusing to delete directory containing symlinks: $link", true)
             }
+            val collector = TreeDiffCollector(context.fileStore, context.fileExclusions, context.cwd)
+            for (file in treeFilesSorted(fs, target)) collector.collect(file)
             deleteRecursively(fs, target, 0)
-            ToolResult("Deleted directory $path")
+            val note = collector.partialNote()
+            val text = if (note == null) "Deleted directory $path" else "Deleted directory $path $note"
+            ToolResult(text, diffs = collector.diffs)
         }
     }
 }

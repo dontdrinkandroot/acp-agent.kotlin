@@ -27,6 +27,95 @@ class DeleteDirectoryToolTest {
     }
 
     @Test
+    fun `delete_directory reports the removed content of every file as diffs`() = runBlocking {
+        // Issue #56: the tree deletion is local-disk-only - the client renders
+        // nothing for it - so every deleted file needs its removal diff as the
+        // rollback baseline, in deterministic sorted path order.
+        val dir = tmpDir()
+        val target = "$dir/gone"
+        SystemFileSystem.createDirectories(Path("$target/sub"))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/b.txt"); put("content", "bee") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/a.txt"); put("content", "ay") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/sub/c.txt"); put("content", "sea") },
+            testContext(dir)
+        )
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", target) }, testContext(dir))
+        assertFalse(result.isError, result.text)
+        assertEquals("Deleted directory $target", result.text)
+        assertEquals(
+            listOf(
+                ToolResultDiff("$target/a.txt", "", "ay"),
+                ToolResultDiff("$target/b.txt", "", "bee"),
+                ToolResultDiff("$target/sub/c.txt", "", "sea"),
+            ),
+            result.diffs,
+        )
+    }
+
+    @Test
+    fun `delete_directory never reports the content of excluded files`() = runBlocking {
+        // File-access exclusion boundary: .env*.local content must never flow
+        // into tool results. The tree deletion may remove it (issue #71's
+        // containing-directory residual), but its content is not diff evidence:
+        // the file is skipped, counted in the note, and its bytes stay out of
+        // every diff block and the result text.
+        val dir = tmpDir()
+        val target = "$dir/gone"
+        SystemFileSystem.createDirectories(Path(target))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/a.txt"); put("content", "ay") },
+            testContext(dir)
+        )
+        java.io.File("$target/.env.local").writeText("SECRET_TOKEN=hunter2\n")
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", target) }, testContext(dir))
+        assertFalse(result.isError, result.text)
+        assertTrue(result.text.contains("(original content reported for 1 of 2 files)"), result.text)
+        assertFalse(result.text.contains("hunter2"), "the secret must not appear in the result text")
+        assertEquals(
+            listOf(ToolResultDiff("$target/a.txt", "", "ay")),
+            result.diffs,
+            "the excluded file must not produce a diff block",
+        )
+    }
+
+    @Test
+    fun `delete_directory notes the files whose content could not be reported`() = runBlocking {
+        // Issues #56/#57: a skipped file (binary here) gets no diff and the
+        // result states the fact - "original content reported for M of N" -
+        // so the partial baseline is visible instead of silent.
+        val dir = tmpDir()
+        val target = "$dir/gone"
+        SystemFileSystem.createDirectories(Path(target))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/a.txt"); put("content", "ay") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/b.txt"); put("content", "bee") },
+            testContext(dir)
+        )
+        java.io.File("$target/bin.dat").writeBytes(byteArrayOf(1, 0, 2))
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", target) }, testContext(dir))
+        assertFalse(result.isError, result.text)
+        assertTrue(result.text.startsWith("Deleted directory $target "), result.text)
+        assertTrue(result.text.contains("(original content reported for 2 of 3 files)"), result.text)
+        assertEquals(
+            listOf(
+                ToolResultDiff("$target/a.txt", "", "ay"),
+                ToolResultDiff("$target/b.txt", "", "bee"),
+            ),
+            result.diffs,
+        )
+    }
+
+    @Test
     fun `delete_directory refuses symlinks inside the tree`() = runBlocking {
         val base = tmpDir()
         val project = "$base/project"

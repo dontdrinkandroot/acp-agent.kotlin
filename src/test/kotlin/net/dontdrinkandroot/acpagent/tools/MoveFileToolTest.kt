@@ -33,6 +33,32 @@ class MoveFileToolTest {
     }
 
     @Test
+    fun `move_file reports the rename as a removal and an addition diff`() = runBlocking {
+        // Issue #56 (delete+add encoding, decided with the user): ACP v1's Diff
+        // has one path and cannot express a rename, so the source is reported
+        // as removed (newText empty) and the destination as added (oldText
+        // null) - both sides get a rollback baseline - and the result text
+        // states the rename fact for the model: the bytes did not change.
+        val dir = tmpDir()
+        val source = "$dir/a.txt"
+        val destination = "$dir/b.txt"
+        WriteFileTool().execute(buildJsonObject { put("path", source); put("content", "hello") }, testContext(dir))
+        val result = MoveFileTool().execute(
+            buildJsonObject { put("source", source); put("destination", destination) },
+            testContext(dir),
+        )
+        assertFalse(result.isError, result.text)
+        assertEquals("Moved $source to $destination (content unchanged)", result.text)
+        assertEquals(
+            listOf(
+                ToolResultDiff(source, "", "hello"),
+                ToolResultDiff(destination, "hello", null),
+            ),
+            result.diffs,
+        )
+    }
+
+    @Test
     fun `move_file refuses an existing destination and keeps the source`() = runBlocking {
         val dir = tmpDir()
         WriteFileTool().execute(buildJsonObject { put("path", "$dir/a.txt"); put("content", "a") }, testContext(dir))

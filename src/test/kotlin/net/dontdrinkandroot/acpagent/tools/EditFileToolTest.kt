@@ -9,7 +9,10 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class EditFileToolTest {
 
@@ -25,7 +28,28 @@ class EditFileToolTest {
         assertFalse(edit.isError, edit.text)
         // The diff describes the whole file (consistent with write_file and
         // delete_file), not just the replaced fragment.
-        assertEquals(ToolResultDiff(path, "hello kotlin", "hello world"), edit.diff)
+        assertEquals(listOf(ToolResultDiff(path, "hello kotlin", "hello world")), edit.diffs)
+    }
+
+    @Test
+    fun `edit over the diff cap reports the omitted diff in the result text`() = runBlocking {
+        // Issue #57: a dropped diff must be visible - the result text names the
+        // drop and its reason, so neither the model nor a transcript reader
+        // mistakes a cap hit for a tool that never reports diffs.
+        val dir = tmpDir()
+        val path = "$dir/big.txt"
+        WriteFileTool().execute(
+            buildJsonObject { put("path", path); put("content", "y" + "x".repeat(100_001)) },
+            testContext(dir),
+        )
+        val edit = EditFileTool().execute(
+            buildJsonObject { put("path", path); put("old_string", "yx"); put("new_string", "yy") },
+            testContext(dir),
+        )
+        assertFalse(edit.isError, edit.text)
+        assertTrue(edit.diffs.isEmpty(), "oversized content must not be pushed onto the wire")
+        assertTrue(edit.text.startsWith("Edited $path "), edit.text)
+        assertTrue(edit.text.contains("(diff omitted: new content is"), edit.text)
     }
 
     @Test
@@ -41,7 +65,7 @@ class EditFileToolTest {
             testContext(dir),
         )
         assertFalse(edit.isError, edit.text)
-        assertNull(edit.diff, "oversized content must not be pushed onto the wire")
+        assertTrue(edit.diffs.isEmpty(), "oversized content must not be pushed onto the wire")
     }
 
     @Test
@@ -56,7 +80,7 @@ class EditFileToolTest {
             proxyCtx,
         )
         assertFalse(edit.isError, edit.text)
-        assertNull(edit.diff, "the client fs proxy renders the change; no diff block")
+        assertTrue(edit.diffs.isEmpty(), "the client fs proxy renders the change; no diff block")
     }
 
     @Test

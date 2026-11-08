@@ -43,9 +43,9 @@ public class WriteFileTool : AgentTool {
         if (excludedRule != null) return ToolResult(exclusionError(path, excludedRule), true)
         val content = arguments.stringArg("content") ?: return ToolResult(arguments.argError("content"), true)
         return executeSafely("Write failed") {
-            val diff = writeResultDiff(path, content, context)
+            val outcome = writeDiffOutcome(path, content, context)
             context.fileStore.writeFile(path, content)
-            ToolResult("Written $path", diff = diff)
+            mutationResult("Written $path", path, outcome)
         }
     }
 }
@@ -54,13 +54,15 @@ public class WriteFileTool : AgentTool {
  * Best-effort pre-read of the target so the result can carry a `Diff` content
  * block for clients that render tool-call diffs without the client fs proxy.
  * Only a genuinely absent file yields a diff with `oldText = null` (ACP's "this
- * file is new"); a file that exists but cannot be read skips the diff instead
- * of claiming newness (issue #55). The client fs proxy already renders the
- * modification itself, so the diff is skipped there; oversized content is
- * skipped to keep the wire payload sane.
+ * file is new"); a file that exists but cannot be read omits the diff instead
+ * of claiming newness (issue #55) and reports the omission (issue #57). A
+ * change the client fs proxy renders itself carries no diff and costs no
+ * pre-read round-trip (issue #58, the shared rule in `DiffPolicy.kt`);
+ * oversized content is dropped with a visible note to keep the wire payload
+ * sane.
  */
-private suspend fun writeResultDiff(path: String, newText: String, context: ToolContext): ToolResultDiff? {
-    if (context.fileStore.rendersChange) return null
+private suspend fun writeDiffOutcome(path: String, newText: String, context: ToolContext): DiffOutcome {
+    if (!emitsToolDiff(context.fileStore.rendersChange)) return DiffOutcome.Suppressed
     val oldText = try {
         context.fileStore.readRaw(path)
     } catch (e: CancellationException) {
@@ -73,10 +75,8 @@ private suspend fun writeResultDiff(path: String, newText: String, context: Tool
         null
     } catch (e: Exception) {
         // Exists but is unreadable (or oversized): no baseline, so no diff -
-        // never a false "new file".
-        return null
+        // never a false "new file". The drop is reported (issue #57).
+        return DiffOutcome.Omit("cannot read original: ${e.message ?: e}")
     }
-    if (newText.length > MAX_DIFF_CONTENT_LENGTH) return null
-    if (oldText != null && oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
-    return ToolResultDiff(path, newText, oldText)
+    return toolResultDiff(path, newText, oldText)
 }

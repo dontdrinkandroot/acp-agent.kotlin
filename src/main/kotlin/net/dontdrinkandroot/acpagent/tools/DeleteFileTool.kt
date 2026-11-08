@@ -44,23 +44,25 @@ public class DeleteFileTool : AgentTool {
             if (isSymbolicLink(path)) {
                 return@executeSafely ToolResult("Refusing to delete a symlink: $path", true)
             }
-            val diff = deleteResultDiff(path, context)
+            val outcome = deleteDiffOutcome(path, context)
             fs.delete(target, mustExist = true)
-            ToolResult("Deleted $path", diff = diff)
+            mutationResult("Deleted $path", path, outcome)
         }
     }
 }
 
 /**
  * Best-effort read of the deleted file so the result can carry a `Diff`
- * content block showing the removed content. Skipped when the client fs proxy
- * is active (the client renders the modification itself) and when the content
- * exceeds [MAX_DIFF_CONTENT_LENGTH] to keep the wire payload sane. Any other
- * read failure drops only the diff - the delete still proceeds, so an
- * unreadable file stays deletable.
+ * content block showing the removed content. The delete is local-disk-only
+ * (ACP has no fs delete method), so no store-rendered suppression applies -
+ * this diff is the client's only change evidence for the deletion
+ * (issues #56/#58, the shared rule in `DiffPolicy.kt`). Content over
+ * [MAX_DIFF_CONTENT_LENGTH] is dropped with a visible note to keep the wire
+ * payload sane (issue #57). Any other read failure drops only the diff - with
+ * its reason named - and the delete still proceeds, so an unreadable file
+ * stays deletable.
  */
-private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolResultDiff? {
-    if (context.fileStore.rendersChange) return null
+private suspend fun deleteDiffOutcome(path: String, context: ToolContext): DiffOutcome {
     val oldText = try {
         context.fileStore.readRaw(path)
     } catch (e: CancellationException) {
@@ -69,8 +71,7 @@ private suspend fun deleteResultDiff(path: String, context: ToolContext): ToolRe
         // own rethrow.
         throw e
     } catch (e: Exception) {
-        return null
+        return DiffOutcome.Omit("cannot read original: ${e.message ?: e}")
     }
-    if (oldText.length > MAX_DIFF_CONTENT_LENGTH) return null
-    return ToolResultDiff(path, "", oldText)
+    return toolResultDiff(path, "", oldText)
 }

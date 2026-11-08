@@ -284,7 +284,7 @@ internal class ToolCallExecutor(
 
     private fun toolCallContent(result: ToolResult): List<ToolCallContent> = buildList {
         add(ToolCallContent.Content(ContentBlock.Text(result.text)))
-        result.diff?.let { add(ToolCallContent.Diff(it.path, it.newText, it.oldText)) }
+        result.diffs.forEach { add(ToolCallContent.Diff(it.path, it.newText, it.oldText)) }
     }
 
     /**
