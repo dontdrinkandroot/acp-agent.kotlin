@@ -7,15 +7,11 @@ import com.github.f4b6a3.uuid.UuidCreator
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.ChatCompleter
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
 import net.dontdrinkandroot.acpagent.llm.forModel
 import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
-import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesResponse
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesUsage
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
@@ -465,38 +461,6 @@ internal data class StreamedIteration(
         append(" functionCalls=").append(functionCalls)
     }
 }
-
-/**
- * Builds the history item for an assistant text message the agent invented
- * itself (continuing notes, the wind-down summary, the interrupted note); a
- * message the provider produced is captured verbatim instead. `id` and `status`
- * are required on assistant items in the Responses input (issue #75), so a
- * synthesized item carries both.
- */
-internal fun assistantMessageItem(text: String): HistoryItem.Captured = HistoryItem.Captured(
-    buildJsonObject {
-        put("type", "message")
-        put("id", "msg_${UuidCreator.getTimeOrderedEpoch()}")
-        put("role", "assistant")
-        put("status", "completed")
-        put(
-            "content",
-            kotlinx.serialization.json.buildJsonArray {
-                add(buildJsonObject {
-                    put("type", "output_text")
-                    put("text", text)
-                })
-            }
-        )
-    }
-)
-
-/** A user message item the agent writes itself (the continuation and wind-down prompts). */
-internal fun userMessageItem(text: String): HistoryItem =
-    HistoryItem.UserMessage(listOf(ResponseContentPart.InputText(text)))
-
-internal fun JsonObject.intField(name: String): Int? =
-    (this[name] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()
 
 private fun logAbnormalRetry(iteration: StreamedIteration, iterations: Int) {
     logger.warn {

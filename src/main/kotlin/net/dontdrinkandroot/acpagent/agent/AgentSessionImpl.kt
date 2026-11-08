@@ -354,29 +354,3 @@ internal class AgentSessionImpl(
         }
     }
 }
-
-internal data class StreamToolCall(
-    val id: String,
-    val name: String,
-    val arguments: String
-)
-
-/**
- * Selects the file backend for the session: the client fs proxy when it is
- * available (both read and write capabilities) and enabled, otherwise a local
- * store. Selection is independent of the permission flow, which governs where
- * a call is allowed to touch.
- */
-internal fun selectFileStore(
-    client: com.agentclientprotocol.common.ClientSessionOperations?,
-    capabilities: com.agentclientprotocol.model.ClientCapabilities,
-    fsProxyEnabled: Boolean,
-): FileStore {
-    val fs = capabilities.fs
-    val proxyCapable = fs != null && fs.readTextFile == true && fs.writeTextFile == true
-    return if (fsProxyEnabled && client != null && proxyCapable) {
-        ClientFileStore(client)
-    } else {
-        LocalFileStore()
-    }
-}

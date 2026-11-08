@@ -179,7 +179,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/HistoryItem.kt             # the history item model in the Responses dialect: typed items the
                                      # agent constructs (UserMessage/SystemMessage/ToolOutput) +
                                      # `Captured` raw objects replayed byte-verbatim (reasoning,
-                                     # assistant messages, calls) - issue #75
+                                     # assistant messages, calls) - issue #75; also the wire item
+                                     # builders (assistantMessageItem/userMessageItem/functionCallItem),
+                                     # StreamToolCall and the raw-item field readers (stringField/
+                                     # intField/jsonObjectOrNull)
     agent/SessionState.kt            # mutable session state (history, plan, title, mode/model/reasoning,
                                      # permanent permissions, toolOutcomes) + record lifecycle
                                      # (buildRecord/persist/delete) + title announcement
@@ -229,9 +232,10 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # (Main.kt assembles the registries from it; iterated by the
                                      # schema guard test)
     tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
-    tools/BashTool.kt                # bash tool (ProcessRunner: /bin/sh -c, tree-kill,
-                                     # progressive bounded tail) + optional positional-parameter args
-                                     # + shared runShellCommand rendering
+    tools/BashTool.kt                # bash tool (mode-gated shell command via runShellCommand)
+    tools/ProcessRunner.kt           # ProcessRunner: /bin/sh -c, tree-kill, progressive bounded
+                                     # tail (StreamTail) + shared runShellCommand rendering
+                                     # (bash + run tools)
     tools/WebFetchTool.kt            # web_fetch tool (line-paged HTTP fetch, ToolKind.FETCH)
     tools/WebFetcher.kt              # fetch pipeline: ktor CIO client, redirects + SSRF guard,
                                      # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
@@ -250,13 +254,14 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # (bounded per-file/tree diffs, issue #56)
     tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
                                      # ClientFileStore (fs proxy,
-                                     # windowing: whole-file fallback + EOF probe, fixes #6),
-                                     # StreamingLineReader (SourceLine = text + terminator status +
+                                     # windowing: whole-file fallback + EOF probe, fixes #6) +
+                                     # selectFileStore (proxy vs local selection) + the exception types
+    tools/StreamingLineReader.kt     # StreamingLineReader (SourceLine = text + terminator status +
                                      # truncated; 64 KB per-line accumulation cap + NUL sniff,
-                                     # issue #24) + countVisualLines (newline byte scan for exact
-                                     # totals) +
-                                     # the shared truncateLine line cap and visualLines/rawVisualLines (visual-line
-                                     # convention: trailing newline = terminator, "" = 0 lines)
+                                     # issue #24) + countVisualLines (newline byte scan for exact totals)
+    tools/VisualLines.kt             # the visual-line convention: visualLines/rawVisualLines and
+                                     # the shared truncateLine line cap (trailing newline =
+                                     # terminator, "" = 0 lines)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/CalcExpression.kt          # safe arithmetic expression evaluator (closed grammar:
@@ -265,13 +270,17 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/CalcTool.kt                # calc tool (evaluate an expression, ToolKind.OTHER)
     tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
                                      # prompt; args = argv tokens at the [args] slot → "$@")
-                                     # + run-config storage (load/create/update/delete, atomic write)
+    tools/RunConfigStore.kt          # run-config storage: load/create/update/delete, atomic write
+                                     # (the dedicated tools and the run tool read through this)
     tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
     tools/ReadFileTool.kt            # read_file tool (via FileStore)
     tools/WriteFileTool.kt           # write_file tool (via FileStore)
     tools/EditFileTool.kt            # edit_file tool (via FileStore)
     tools/ListDirTool.kt             # list_dir tool (local disk)
-    tools/GlobTool.kt                # glob tool + internal walk/globToRegex helpers (local disk)
+    tools/DirectoryWalk.kt           # shared directory-walk infrastructure: walk/globToRegex/
+                                     # searchRootError/formatCappedListing/relativeToRoot +
+                                     # treeFilesSorted (tree-diff walker) + cap constants
+    tools/GlobTool.kt                # glob tool (local disk; via DirectoryWalk)
     tools/GrepTool.kt                # grep tool (local disk)
     tools/MoveFileTool.kt            # move_file tool + shared movePath helper (local disk)
     tools/MoveDirectoryTool.kt       # move_directory tool (local disk)
@@ -904,7 +913,7 @@ own config directory (a
   matches raw content, so the model must strip the `number│` prefix; through the client fs
   proxy the footer total is `?` unless the window was resolved via the whole-file fallback,
   which knows the real line count). Line counting follows the shared visual-line convention (`visualLines` in
-  `tools/FileStore.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
+  `tools/VisualLines.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
   zero lines, a blank line between terminators is real — an empty file/window renders the
   explicit `(empty content)` (web_fetch parity) instead of a phantom `   1│`. `grep` match
   numbers (both search paths) and `web_fetch`'s non-HTML pass-through share the convention so
@@ -953,13 +962,13 @@ own config directory (a
   skipped too - all skips are warned and counted; the
   result text states the rename fact (`(content unchanged)`) and, when the evidence is
   partial, `(original content reported for M of N files)`.
-  The search walker (`walk` in `GlobTool.kt`) always skips `.git` directories (packed
+  The search walker (`walk` in `tools/DirectoryWalk.kt`) always skips `.git` directories (packed
   object files are binary noise for content searches) and symlinks. The asymmetry is
   deliberate: a **named** search root may resolve through a symlink (the permission layer
   resolves it and decides whether the real location is approved - pinned by
   `PermissionAndFileStoreTest`), while links **discovered inside** the walk are never
   followed; a symlinked single-file `grep` path is refused outright instead.
-- **Search/list path validation** (`searchRootError` in `GlobTool.kt`): the three
+- **Search/list path validation** (`searchRootError` in `tools/DirectoryWalk.kt`): the three
   directory-consuming tools fail loudly on a wrong root instead of silently returning an
   empty result (`No matches`/empty listing) — `Path not found` (missing), `Not a directory`
   (file as root; fixes the silent `No matches` of #31), `Not readable` (chmod-000 root,

@@ -12,7 +12,7 @@ import java.nio.file.Files
  * directories of the destination are created. The move never follows symlinks:
  * a symlink source is moved as the link itself. kotlinx-io's `atomicMove` is a
  * JVM stub that always throws, so the move goes through java.nio directly
- * (same as the run-config writes in `RunTool`); cross-device moves fail with
+ * (same as the run-config writes in `RunConfigStore`); cross-device moves fail with
  * the underlying error. The rename is reported as a delete+add diff pair so
  * both sides keep a rollback baseline (issue #56).
  */

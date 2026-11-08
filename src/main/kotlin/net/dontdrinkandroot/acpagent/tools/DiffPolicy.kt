@@ -2,8 +2,6 @@ package net.dontdrinkandroot.acpagent.tools
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
-import kotlinx.io.files.FileSystem
-import kotlinx.io.files.Path
 
 private val logger = KotlinLogging.logger {}
 
@@ -110,25 +108,6 @@ internal fun mutationResult(base: String, path: String, outcome: DiffOutcome): T
     is DiffOutcome.Emit -> ToolResult(base, diffs = listOf(outcome.diff))
     is DiffOutcome.Omit -> ToolResult("$base ${reportOmittedDiff(path, outcome.reason)}")
     DiffOutcome.Suppressed -> ToolResult(base)
-}
-
-/**
- * The regular files under [root] for tree diffs, in deterministic sorted path
- * order (so the capped reported prefix is stable across runs and platforms).
- * Symlinks are skipped and never followed, like the search walker.
- */
-internal fun treeFilesSorted(fs: FileSystem, root: Path, depth: Int = 0): List<String> {
-    if (depth > MAX_WALK_DEPTH) return emptyList()
-    return fs.list(root)
-        .flatMap { entry ->
-            when {
-                isSymbolicLink(entry.toString()) -> emptyList()
-                fs.metadataOrNull(entry)?.isDirectory == true -> treeFilesSorted(fs, entry, depth + 1)
-                fs.metadataOrNull(entry)?.isRegularFile == true -> listOf(entry.toString())
-                else -> emptyList()
-            }
-        }
-        .sorted()
 }
 
 /**

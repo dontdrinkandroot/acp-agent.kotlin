@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
+import com.github.f4b6a3.uuid.UuidCreator
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
@@ -57,6 +58,56 @@ internal fun HistoryItem.toWire(): JsonObject = when (this) {
 }
 
 /**
+ * One tool call as streamed by the model (merged from the `function_call`
+ * items of one LLM iteration): the call id, the tool name and the raw argument
+ * JSON string exactly as streamed.
+ */
+internal data class StreamToolCall(
+    val id: String,
+    val name: String,
+    val arguments: String
+)
+
+/** Builds the wire form of a `function_call` item. */
+internal fun functionCallItem(callId: String, name: String, arguments: String) = HistoryItem.Captured(
+    buildJsonObject {
+        put("type", "function_call")
+        put("call_id", callId)
+        put("name", name)
+        put("arguments", arguments)
+    }
+)
+
+/**
+ * Builds the history item for an assistant text message the agent invented
+ * itself (continuing notes, the wind-down summary, the interrupted note); a
+ * message the provider produced is captured verbatim instead. `id` and `status`
+ * are required on assistant items in the Responses input (issue #75), so a
+ * synthesized item carries both.
+ */
+internal fun assistantMessageItem(text: String): HistoryItem.Captured = HistoryItem.Captured(
+    buildJsonObject {
+        put("type", "message")
+        put("id", "msg_${UuidCreator.getTimeOrderedEpoch()}")
+        put("role", "assistant")
+        put("status", "completed")
+        put(
+            "content",
+            buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "output_text")
+                    put("text", text)
+                })
+            }
+        )
+    }
+)
+
+/** A user message item the agent writes itself (the continuation and wind-down prompts). */
+internal fun userMessageItem(text: String): HistoryItem =
+    HistoryItem.UserMessage(listOf(ResponseContentPart.InputText(text)))
+
+/**
  * Parses a persisted wire item back into a [HistoryItem]. Constructed shapes
  * are recognized and re-typed; everything else (assistant messages,
  * `function_call`, `reasoning`, and any future item type) stays
@@ -109,6 +160,10 @@ private fun parseInputParts(raw: JsonObject): List<ResponseContentPart> {
 /** The `type` discriminator of a captured item. */
 internal fun JsonObject.stringField(name: String): String? =
     (this[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+/** A numeric field of a captured/streamed wire object (e.g. `output_index`). */
+internal fun JsonObject.intField(name: String): Int? =
+    (this[name] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()
 
 /** The concatenated text of a message item's `input_text`/`output_text` parts. */
 internal fun JsonObject.textContent(): String? {

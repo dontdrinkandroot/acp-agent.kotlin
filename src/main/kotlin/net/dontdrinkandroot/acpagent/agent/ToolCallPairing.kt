@@ -1,8 +1,5 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-
 /**
  * One assistant tool call id whose `function_call_output` item was never
  * appended - the turn died between the call's append and its terminal result
@@ -108,13 +105,3 @@ internal fun HistoryItem.capturedFunctionCall(): CapturedFunctionCall? {
         arguments = raw.stringField("arguments").orEmpty(),
     )
 }
-
-/** Builds the wire form of a `function_call` item. */
-internal fun functionCallItem(callId: String, name: String, arguments: String) = HistoryItem.Captured(
-    buildJsonObject {
-        put("type", "function_call")
-        put("call_id", callId)
-        put("name", name)
-        put("arguments", arguments)
-    }
-)
