@@ -259,9 +259,11 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/StreamingLineReader.kt     # StreamingLineReader (SourceLine = text + terminator status +
                                      # truncated; 64 KB per-line accumulation cap + NUL sniff,
                                      # issue #24) + countVisualLines (newline byte scan for exact totals)
-    tools/VisualLines.kt             # the visual-line convention: visualLines/rawVisualLines and
-                                     # the shared truncateLine line cap (trailing newline =
-                                     # terminator, "" = 0 lines)
+    tools/VisualLines.kt             # the visual-line convention: visualLines/rawVisualLines,
+                                     # the shared truncateLine line cap and renderNumberedWindow
+                                     # (the single read_file/web_fetch numbered-window renderer,
+                                     # issue #81) + lineWindowStartError/MAX_WINDOW_LINES
+                                     # (trailing newline = terminator, "" = 0 lines)
     tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
     tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
     tools/CalcExpression.kt          # safe arithmetic expression evaluator (closed grammar:
@@ -915,7 +917,12 @@ own config directory (a
   which knows the real line count). Line counting follows the shared visual-line convention (`visualLines` in
   `tools/VisualLines.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
   zero lines, a blank line between terminators is real — an empty file/window renders the
-  explicit `(empty content)` (web_fetch parity) instead of a phantom `   1│`. `grep` match
+  explicit `(empty content)` instead of a phantom `   1│`. That numbering, the CRLF strip,
+  the per-line clamp and the continue footer are one implementation (`renderNumberedWindow` in `tools/VisualLines.kt`,
+  issue #81) shared by `read_file` and
+  `web_fetch` (which passes its own `startLine`/`maxLines` labels), so the two renderings
+  cannot diverge; `MAX_WINDOW_LINES` is the shared 2000-line paging cap and
+  `lineWindowStartError` the shared start-line bounds guard (issue #45). `grep` match
   numbers (both search paths) and `web_fetch`'s non-HTML pass-through share the convention so
   all line numbers agree with `read_file`; `LocalFileStore` therefore keeps each line's own
   terminator in the window text (the `ClientFileStore` passthrough shape), making a single
@@ -992,7 +999,7 @@ own config directory (a
   rejected before I/O), refuses non-regular files (`not a regular file: <path>` - a FIFO/device would otherwise
   block on `open(2)` or stream forever),
   truncates lines over **2000 chars** with `... [truncated]` (clamped in
-  `ReadFileTool.formatRead` at the render boundary, so the client fs-proxy path clamps
+  `renderNumberedWindow` at the render boundary, so the client fs-proxy path clamps
   identically), and errors with
   `line N is past the end of the file (M lines)` when `line` is beyond EOF. There is **no
   whole-file size cap on `read_file`** (issue #24): the local store streams via the
@@ -1600,7 +1607,10 @@ cap, the 64 KB per-line accumulation cap + NUL sniff of `StreamingLineReader` an
 `countVisualLines` byte scan (issue #24), 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
 binary/excluded skips, the `.git` walker skip) are unit-tested in
-`BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; move/delete
+`BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; the
+shared numbered-window renderer and the start-line bounds guard are pinned directly in
+`VisualLinesTest` (issue #81: width, CR strip, clamp, `(empty content)`, footer with both
+argument label pairs and an unknown total); move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
 payloads, local-disk-only), the whole-file diff convention and the shared diff policy (issue #58: store-rendered
 write/edit suppressed, local-only ops always emit - pinned by

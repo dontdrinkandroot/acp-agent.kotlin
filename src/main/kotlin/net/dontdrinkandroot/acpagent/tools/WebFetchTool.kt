@@ -27,7 +27,7 @@ public class WebFetchTool : AgentTool {
         optional(
             "maxLines",
             PropType.INTEGER,
-            "Maximum number of lines to return (1-$MAX_LINES). Defaults to $DEFAULT_LINES.",
+            "Maximum number of lines to return (1-$MAX_WINDOW_LINES). Defaults to $DEFAULT_LINES.",
         ),
     )
 
@@ -39,55 +39,45 @@ public class WebFetchTool : AgentTool {
         if (arguments.isNullArg("maxLines")) return ToolResult(arguments.argError("maxLines", "an integer"), true)
         val startLine = arguments.longArg("startLine")
         val maxLines = arguments.longArg("maxLines")
-        if (startLine != null && startLine < 1) return ToolResult("'startLine' must be a positive integer (1-based)", true)
-        // Issue #45: values outside the Int range would overflow at the
-        // toInt() narrowing below and defeat the past-end guard.
-        if (startLine != null && startLine > Int.MAX_VALUE) {
-            return ToolResult("'startLine' must be at most ${Int.MAX_VALUE}", true)
-        }
-        if (maxLines != null && (maxLines < 1 || maxLines > MAX_LINES)) {
-            return ToolResult("'maxLines' must be between 1 and $MAX_LINES", true)
+        lineWindowStartError("startLine", startLine)?.let { return ToolResult(it, true) }
+        if (maxLines != null && (maxLines < 1 || maxLines > MAX_WINDOW_LINES)) {
+            return ToolResult("'maxLines' must be between 1 and $MAX_WINDOW_LINES", true)
         }
         return executeSafely("Fetch failed") {
             val result = WebFetcher.fetch(url, allowPrivate = context.webFetchAllowPrivate)
-            formatLines(result, (startLine ?: 1L).toInt(), (maxLines ?: DEFAULT_LINES).toInt())
+            formatWindow(result, (startLine ?: 1L).toInt(), (maxLines ?: DEFAULT_LINES).toInt())
         }
     }
 
     /**
-     * Renders the fetched lines as a numbered window with the read_file
-     * conventions: fixed-width 1-based line numbers, `│` delimiter, per-line
-     * truncation marker and the continue footer when the window does not
-     * cover everything.
+     * Pages the fetched lines through the shared numbered-window convention
+     * (issue #81): the same `N│` rendering, `(empty content)` marker and
+     * continue footer as read_file, with this tool's argument names.
      */
-    private fun formatLines(result: WebFetchResult, start: Int, limit: Int): ToolResult {
+    private fun formatWindow(result: WebFetchResult, start: Int, limit: Int): ToolResult {
         val all = result.lines
         // A successful fetch that converts to zero lines (e.g. an empty HTML
-        // body) is a complete, valid read - not a past-EOF error.
+        // body) is a complete, valid read - not a past-EOF error. This check
+        // precedes the past-end guard on purpose: an empty body is a success
+        // whatever startLine the model asked for.
         if (all.isEmpty()) return ToolResult("(empty content)")
         if (start > all.size) {
             return ToolResult("startLine $start is past the end of the content (${all.size} lines)", true)
         }
         val window = all.drop(start - 1).take(limit)
-        val body = window.mapIndexed { index, line ->
-            // CRLF content (a Windows-authored text file) terminates its lines
-            // with "\r\n"; read_file strips the carriage return at render time,
-            // so web_fetch does the same and the two line renderings agree.
-            val cleaned = if (line.endsWith("\r")) line.dropLast(1) else line
-            "${(start + index).toString().padStart(4)}│${truncateLine(cleaned)}"
-        }.joinToString("\n")
-        val complete = start + window.size - 1 >= all.size
-        val text = if (complete) {
-            body
-        } else {
-            val shownEnd = start + window.size - 1
-            "$body\n\n(Showing lines $start-$shownEnd of ${all.size}. Use startLine=${shownEnd + 1} and maxLines to continue.)"
-        }
-        return ToolResult(text)
+        return ToolResult(
+            renderNumberedWindow(
+                lines = window,
+                startLine = start,
+                total = all.size,
+                complete = start + window.size - 1 >= all.size,
+                lineArg = "startLine",
+                limitArg = "maxLines",
+            )
+        )
     }
 
     private companion object {
-        const val MAX_LINES = 2000
         const val DEFAULT_LINES = 500
     }
 }

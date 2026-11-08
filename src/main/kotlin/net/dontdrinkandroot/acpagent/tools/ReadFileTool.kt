@@ -19,7 +19,7 @@ public class ReadFileTool : AgentTool {
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(
         required("path", PropType.STRING, "File path, absolute or relative to the working directory."),
-        required("limit", PropType.INTEGER, "Maximum number of lines to return (1-$MAX_READ_LIMIT)."),
+        required("limit", PropType.INTEGER, "Maximum number of lines to return (1-$MAX_WINDOW_LINES)."),
         optional("line", PropType.INTEGER, "First line to return (1-based). Defaults to the start of the file."),
     )
 
@@ -34,65 +34,27 @@ public class ReadFileTool : AgentTool {
         if (arguments.isNullArg("line")) return ToolResult(arguments.argError("line", "an integer"), true)
         val line = arguments.longArg("line")
         val limit = arguments.longArg("limit")
-        if (line != null && line < 1) return ToolResult("'line' must be a positive integer (1-based)", true)
-        // Issue #45: values outside the Int range would overflow at the
-        // toInt() narrowing below and defeat the window and past-EOF checks.
-        if (line != null && line > Int.MAX_VALUE) return ToolResult("'line' must be at most ${Int.MAX_VALUE}", true)
+        lineWindowStartError("line", line)?.let { return ToolResult(it, true) }
         if (limit == null) return ToolResult(arguments.argError("limit", "an integer"), true)
-        if (limit < 1 || limit > MAX_READ_LIMIT) {
-            return ToolResult("'limit' must be between 1 and $MAX_READ_LIMIT", true)
+        if (limit < 1 || limit > MAX_WINDOW_LINES) {
+            return ToolResult("'limit' must be between 1 and $MAX_WINDOW_LINES", true)
         }
         return executeSafely("Read failed") {
             val start = line?.toInt() ?: 1
             val read = context.fileStore.readFile(path, line?.toInt(), limit.toInt())
-            if (read.complete) {
-                // The window covers the whole file: numbered, no footer
-                // (nothing below the window).
-                ToolResult(formatRead(read.content, start, read.total))
-            } else {
-                // Truncated window: numbered with a footer stating the shown
-                // range and where to continue.
-                ToolResult(formatRead(read.content, start, read.total, footer = true))
-            }
+            // The window is rendered by the shared numbered-window convention
+            // (issue #81): the footer appears only when the window does not
+            // cover the whole file (nothing below it to continue from).
+            ToolResult(
+                renderNumberedWindow(
+                    lines = visualLines(read.content),
+                    startLine = start,
+                    total = read.total,
+                    complete = read.complete,
+                    lineArg = "line",
+                    limitArg = "limit",
+                )
+            )
         }
-    }
-
-    /**
-     * Renders the read window as 1-indexed numbered lines: a fixed-width line
-     * number followed by a '│' delimiter, then the line content verbatim
-     * (clamped at [MAX_LINE_CHARS] via [truncateLine] - see the body) —
-     * leading indentation is preserved exactly after the '│'. CRLF carriage
-     * returns and the phantom trailing empty line (a trailing newline is a
-     * line terminator, not an extra empty line) are stripped so CRLF and
-     * trailing-newline files render by visual lines. Empty content (an empty
-     * file or window) has zero visual lines and renders the explicit
-     * `(empty content)` message (web_fetch parity) instead of a phantom
-     * numbered line. When [footer] is set
-     * appends a footer stating the shown range and how to continue, so a
-     * truncated read is unambiguous and the model can page forward.
-     */
-    private fun formatRead(content: String, start: Int, total: Int?, footer: Boolean = false): String {
-        val lines = visualLines(content)
-        if (lines.isEmpty()) return "(empty content)"
-        val body = lines.mapIndexed { index, text ->
-            val cleaned = if (text.endsWith("\r")) text.dropLast(1) else text
-            // The shared per-line cap at the render boundary (issue #24): the
-            // local store already clamps, but the client fs proxy passes lines
-            // through verbatim - clamping here covers both backends
-            // identically (truncateLine is idempotent over an already-clamped
-            // line: take(2000) drops exactly the re-appended suffix).
-            "${(start + index).toString().padStart(4)}│${truncateLine(cleaned)}"
-        }.joinToString("\n")
-        return if (footer) {
-            val shownEnd = start + lines.size - 1
-            val totalText = total?.toString() ?: "?"
-            "$body\n\n(Showing lines $start-$shownEnd of $totalText. Use line=${shownEnd + 1} and limit to continue.)"
-        } else {
-            body
-        }
-    }
-
-    private companion object {
-        const val MAX_READ_LIMIT = 2000
     }
 }
