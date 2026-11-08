@@ -50,7 +50,8 @@ public class MoveDirectoryTool : AgentTool {
  * move_directory's change evidence (issue #56): a delete+add pair per moved
  * file, in sorted path order within the bounded tree-diff budget; files whose
  * content cannot be reported surface as the "original content reported for M
- * of N files" fact (issue #57).
+ * of N files" fact (issue #57). VCS metadata is not evidenced (issue #79) but
+ * still moves with the tree.
  */
 private suspend fun moveTreeEvidence(source: String, destination: String, context: ToolContext): MoveEvidence {
     val collector = TreeDiffCollector(context.fileStore, context.fileExclusions, context.cwd)

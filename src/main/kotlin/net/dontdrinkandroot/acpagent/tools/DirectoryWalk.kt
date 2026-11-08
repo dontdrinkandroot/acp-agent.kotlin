@@ -1,10 +1,13 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.io.files.FileSystem
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import java.nio.file.Files
 import java.nio.file.Path as NioPath
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * The shared search/list/tree-walk infrastructure of the path tools
@@ -118,12 +121,24 @@ internal fun globToRegex(glob: String): Regex {
  * The regular files under [root] for tree diffs, in deterministic sorted path
  * order (so the capped reported prefix is stable across runs and platforms).
  * Symlinks are skipped and never followed, like the search walker.
+ *
+ * `.git` entries are skipped too (issue #79), with the same name-based policy
+ * as [walk]: VCS metadata is not change evidence a client can roll back, and
+ * because it sorts before most source paths it would otherwise consume the
+ * bounded diff budget the real files need. This is an *evidence* skip
+ * only - the callers still scan and delete/move the whole tree, so a symlink
+ * inside `.git` is still caught by the deletion's symlink guard.
  */
 internal fun treeFilesSorted(fs: FileSystem, root: Path, depth: Int = 0): List<String> {
     if (depth > MAX_WALK_DEPTH) return emptyList()
     return fs.list(root)
         .flatMap { entry ->
             when {
+                entry.name == GIT_DIR -> {
+                    logger.warn { "diff omitted for $entry: VCS metadata is not change evidence" }
+                    emptyList()
+                }
+
                 isSymbolicLink(entry.toString()) -> emptyList()
                 fs.metadataOrNull(entry)?.isDirectory == true -> treeFilesSorted(fs, entry, depth + 1)
                 fs.metadataOrNull(entry)?.isRegularFile == true -> listOf(entry.toString())

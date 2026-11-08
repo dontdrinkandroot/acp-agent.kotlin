@@ -68,6 +68,49 @@ class MoveDirectoryToolTest {
     }
 
     @Test
+    fun `move_directory keeps VCS metadata out of the diff evidence`() = runBlocking {
+        // Issue #79: `.git` sorts before the source files, so as diff evidence
+        // it would consume the bounded tree budget the real files need.
+        val dir = tmpDir()
+        val source = "$dir/repo"
+        val destination = "$dir/moved"
+        SystemFileSystem.createDirectories(Path("$source/src"))
+        SystemFileSystem.createDirectories(Path("$source/.git/objects"))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$source/src/a.txt"); put("content", "ay") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$source/.git/config"); put("content", "[core]") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$source/.git/objects/ab"); put("content", "packed") },
+            testContext(dir)
+        )
+
+        val result = MoveDirectoryTool().execute(
+            buildJsonObject { put("source", source); put("destination", destination) },
+            testContext(dir),
+        )
+
+        assertFalse(result.isError, result.text)
+        assertEquals("Moved directory $source to $destination (content unchanged)", result.text)
+        assertEquals(
+            listOf(
+                ToolResultDiff("$source/src/a.txt", "", "ay"),
+                ToolResultDiff("$destination/src/a.txt", "ay", null),
+            ),
+            result.diffs,
+        )
+        assertTrue(result.diffs.none { it.path.contains("/.git/") }, "VCS metadata must never be diff evidence")
+        assertTrue(
+            SystemFileSystem.exists(Path("$destination/.git/config")),
+            "the move itself still carries .git along",
+        )
+    }
+
+    @Test
     fun `move_directory reports diffs for at most 50 files`() = runBlocking {
         // Issue #56's file-count cap: the fact phrase states how many of the
         // moved files kept a baseline; the caps report a deterministic sorted

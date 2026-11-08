@@ -13,7 +13,8 @@ import kotlinx.serialization.json.JsonObject
  * recursive delete outside the project the permission flow approved. Every
  * deleted file's removed content is reported as a removal diff, bounded and
  * in sorted path order (`DiffPolicy.kt`, issue #56), so the client has a
- * rollback baseline for the tree.
+ * rollback baseline for the tree - except VCS metadata (`.git`, issue #79),
+ * which is not rollback material but is still deleted with the tree.
  */
 public class DeleteDirectoryTool : AgentTool {
     override val name = "delete_directory"

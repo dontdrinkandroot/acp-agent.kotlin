@@ -27,6 +27,42 @@ class DeleteDirectoryToolTest {
     }
 
     @Test
+    fun `delete_directory keeps VCS metadata out of the diff evidence`() = runBlocking {
+        // Issue #79: `.git` content is noise the search walker already skips;
+        // as diff evidence it is worse than noise - `.git/*` sorts before the
+        // source files, so it eats the bounded tree budget and the real files
+        // lose their rollback baseline.
+        val dir = tmpDir()
+        val target = "$dir/repo"
+        SystemFileSystem.createDirectories(Path("$target/src"))
+        SystemFileSystem.createDirectories(Path("$target/.git/objects"))
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/src/a.txt"); put("content", "ay") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/.git/config"); put("content", "[core]") },
+            testContext(dir)
+        )
+        WriteFileTool().execute(
+            buildJsonObject { put("path", "$target/.git/objects/ab"); put("content", "packed") },
+            testContext(dir)
+        )
+
+        val result = DeleteDirectoryTool().execute(buildJsonObject { put("path", target) }, testContext(dir))
+
+        assertFalse(result.isError, result.text)
+        assertEquals(listOf(ToolResultDiff("$target/src/a.txt", "", "ay")), result.diffs)
+        assertTrue(result.diffs.none { it.path.contains("/.git/") }, "VCS metadata must never be diff evidence")
+        assertEquals(
+            "Deleted directory $target",
+            result.text,
+            "skipped .git files must not count in the M of N note either",
+        )
+        assertFalse(SystemFileSystem.exists(Path("$target/.git")), "the deletion itself still removes .git")
+    }
+
+    @Test
     fun `delete_directory reports the removed content of every file as diffs`() = runBlocking {
         // Issue #56: the tree deletion is local-disk-only - the client renders
         // nothing for it - so every deleted file needs its removal diff as the

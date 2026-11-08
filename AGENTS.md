@@ -979,7 +979,12 @@ own config directory (a
   content (the exclusion boundary: their bytes never flow into tool results), and binary (NUL) or unreadable files are
   skipped too - all skips are warned and counted; the
   result text states the rename fact (`(content unchanged)`) and, when the evidence is
-  partial, `(original content reported for M of N files)`.
+  partial, `(original content reported for M of N files)`. `.git` entries are not evidence
+  either (issue #79): the tree-diff walker skips them with the search walker's name-based
+  policy, because VCS metadata is not rollback material and it sorts before the source files,
+  which would let it consume the bounded budget. That skip is **evidence only** - the
+  deletion's symlink scan and the recursive delete/move still cover `.git`, so a symlink
+  hidden inside it is still refused.
   The search walker (`walk` in `tools/DirectoryWalk.kt`) always skips `.git` directories (packed
   object files are binary noise for content searches) and symlinks. The asymmetry is
   deliberate: a **named** search root may resolve through a symlink (the permission layer
@@ -1620,7 +1625,8 @@ timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` uppe
 cap, the 64 KB per-line accumulation cap + NUL sniff of `StreamingLineReader` and the
 `countVisualLines` byte scan (issue #24), 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
-binary/excluded skips, the `.git` walker skip) are unit-tested in
+binary/excluded skips, the `.git` walker skip, the tree-diff walker's `.git` evidence skip (issue #79)) are unit-tested
+in
 `BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; the
 shared numbered-window renderer and the start-line bounds guard are pinned directly in
 `VisualLinesTest` (issue #81: width, CR strip, clamp, `(empty content)`, footer with both
