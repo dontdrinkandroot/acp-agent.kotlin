@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.config
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.*
+import java.nio.file.Path
 
 /**
  * The parsed `config.json` (issue #50): one level of groups, tool-specific
@@ -153,11 +154,16 @@ public data class ConfigFile(
         }
 
         private fun qualified(path: String, key: String): String = if (path.isEmpty()) key else "$path.$key"
-
-        private fun rangeText(range: IntRange): String =
-            if (range.last == Int.MAX_VALUE) "at least ${range.first}" else "between ${range.first} and ${range.last}"
     }
 }
+
+/**
+ * Renders an accepted numeric range for an error message (`between 1 and 3600`,
+ * `at least 1`), shared by the config-file and the env layer so both layers
+ * report the same bounds.
+ */
+internal fun rangeText(range: IntRange): String =
+    if (range.last == Int.MAX_VALUE) "at least ${range.first}" else "between ${range.first} and ${range.last}"
 
 /** `permissions.unlistedPaths`: what happens to paths outside cwd and all directory lists. */
 public enum class UnlistedPaths {
@@ -185,7 +191,7 @@ internal fun requireAbsolutePath(label: String, value: String): String {
  */
 internal fun requireScratchDir(value: String, label: String): String {
     require(value.startsWith("/")) { "$label must be an absolute path, got '$value'" }
-    val normalized = java.nio.file.Path.of(value).normalize().toString()
+    val normalized = Path.of(value).normalize().toString()
     require(normalized != "/") { "$label must not be the filesystem root" }
     return normalized
 }

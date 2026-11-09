@@ -1,10 +1,7 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.common.ClientSessionOperations
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.PlanEntry
-import com.agentclientprotocol.model.SessionModeId
-import com.agentclientprotocol.model.ToolKind
+import com.agentclientprotocol.model.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 
@@ -46,8 +43,8 @@ private fun String.truncateForTitle(): String =
 /**
  * Formats a human-readable tool-call title as `name(key: value, ...)` for
  * permission prompts and tool-call progress. Values are shown unquoted, blank
- * values are skipped and the argument part is trimmed when it exceeds 100
- * characters.
+ * values are skipped and each value part is capped at
+ * [MAX_TITLE_ARGUMENTS_LENGTH] characters.
  *
  * The JetBrains ACP client renders only the `title` of a tool call in its
  * permission prompts (the `rawInput` wire field is not displayed), so tools
@@ -181,7 +178,7 @@ public class ToolContext internal constructor(
     val cwd: String,
     val client: ClientSessionOperations?,
     val clientCapabilities: ClientCapabilities,
-    val sessionId: com.agentclientprotocol.model.SessionId,
+    val sessionId: SessionId,
     val updatePlan: suspend (List<PlanEntry>) -> Unit = {},
     internal val fileStore: FileStore = LocalFileStore(),
     internal val bashTimeoutSeconds: Int = 600,

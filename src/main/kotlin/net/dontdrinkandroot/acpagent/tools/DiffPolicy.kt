@@ -5,7 +5,7 @@ import kotlinx.coroutines.CancellationException
 
 private val logger = KotlinLogging.logger {}
 
-/**
+/*
  * The shared tool-diff emission policy (issue #58): one rule for every file
  * mutation, instead of an ad-hoc check per tool.
  *
@@ -93,9 +93,14 @@ internal fun toolResultDiff(path: String, newText: String, oldText: String?): Di
  * that keeps every drop visible when debugging - path and reason always, never
  * a silent skip. Returns the note for the result text.
  */
-internal fun reportOmittedDiff(path: String, reason: String): String {
-    logger.warn { "diff omitted for $path: $reason" }
+private fun reportOmittedDiff(path: String, reason: String): String {
+    logOmittedDiff(path, reason)
     return "(diff omitted: $reason)"
+}
+
+/** The stderr half of [reportOmittedDiff], shared with the tree-diff collector. */
+private fun logOmittedDiff(path: String, reason: String) {
+    logger.warn { "diff omitted for $path: $reason" }
 }
 
 /**
@@ -150,7 +155,7 @@ internal class TreeDiffCollector(
         totalFiles++
         if (reportedFiles >= MAX_DIFF_FILES || remainingBudget <= 0) return
         if (fileExclusions.matchingRuleForTarget(cwd, path) != null) {
-            logger.warn { "diff omitted for $path: matches a file-access exclusion rule" }
+            logOmittedDiff(path, "matches a file-access exclusion rule")
             return
         }
         val content = try {
@@ -158,18 +163,19 @@ internal class TreeDiffCollector(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            logger.warn { "diff omitted for $path: cannot read original: ${e.message ?: e}" }
+            logOmittedDiff(path, "cannot read original: ${e.message ?: e}")
             return
         }
         if (content.contains('\u0000')) {
-            logger.warn { "diff omitted for $path: binary content" }
+            logOmittedDiff(path, "binary content")
             return
         }
         if (content.length > MAX_DIFF_CONTENT_LENGTH) {
-            logger.warn {
-                "diff omitted for $path: original content is ${formatBytes(content.length.toLong())}, " +
-                        "limit ${formatBytes(MAX_DIFF_CONTENT_LENGTH.toLong())}"
-            }
+            logOmittedDiff(
+                path,
+                "original content is ${formatBytes(content.length.toLong())}, " +
+                        "limit ${formatBytes(MAX_DIFF_CONTENT_LENGTH.toLong())}",
+            )
             return
         }
         // A move duplicates the content on the wire (removal + addition).

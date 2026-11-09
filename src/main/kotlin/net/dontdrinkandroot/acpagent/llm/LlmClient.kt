@@ -146,7 +146,7 @@ public class LlmClient(
                     current.setLength(0)
                     return true
                 }
-                val event = flushEvent(current) ?: return false
+                val event = parseAccumulatedEvent(current) ?: return false
                 emit(event)
                 return event.isTerminalResponseEvent()
             }
@@ -212,7 +212,7 @@ public class LlmClient(
      * event types are returned as raw objects - the consumer decides what to
      * do with them.
      */
-    private fun flushEvent(current: StringBuilder): JsonObject? {
+    private fun parseAccumulatedEvent(current: StringBuilder): JsonObject? {
         val data = current.toString().trim()
         current.setLength(0)
         if (data.isEmpty() || data == STREAM_END_EVENT) return null

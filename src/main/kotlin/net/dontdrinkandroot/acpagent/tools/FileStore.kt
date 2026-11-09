@@ -2,6 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.model.ClientCapabilities
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -64,6 +65,10 @@ internal data class ReadResult(
     val total: Int? = null,
 )
 
+/** The shared "start line beyond the last line" error text of both file stores. */
+private fun pastEndOfFileMessage(line: Int, totalLines: Int): String =
+    "line $line is past the end of the file ($totalLines line${if (totalLines == 1) "" else "s"})"
+
 internal class LocalFileStore : FileStore {
     private val fs = SystemFileSystem
 
@@ -79,9 +84,7 @@ internal class LocalFileStore : FileStore {
         // cap stays on [readRaw], which materializes the whole content.
         val visualCount = countVisualLines(file)
         if (line != null && line > visualCount) {
-            throw FileStoreException(
-                "line $line is past the end of the file ($visualCount line${if (visualCount == 1) "" else "s"})"
-            )
+            throw FileStoreException(pastEndOfFileMessage(line, visualCount))
         }
         val startLine = line ?: 1
         val maxWindowLines = limit ?: Int.MAX_VALUE
@@ -190,7 +193,7 @@ internal class ClientFileStore(
                 line = (startLine.toLong() + windowLines).toUInt(),
                 limit = 1u,
             ).content
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return ReadResult(content = content, complete = false, total = null)
@@ -217,9 +220,7 @@ internal class ClientFileStore(
         val whole = rawVisualLines(client.fsReadTextFile(path = path, line = null, limit = null).content)
         val startLine = line ?: 1
         if (line != null && line > whole.size) {
-            throw FileStoreException(
-                "line $line is past the end of the file (${whole.size} line${if (whole.size == 1) "" else "s"})"
-            )
+            throw FileStoreException(pastEndOfFileMessage(line, whole.size))
         }
         val window = whole.drop(startLine - 1).let { if (limit != null) it.take(limit) else it }
         return ReadResult(

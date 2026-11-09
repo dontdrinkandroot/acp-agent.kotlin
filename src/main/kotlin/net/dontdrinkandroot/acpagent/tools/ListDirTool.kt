@@ -25,11 +25,10 @@ public class ListDirTool : AgentTool {
         return executeSafely("List failed") {
             val dir = Path(path)
             searchRootError(path)?.let { return@executeSafely ToolResult(it, true) }
-            val sorted = SystemFileSystem.list(dir)
+            val names = SystemFileSystem.list(dir)
                 .filter { context.fileExclusions.matchingRuleForPath(context.cwd, it.toString()) == null }
                 .map { it.name }
-                .sorted()
-            ToolResult(formatCappedListing(sorted))
+            ToolResult(formatCappedListing(names))
         }
     }
 }

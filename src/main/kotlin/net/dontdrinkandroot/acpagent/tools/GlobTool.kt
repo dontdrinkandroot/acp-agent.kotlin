@@ -38,7 +38,7 @@ public class GlobTool : AgentTool {
                 val rel = relativeToRoot(root, f.toString())
                 if (regex.matches(rel)) results += rel
             }
-            formatCappedListing(results).let(::ToolResult)
+            ToolResult(formatCappedListing(results))
         }
     }
 }

@@ -10,18 +10,23 @@ import kotlinx.serialization.json.JsonObject
  */
 private val RUN_CONFIG_WRITE_MODES = BUILD_AND_BASH_MODES
 
-/**
- * The create tool's schema: `command` is required. The update tool's schema
- * keeps the same properties but omits `command` from the required list.
- */
-private fun configRunWriteParameters(mutable: Boolean): JsonObject = jsonSchema(
-    required("name", PropType.STRING, "Name of the run configuration"),
-    if (mutable) {
-        required("command", PropType.STRING, "Shell command to run once the configuration is executed")
-    } else {
-        optional("command", PropType.STRING, "Shell command to run once the configuration is executed")
-    },
-    optional("description", PropType.STRING, "Optional human-readable description of the configuration"),
+private val RUN_CONFIG_NAME_PROPERTY = required("name", PropType.STRING, "Name of the run configuration")
+private val RUN_CONFIG_DESCRIPTION_PROPERTY =
+    optional("description", PropType.STRING, "Optional human-readable description of the configuration")
+private const val RUN_CONFIG_COMMAND_DESCRIPTION = "Shell command to run once the configuration is executed"
+
+/** The create tool's schema: `command` is required. */
+private fun createRunConfigParameters(): JsonObject = jsonSchema(
+    RUN_CONFIG_NAME_PROPERTY,
+    required("command", PropType.STRING, RUN_CONFIG_COMMAND_DESCRIPTION),
+    RUN_CONFIG_DESCRIPTION_PROPERTY,
+)
+
+/** The update tool's schema: the same properties, but `command` is optional (field-level update). */
+private fun updateRunConfigParameters(): JsonObject = jsonSchema(
+    RUN_CONFIG_NAME_PROPERTY,
+    optional("command", PropType.STRING, RUN_CONFIG_COMMAND_DESCRIPTION),
+    RUN_CONFIG_DESCRIPTION_PROPERTY,
 )
 
 private val NO_ARGUMENT_PARAMETERS: JsonObject = jsonSchema()
@@ -75,9 +80,14 @@ internal class CreateRunConfigTool internal constructor(private val cwd: String)
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
-    override fun title(arguments: JsonObject): String? =
-        formatRunConfigToolTitle(name, arguments.stringArg("name").orEmpty(), arguments.stringArg("command"), arguments.stringArg("description"))
-    override val parameters: JsonObject = configRunWriteParameters(mutable = true)
+    override fun title(arguments: JsonObject): String? = formatRunConfigToolTitle(
+        name,
+        arguments.stringArg("name").orEmpty(),
+        arguments.stringArg("command"),
+        arguments.stringArg("description"),
+    )
+
+    override val parameters: JsonObject = createRunConfigParameters()
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)
@@ -105,9 +115,14 @@ internal class UpdateRunConfigTool internal constructor(private val cwd: String)
     override val kind = ToolKind.EXECUTE
     override val mutating = true
     override val modes = RUN_CONFIG_WRITE_MODES
-    override fun title(arguments: JsonObject): String? =
-        formatRunConfigToolTitle(name, arguments.stringArg("name").orEmpty(), arguments.stringArg("command"), arguments.stringArg("description"))
-    override val parameters: JsonObject = configRunWriteParameters(mutable = false)
+    override fun title(arguments: JsonObject): String? = formatRunConfigToolTitle(
+        name,
+        arguments.stringArg("name").orEmpty(),
+        arguments.stringArg("command"),
+        arguments.stringArg("description"),
+    )
+
+    override val parameters: JsonObject = updateRunConfigParameters()
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult {
         val name = arguments.stringArg("name") ?: return ToolResult(arguments.argError("name"), true)

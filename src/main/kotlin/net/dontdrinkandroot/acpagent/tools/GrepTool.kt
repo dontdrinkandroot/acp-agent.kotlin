@@ -5,6 +5,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
+import java.nio.file.Path as NioPath
 
 public class GrepTool : AgentTool {
     override val name = "grep"
@@ -42,12 +43,11 @@ public class GrepTool : AgentTool {
         return executeSafely("Grep failed") {
             val meta = SystemFileSystem.metadataOrNull(Path(path))
                 ?: return@executeSafely ToolResult("Path not found: $path", true)
+            val regex = Regex(pattern)
             if (meta.isDirectory) {
                 searchRootError(path)?.let { return@executeSafely ToolResult(it, true) }
-                val regex = Regex(pattern)
                 searchDirectory(path, regex, glob, context)
             } else {
-                val regex = Regex(pattern)
                 searchSingleFile(path, rawPath, regex, context)
             }
         }
@@ -90,7 +90,7 @@ public class GrepTool : AgentTool {
             scan.matches.toSortedList().forEach { matches.add(it) }
         }
         val rendered = matches.toSortedList().map { "${it.path}:${it.line}:${it.text}" }
-        return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" } + skipSuffix(skippedBinaryOrExcluded))
+        return ToolResult(renderMatches(rendered) + skipSuffix(skippedBinaryOrExcluded))
     }
 
     /**
@@ -112,14 +112,14 @@ public class GrepTool : AgentTool {
         val target = resolveToolTarget(context, path)
         if (target is ToolTarget.Rejected) return target.error
         val scan =
-            if (Files.isReadable(java.nio.file.Path.of(path))) scanStagedMatches(Path(path), rawPath, regex) else null
+            if (Files.isReadable(NioPath.of(path))) scanStagedMatches(Path(path), rawPath, regex) else null
         if (scan == null || scan.binary) {
             // Binary content (NUL sniff) would surface mojibake matches; a
             // named-but-unsearchable file must not read as a bare "No matches".
             return ToolResult("No matches" + skipSuffix(1))
         }
         val rendered = scan.matches.toSortedList().map { "${it.path}:${it.line}:${it.text}" }
-        return ToolResult(rendered.joinToString("\n").ifEmpty { "No matches" })
+        return ToolResult(renderMatches(rendered))
     }
 
     /**
@@ -194,6 +194,9 @@ private const val MAX_MATCH_LINE_CHARS = 500
 
 private fun truncateMatchLine(line: String): String =
     if (line.length > MAX_MATCH_LINE_CHARS) line.take(MAX_MATCH_LINE_CHARS) + "..." else line
+
+private fun renderMatches(matches: List<String>): String =
+    matches.joinToString("\n").ifEmpty { "No matches" }
 
 private fun skipSuffix(count: Int): String =
     if (count > 0) "\n...($count binary or excluded files skipped)" else ""

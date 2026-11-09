@@ -1,10 +1,7 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import java.nio.file.Files
-import java.nio.file.LinkOption
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
+import java.nio.file.*
 
 private val logger = KotlinLogging.logger {}
 
@@ -73,7 +70,7 @@ internal fun writeAtomically(target: Path, content: String) {
 internal fun moveAtomically(source: Path, target: Path) {
     try {
         Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+    } catch (_: AtomicMoveNotSupportedException) {
         Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
     }
 }
@@ -81,5 +78,4 @@ internal fun moveAtomically(source: Path, target: Path) {
 /**
  * True when [path] is a symbolic link; unprobeable paths are not links.
  */
-internal fun isSymbolicLink(path: String): Boolean =
-    java.nio.file.Files.isSymbolicLink(java.nio.file.Path.of(path))
+internal fun isSymbolicLink(path: String): Boolean = Files.isSymbolicLink(Path.of(path))

@@ -6,6 +6,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.*
+import java.nio.file.Path as NioPath
 
 private val logger = KotlinLogging.logger {}
 
@@ -80,8 +81,7 @@ internal fun parseRunConfigsFromRoot(root: JsonObject?): List<RunConfig> =
     } ?: emptyList()
 
 internal fun createRunConfig(cwd: String, name: String, command: String?, description: String?): RunConfig {
-    val trimmedName = name.trim()
-    if (trimmedName.isBlank()) throw RunConfigException("Run configuration name must not be blank")
+    val trimmedName = requireRunConfigName(name)
     val trimmedCommand = command?.trim().orEmpty()
     if (trimmedCommand.isBlank()) throw RunConfigException("Run configuration \"$trimmedName\" requires a command")
     val root = loadRunConfigRoot(cwd)
@@ -103,8 +103,7 @@ internal fun updateRunConfig(
     command: String?,
     description: String?,
 ): RunConfig {
-    val trimmedName = name.trim()
-    if (trimmedName.isBlank()) throw RunConfigException("Run configuration name must not be blank")
+    val trimmedName = requireRunConfigName(name)
     if (command == null && description == null) {
         throw RunConfigException("Nothing to update for run configuration \"$trimmedName\"")
     }
@@ -143,8 +142,7 @@ internal fun updateRunConfig(
 }
 
 internal fun deleteRunConfig(cwd: String, name: String): RunConfig {
-    val trimmedName = name.trim()
-    if (trimmedName.isBlank()) throw RunConfigException("Run configuration name must not be blank")
+    val trimmedName = requireRunConfigName(name)
     val root = loadRunConfigRoot(cwd)
         ?: throw RunConfigException("Could not delete \"$trimmedName\": no run configs are defined")
     val removed = root[trimmedName] as? JsonObject
@@ -163,8 +161,18 @@ private fun runConfigEntryJson(command: String, description: String?): JsonObjec
     if (!description.isNullOrBlank()) put("description", JsonPrimitive(description.trim()))
 }
 
+/**
+ * The trimmed configuration name, refusing a blank one - the shared guard of
+ * all three mutations, so an unnamed entry never reaches the file.
+ */
+private fun requireRunConfigName(name: String): String {
+    val trimmed = name.trim()
+    if (trimmed.isBlank()) throw RunConfigException("Run configuration name must not be blank")
+    return trimmed
+}
+
 private fun writeRunConfigRoot(cwd: String, root: JsonObject) =
     writeAtomically(
-        java.nio.file.Path.of(runConfigTarget(cwd)),
+        NioPath.of(runConfigTarget(cwd)),
         runConfigJson.encodeToString(JsonObject.serializer(), root)
     )

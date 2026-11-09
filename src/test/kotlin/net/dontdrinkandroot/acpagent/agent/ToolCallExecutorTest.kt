@@ -301,6 +301,28 @@ class ToolCallExecutorTest {
     }
 
     @Test
+    fun `an unknown permission option id is treated as a denial`() = runBlocking {
+        val tool = PathTool("read", mutating = false)
+        val registry = ToolRegistry().apply { register(tool) }
+        val state = state()
+        val executor = ToolCallExecutor(registry, state)
+        val emitter = RecordingEmitter()
+        // Deliberately allow-shaped: the decision must follow the offered option
+        // kinds, not the id spelling.
+        val client = SelectingClient("allow_forever")
+
+        execute(executor, emitter, StreamToolCall("call_1", "read", """{"path":"/etc/passwd"}"""), client = client)
+
+        assertEquals(0, tool.executedCount, "an option id we never offered must not allow the call")
+        assertTrue(
+            state.permanentPermissions.isEmpty(),
+            "an unknown option id must not arm a permanent grant",
+        )
+        val update = toolCallUpdates(emitter).single()
+        assertEquals(ToolCallStatus.FAILED, update.status)
+    }
+
+    @Test
     fun `allow_once does not arm the permanent grant so the second call prompts again`() = runBlocking {
         val tool = PathTool("read", mutating = false)
         val registry = ToolRegistry().apply { register(tool) }

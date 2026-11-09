@@ -106,91 +106,98 @@ internal class SessionConfigOptions(
         }
     }
 
-    fun options(): List<SessionConfigOption> {
-        val options = mutableListOf<SessionConfigOption>(
-            SessionConfigOption.select(
-                id = "mode",
-                name = "Session Mode",
-                currentValue = state.mode.currentMode.value,
-                options = SessionConfigSelectOptions.Flat(
-                    availableModes.map { mode ->
-                        SessionConfigSelectOption(
-                            value = SessionConfigValueId(mode.id.value),
-                            name = mode.name,
-                            description = mode.description,
-                        )
-                    }
-                ),
-                description = "Build modifies files; Plan is read-only; Bash is build plus a permission-gated shell",
-                category = SessionConfigOptionCategory.MODE,
-            )
+    fun options(): List<SessionConfigOption> = buildList {
+        add(modeOption())
+        modelOption()?.let { add(it) }
+        reasoningOption()?.let { add(it) }
+        providerOption()?.let { add(it) }
+    }
+
+    private fun modeOption(): SessionConfigOption = SessionConfigOption.select(
+        id = "mode",
+        name = "Session Mode",
+        currentValue = state.mode.currentMode.value,
+        options = SessionConfigSelectOptions.Flat(
+            availableModes.map { mode ->
+                SessionConfigSelectOption(
+                    value = SessionConfigValueId(mode.id.value),
+                    name = mode.name,
+                    description = mode.description,
+                )
+            }
+        ),
+        description = "Build modifies files; Plan is read-only; Bash is build plus a permission-gated shell",
+        category = SessionConfigOptionCategory.MODE,
+    )
+
+    private fun modelOption(): SessionConfigOption? {
+        if (models.isEmpty()) return null
+        return SessionConfigOption.select(
+            id = "model",
+            name = "Model",
+            currentValue = state.currentModel,
+            options = SessionConfigSelectOptions.Flat(
+                models.map { model ->
+                    SessionConfigSelectOption(
+                        value = SessionConfigValueId(model.id),
+                        name = model.name ?: model.id,
+                        description = model.description,
+                    )
+                }
+            ),
+            description = "OpenRouter model used for this session",
+            category = SessionConfigOptionCategory.MODEL,
         )
-        if (models.isNotEmpty()) {
-            options += SessionConfigOption.select(
-                id = "model",
-                name = "Model",
-                currentValue = state.currentModel,
-                options = SessionConfigSelectOptions.Flat(
-                    models.map { model ->
+    }
+
+    private fun reasoningOption(): SessionConfigOption? {
+        val selector = reasoningSelector() ?: return null
+        return SessionConfigOption.select(
+            id = "reasoning",
+            name = "Reasoning",
+            currentValue = selector.current,
+            options = SessionConfigSelectOptions.Flat(
+                selector.options.map { option ->
+                    SessionConfigSelectOption(
+                        value = SessionConfigValueId(option.value),
+                        name = option.name,
+                        description = option.description,
+                    )
+                }
+            ),
+            description = "Reasoning effort applied to the selected model",
+            category = SessionConfigOptionCategory.THOUGHT_LEVEL,
+        )
+    }
+
+    private fun providerOption(): SessionConfigOption? {
+        val providers = providerOptions ?: return null
+        return SessionConfigOption.select(
+            id = "provider",
+            name = "Provider",
+            currentValue = state.providerSelection.ifEmpty { PROVIDER_AUTO },
+            options = SessionConfigSelectOptions.Flat(
+                buildList {
+                    add(
                         SessionConfigSelectOption(
-                            value = SessionConfigValueId(model.id),
-                            name = model.name ?: model.id,
-                            description = model.description,
+                            value = SessionConfigValueId(PROVIDER_AUTO),
+                            name = "Auto",
+                            description = "OpenRouter routes the request (throughput-sorted, median price cap)",
                         )
-                    }
-                ),
-                description = "OpenRouter model used for this session",
-                category = SessionConfigOptionCategory.MODEL,
-            )
-        }
-        val reasoningSelector = reasoningSelector()
-        if (reasoningSelector != null) {
-            options += SessionConfigOption.select(
-                id = "reasoning",
-                name = "Reasoning",
-                currentValue = reasoningSelector.current,
-                options = SessionConfigSelectOptions.Flat(
-                    reasoningSelector.options.map { option ->
-                        SessionConfigSelectOption(
-                            value = SessionConfigValueId(option.value),
-                            name = option.name,
-                            description = option.description,
-                        )
-                    }
-                ),
-                description = "Reasoning effort applied to the selected model",
-                category = SessionConfigOptionCategory.THOUGHT_LEVEL,
-            )
-        }
-        providerOptions?.let { providers ->
-            options += SessionConfigOption.select(
-                id = "provider",
-                name = "Provider",
-                currentValue = state.providerSelection.ifEmpty { PROVIDER_AUTO },
-                options = SessionConfigSelectOptions.Flat(
-                    buildList {
+                    )
+                    providers.filter { it.selectableTag() }.forEach { provider ->
                         add(
                             SessionConfigSelectOption(
-                                value = SessionConfigValueId(PROVIDER_AUTO),
-                                name = "Auto",
-                                description = "OpenRouter routes the request (throughput-sorted, median price cap)",
+                                value = SessionConfigValueId(provider.tag),
+                                name = provider.name.ifBlank { provider.tag },
                             )
                         )
-                        providers.filter { it.selectableTag() }.forEach { provider ->
-                            add(
-                                SessionConfigSelectOption(
-                                    value = SessionConfigValueId(provider.tag),
-                                    name = provider.name.ifBlank { provider.tag },
-                                )
-                            )
-                        }
                     }
-                ),
-                description = "Provider used for the selected model (auto = OpenRouter routing)",
-                category = SessionConfigOptionCategory("provider"),
-            )
-        }
-        return options
+                }
+            ),
+            description = "Provider used for the selected model (auto = OpenRouter routing)",
+            category = SessionConfigOptionCategory("provider"),
+        )
     }
 
     /**

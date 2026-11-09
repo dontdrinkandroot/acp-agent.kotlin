@@ -4,6 +4,7 @@ import com.agentclientprotocol.model.ToolKind
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.tools.AgentTool
@@ -23,7 +24,7 @@ public class McpServerConnection(
     public suspend fun callTool(toolName: String, arguments: JsonObject): McpCallResult {
         val argMap = arguments.toJsonValueMap()
         val result = client.callTool(name = toolName, arguments = argMap)
-        val content = result.content.filterIsInstance<io.modelcontextprotocol.kotlin.sdk.types.TextContent>()
+        val content = result.content.filterIsInstance<TextContent>()
             .joinToString("\n") { it.text }
         return McpCallResult(content, result.isError == true)
     }
@@ -99,14 +100,14 @@ private fun annotationsKind(tool: Tool, trustAnnotations: Boolean): ToolKind {
     return if (annotations.destructiveHint == false) ToolKind.EDIT else ToolKind.DELETE
 }
 
-public fun kotlinx.serialization.json.JsonObject.toJsonValueMap(): Map<String, Any?> = buildMap {
+public fun JsonObject.toJsonValueMap(): Map<String, Any?> = buildMap {
     for ((key, value) in this@toJsonValueMap) {
         put(key, value.toAny())
     }
 }
 
-private fun kotlinx.serialization.json.JsonElement.toAny(): Any? = when (this) {
-    is kotlinx.serialization.json.JsonNull -> null
+private fun JsonElement.toAny(): Any? = when (this) {
+    is JsonNull -> null
     is JsonPrimitive -> when {
         isString -> content
         else -> contentOrNull?.let { content ->
@@ -117,8 +118,8 @@ private fun kotlinx.serialization.json.JsonElement.toAny(): Any? = when (this) {
         }
     }
 
-    is kotlinx.serialization.json.JsonObject -> toJsonValueMap()
-    is kotlinx.serialization.json.JsonArray -> map { it.toAny() }
+    is JsonObject -> toJsonValueMap()
+    is JsonArray -> map { it.toAny() }
 }
 
 public fun createMcpClientInfo(): Implementation = Implementation(name = "acp-agent", version = "0.1.0")

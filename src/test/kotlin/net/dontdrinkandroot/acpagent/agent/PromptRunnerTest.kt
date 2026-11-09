@@ -129,13 +129,15 @@ private fun textScript(
 ): List<JsonObject> = buildList {
     reasoning?.let { add(reasoningDelta(it)) }
     content?.let { add(contentDelta(it)) }
-    if (!content.isNullOrEmpty()) add(doneEvent(status, incompleteReason, errorCode).let {
-        buildJsonObject {
-            put("type", "response.output_item.done")
-            put("output_index", 0)
-            put("item", assistantItem(content))
-        }
-    })
+    if (!content.isNullOrEmpty()) {
+        add(
+            buildJsonObject {
+                put("type", "response.output_item.done")
+                put("output_index", 0)
+                put("item", assistantItem(content))
+            }
+        )
+    }
     add(doneEvent(status, incompleteReason, errorCode))
 }
 

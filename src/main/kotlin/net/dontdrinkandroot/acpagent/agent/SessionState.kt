@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.tools.*
+import java.util.*
 import kotlin.concurrent.Volatile
 
 internal val DEFAULT_MODE = MODE_PLAN
@@ -66,7 +67,7 @@ internal class SessionState(
     private val permissionGrants = mutableMapOf<String, Boolean>()
 
     /** Read-only view of [permissionGrants] for diagnostics and the pins. */
-    val permanentPermissions: Map<String, Boolean> = java.util.Collections.unmodifiableMap(permissionGrants)
+    val permanentPermissions: Map<String, Boolean> = Collections.unmodifiableMap(permissionGrants)
 
     /**
      * Dangling tool-call ids already warned about: the repaired view warns
@@ -154,7 +155,7 @@ internal class SessionState(
      */
     fun dropLiveReasoning() {
         synchronized(historyLock) {
-            history.removeAll { item -> (item as? HistoryItem.Captured)?.raw?.isReasoning == true }
+            history.removeAll { item -> item.isLiveReasoning() }
         }
     }
 
@@ -293,7 +294,7 @@ internal class SessionState(
             // Reasoning items are live-only: the record is the history
             // projection without them, so no chain-of-thought ever reaches
             // disk (issue #75).
-            history = snapshot.filterNot { item -> (item as? HistoryItem.Captured)?.raw?.isReasoning == true }
+            history = snapshot.filterNot { item -> item.isLiveReasoning() }
                 .map { it.toWire() },
             model = currentModel,
             reasoning = reasoningSelection,
@@ -381,6 +382,10 @@ internal class SessionState(
     private fun truncatedTitle(title: String): String =
         if (title.codePointCount(0, title.length) <= MAX_TITLE_LENGTH) title
         else title.substring(0, title.offsetByCodePoints(0, MAX_TITLE_LENGTH)) + "…"
+
+    /** True for the captured `reasoning` item, the only live-only item type (issue #75). */
+    private fun HistoryItem.isLiveReasoning(): Boolean =
+        (this as? HistoryItem.Captured)?.raw?.isReasoning == true
 }
 
 /** The session's initial model: the persisted pick or the configured OpenRouter default. */

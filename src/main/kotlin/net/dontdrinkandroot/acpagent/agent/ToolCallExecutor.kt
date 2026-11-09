@@ -1,7 +1,6 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.annotations.UnstableApi
-import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.rpc.ACPJson
@@ -14,6 +13,32 @@ import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.tools.*
 
 private val logger = KotlinLogging.logger {}
+
+/**
+ * One permission option offered in `session/request_permission`: the wire id,
+ * the display name and the kind. The kind carries the semantics - an
+ * `ALLOW_*` option permits the call, a `REJECT_*` option denies it, and the
+ * `*_ALWAYS` kinds additionally arm the session's permanent decision - so the
+ * decision never depends on the id spelling.
+ */
+private class PermissionChoice(
+    val id: String,
+    val name: String,
+    val kind: PermissionOptionKind,
+) {
+    /** True for the two allowing kinds (once and always). */
+    val allows: Boolean
+        get() = kind == PermissionOptionKind.ALLOW_ONCE || kind == PermissionOptionKind.ALLOW_ALWAYS
+
+    fun toPermissionOption(): PermissionOption = PermissionOption(PermissionOptionId(id), name, kind)
+}
+
+private val PERMISSION_OPTIONS = listOf(
+    PermissionChoice("allow_once", "Allow Once", PermissionOptionKind.ALLOW_ONCE),
+    PermissionChoice("allow_always", "Allow Always", PermissionOptionKind.ALLOW_ALWAYS),
+    PermissionChoice("reject_once", "Reject Once", PermissionOptionKind.REJECT_ONCE),
+    PermissionChoice("reject_always", "Reject Always", PermissionOptionKind.REJECT_ALWAYS),
+)
 
 /**
  * The outcome of the permission stage for one tool call: allowed to run,
@@ -142,7 +167,7 @@ internal class ToolCallExecutor(
             )
         )
 
-        val permission = resolvePermission(tool, toolCallId, arguments, title, toolContext.client, toolContext)
+        val permission = resolvePermission(tool, toolCallId, arguments, title, toolContext)
         if (permission != PermissionOutcome.ALLOWED) {
             val msg = if (permission == PermissionOutcome.REFUSED_BY_POLICY) {
                 unlistedPathRefusal(tool, arguments)
@@ -212,7 +237,6 @@ internal class ToolCallExecutor(
         toolCallId: ToolCallId,
         arguments: JsonObject,
         title: String,
-        client: ClientSessionOperations?,
         toolContext: ToolContext,
     ): PermissionOutcome {
         when (permissionDecision(toolContext.cwd, tool, arguments, permissionPolicy)) {
@@ -220,22 +244,11 @@ internal class ToolCallExecutor(
             PermissionDecision.DENY -> return PermissionOutcome.REFUSED_BY_POLICY
             PermissionDecision.PROMPT -> Unit
         }
-        if (client == null) return PermissionOutcome.ALLOWED
+        val client = toolContext.client ?: return PermissionOutcome.ALLOWED
         state.permissionDecisionFor(tool.name)?.let { granted ->
             return if (granted) PermissionOutcome.ALLOWED else PermissionOutcome.DENIED
         }
-        val options = listOf(
-            "allow_once" to PermissionOptionKind.ALLOW_ONCE,
-            "allow_always" to PermissionOptionKind.ALLOW_ALWAYS,
-            "reject_once" to PermissionOptionKind.REJECT_ONCE,
-            "reject_always" to PermissionOptionKind.REJECT_ALWAYS,
-        ).map { (id, kind) ->
-            PermissionOption(
-                PermissionOptionId(id),
-                id.split('_').joinToString(" ") { word -> word.replaceFirstChar { it.uppercase() } },
-                kind,
-            )
-        }
+        val options = PERMISSION_OPTIONS.map { option -> option.toPermissionOption() }
         val update = SessionUpdate.ToolCallUpdate(
             toolCallId = toolCallId,
             title = title,
@@ -248,15 +261,21 @@ internal class ToolCallExecutor(
             val response = client.requestPermissions(toolCall = update, permissions = options)
             when (val outcome = response.outcome) {
                 is RequestPermissionOutcome.Selected -> {
-                    when (outcome.optionId.value) {
-                        "allow_always" -> state.grantAlways(tool.name)
-                        "reject_always" -> state.rejectAlways(tool.name)
+                    val chosen = PERMISSION_OPTIONS.firstOrNull { it.id == outcome.optionId.value }
+                    if (chosen == null) {
+                        // A client must echo one of the offered ids; anything else is a
+                        // protocol violation and must not be guessed into an allow.
+                        logger.warn {
+                            "permission request for tool \"${tool.name}\" answered with unknown option " +
+                                    "\"${outcome.optionId.value}\"; treating it as a denial"
+                        }
                     }
-                    if (outcome.optionId.value.startsWith("allow")) {
-                        PermissionOutcome.ALLOWED
-                    } else {
-                        PermissionOutcome.DENIED
+                    when (chosen?.kind) {
+                        PermissionOptionKind.ALLOW_ALWAYS -> state.grantAlways(tool.name)
+                        PermissionOptionKind.REJECT_ALWAYS -> state.rejectAlways(tool.name)
+                        else -> Unit
                     }
+                    if (chosen?.allows == true) PermissionOutcome.ALLOWED else PermissionOutcome.DENIED
                 }
 
                 is RequestPermissionOutcome.Cancelled -> PermissionOutcome.DENIED

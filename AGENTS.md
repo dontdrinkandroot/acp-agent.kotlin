@@ -43,8 +43,25 @@ contract is ours (see the LLM provider bullet under Boundaries).
 
 ## Conventions
 
-* We always adhere to Clean Code and SOLID principles. Keep in mind that this avoids unnecessary comments and rather
-  uses speaking variable and function names.
+- We always adhere to Clean Code principles:
+  - **Meaningful Names:** Choose names that reveal intent. A variable or function name should explain why it exists and
+    what it does without needing a comment.
+  - **Functions Should Do One Thing:** Functions should be small and perform a single task. If you can extract a subset
+    of a function into another, it’s doing too much.
+  - **DRY (Don't Repeat Yourself):** Eliminate duplication. Every piece of logic should have a single, unambiguous
+    representation in the codebase.
+  - **Comment on "why" not "how":** Code should explain itself. Use comments only when you cannot express intent through
+    code or to explain "why" (business logic), never "how." Make sure the "why" is always clear so when looking at the
+    code again the intent is clear either through the code or comments.
+  - **The Boy Scout Rule:** Leave the code slightly better than you found it, but keep changes related to the requested
+    task.
+- We always adhere to SOLID principles:
+  - **Single Responsibility (SRP):** A class should have only one reason to change.
+  - **Open/Closed (OCP):** Software entities should be open for extension but closed for modification.
+  - **Liskov Substitution (LSP):** Subtypes must be substitutable for their base types.
+  - **Interface Segregation (ISP):** No client should be forced to depend on methods it does not use.
+  - **Dependency Inversion (DIP):** Depend on abstractions, not concretions.
+
 * We use test-driven development by default, in small red→green→refactor cycles writing tests first.
   Do not write multiple tests at once, always one test, then implementation, then refactor.
   The tests are documenting our specification and expectations.
@@ -290,7 +307,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # treeFilesSorted (tree-diff walker) + cap constants
     tools/GlobTool.kt                # glob tool (local disk; via DirectoryWalk)
     tools/GrepTool.kt                # grep tool (local disk)
-    tools/MoveFileTool.kt            # move_file tool + shared movePath helper (local disk)
+    tools/MoveFileTool.kt            # move_file tool + the shared executeMove flow (MoveKind
+                                     # FILE/DIRECTORY: expected source type, sibling tool, verb)
+                                     # + movePath helper (local disk)
     tools/MoveDirectoryTool.kt       # move_directory tool (local disk)
     tools/DeleteFileTool.kt          # delete_file tool + removed-content diff (local disk)
     tools/DeleteDirectoryTool.kt     # delete_directory tool; symlink-safe recursive delete
@@ -376,6 +395,8 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # wire shape order, fail-open hidden, manual-beats-env,
                                      # persistence across restart
         E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
+                                     # + the turn-end delivery order (note -> usage_update ->
+                                     # prompt response)
         E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
                                      # unknown config fails loudly, args = literal argv tokens
         E2eRunConfigCrudTest.kt      # create/update/delete_run_config: .ai/run.json persistence
@@ -812,6 +833,11 @@ own config directory (a
 - **Usage indicator**: after each model call a `usage_update` (`used` = prompt tokens,
   `size` = model `context_length`); skipped when either is missing. During an active prompt the
   SDK routes session updates into the prompt event flow, not the `notify` callback.
+  The turn-end delivery order is a wire contract (`PromptRunner.endTurn`, the single exit
+  ceremony of every terminal branch): the turn's message content first (a synthesized note
+  when the text was not streamed live), then the `usage_update`, then the prompt response -
+  so the usage indicator never splits a reply. Pinned black-box by `E2eMaxTurnRequestsTest`
+  (the interrupted-note branch's event order).
 - **File-access exclusions**: the file tools enforce a shared exclusion policy (`tools/FileAccessExclusions.kt`,
   threaded as `ToolContext.fileExclusions`): files whose
   cwd-relative path matches an exclusion glob rule are refused to direct-target tools (`read_file`/`edit_file`/
@@ -1111,9 +1137,11 @@ own config directory (a
   In-project writes are further gated by mode (plan is read-only). The containment check (`tools/Containment.kt`) is
   symlink-safe and resolves relative paths against the session cwd.
   `allow_always`/`reject_always` persist per session (keyed by tool name); `allow_once`/
-  `reject_once` apply once. The permanent branches are pinned by
+  `reject_once` apply once. The decision follows the *kind* of the offered option, never the id
+  spelling: an id we did not offer is a denial (warned on stderr, never guessed into an allow).
+  The permanent branches are pinned by
   `ToolCallExecutorTest` (allow_always/reject_always short-circuit + the grants,
-  allow_once contrast) and `E2eFileStoreTest` (two prompts, one session grant);
+  allow_once contrast, an allow-shaped unknown id denying) and `E2eFileStoreTest` (two prompts, one session grant);
   the grants are **session-memory only** (not in `SessionRecord`, evaporate on
   restart) - deliberately pinned so the over-grant redesign (issue #3, per-path
   keys) must change these pins explicitly rather than silently regress the

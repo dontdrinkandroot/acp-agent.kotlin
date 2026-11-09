@@ -1,6 +1,9 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import kotlinx.io.files.Path
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.FileInputStream
 
 /**
  * A source line as read by [StreamingLineReader]: the line text without its
@@ -35,11 +38,11 @@ internal const val MAX_LINE_ACCUMULATION_BYTES: Int = 64 * 1024
  * clamped line).
  */
 internal class StreamingLineReader(path: Path) {
-    private val input = java.io.BufferedInputStream(java.io.FileInputStream(path.toString()), 8192)
+    private val input = BufferedInputStream(FileInputStream(path.toString()), 8192)
     private val byteBuffer = ByteArray(8192)
     private var bufferPos = 0
     private var bufferLen = 0
-    private val current = java.io.ByteArrayOutputStream()
+    private val current = ByteArrayOutputStream()
     private var currentChars: SourceLine? = null
     private var pendingPartial = false
     private var lineOverflow = false
@@ -124,7 +127,7 @@ internal class StreamingLineReader(path: Path) {
         return SourceLine(text, terminated = terminated, truncated = truncated)
     }
 
-    private fun decode(buffer: java.io.ByteArrayOutputStream): String =
+    private fun decode(buffer: ByteArrayOutputStream): String =
         String(buffer.toByteArray(), Charsets.UTF_8)
 
     fun close() {
@@ -146,7 +149,7 @@ private fun ByteArray.indexOf(b: Byte, from: Int, to: Int): Int {
  * walking the whole file's lines.
  */
 internal fun countVisualLines(path: Path): Int {
-    val input = java.io.BufferedInputStream(java.io.FileInputStream(path.toString()), 8192)
+    val input = BufferedInputStream(FileInputStream(path.toString()), 8192)
     val buffer = ByteArray(8192)
     var newlines = 0
     var sawAny = false

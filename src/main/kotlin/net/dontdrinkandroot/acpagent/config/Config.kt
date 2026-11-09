@@ -328,15 +328,9 @@ internal class EnvValues(private val env: Map<String, String>) {
         return value.split(',')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-            .map {
-                require(it.startsWith("/")) { "$name entries must be absolute paths, got '$it'" }
-                it
-            }
+            .map { requireAbsolutePath(name, it) }
             .distinct()
     }
-
-    private fun rangeText(range: IntRange): String =
-        if (range.last == Int.MAX_VALUE) "at least ${range.first}" else "between ${range.first} and ${range.last}"
 
     companion object {
         fun name(configPath: String): String = Config.envName(configPath)

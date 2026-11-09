@@ -9,7 +9,9 @@ import io.ktor.http.*
 import io.ktor.utils.io.*
 import net.dontdrinkandroot.acpagent.tools.WebFetcher.SPECIAL_PURPOSE_NETWORKS
 import net.dontdrinkandroot.acpagent.tools.WebFetcher.defaultClient
+import java.io.ByteArrayOutputStream
 import java.net.InetAddress
+import java.net.URI
 import java.nio.charset.Charset
 import java.util.*
 
@@ -127,7 +129,7 @@ internal object WebFetcher {
             throw WebFetchException(oversizeMessage(declaredLength))
         }
         val channel = response.bodyAsChannel()
-        val buffer = java.io.ByteArrayOutputStream()
+        val buffer = ByteArrayOutputStream()
         val chunk = ByteArray(64 * 1024)
         var total = 0L
         while (true) {
@@ -153,7 +155,7 @@ internal object WebFetcher {
      * file:, ftp:, data: etc. are refused.
      */
     internal fun normalize(rawUrl: String): String {
-        val uri = java.net.URI(rawUrl)
+        val uri = URI(rawUrl)
         val scheme = uri.scheme?.lowercase(Locale.ROOT)
             ?: throw WebFetchException("unsupported URL scheme (only http/https): $rawUrl")
         if (scheme != "http" && scheme != "https") {
@@ -174,7 +176,7 @@ internal object WebFetcher {
      * are legal); `URL(base, spec)` applies the RFC 3986 dot-segment rules.
      */
     internal fun resolve(base: String, location: String): String =
-        normalize(java.net.URI(base).resolve(location).toString())
+        normalize(URI(base).resolve(location).toString())
 
     /**
      * SSRF guard: only http(s) URLs, and hosts resolving to a non-public
@@ -190,7 +192,7 @@ internal object WebFetcher {
      * exploit; full DNS pinning is not exposed by the ktor CIO engine.
      */
     internal fun validateHop(url: String, allowPrivate: Boolean) {
-        val parsed = java.net.URI(url).toURL()
+        val parsed = URI(url).toURL()
         val host = parsed.host ?: throw WebFetchException("URL has no host: $url")
         if (allowPrivate) return
         if (looksPrivateByName(host)) throw WebFetchException(blockedMessage(host))
@@ -334,7 +336,7 @@ internal object WebFetcher {
 
     private fun binaryMessage(contentType: String, bytes: Long?): String {
         val size = bytes?.let { ", ${formatBytes(it)}" } ?: ""
-        return "binary content (${"$contentType".ifBlank { "unknown type" }}$size) cannot be rendered as " +
+        return "binary content (${contentType.ifBlank { "unknown type" }}$size) cannot be rendered as " +
                 "text; download and process it via bash if needed (e.g. curl)"
     }
 

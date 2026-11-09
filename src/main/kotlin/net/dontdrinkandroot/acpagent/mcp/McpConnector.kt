@@ -11,12 +11,14 @@ import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.StdioClientTransport
 import io.modelcontextprotocol.kotlin.sdk.client.mcpSseTransport
 import io.modelcontextprotocol.kotlin.sdk.client.mcpStreamableHttpTransport
+import io.modelcontextprotocol.kotlin.sdk.shared.Transport
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
+import java.io.File
 
 public suspend fun connectMcpServer(
     server: McpServer,
@@ -71,7 +73,7 @@ private suspend fun connectStdio(
             // The session cwd is the workspace: a server that resolves relative
             // paths must see the project, not wherever the IDE spawned the agent
             // (issue #74). Never null - session creation refuses an unusable cwd.
-            directory(java.io.File(sessionCwd))
+            directory(File(sessionCwd))
             environment().apply {
                 clear()
                 putAll(mcpChildEnvironment(System.getenv(), server.env))
@@ -95,6 +97,36 @@ private suspend fun connectHttp(
     url: String,
     headers: List<HttpHeader>,
     clientInfo: Implementation
+): McpServerConnection = connectOverHttp(name, clientInfo) { httpClient ->
+    httpClient.mcpStreamableHttpTransport(url) {
+        headers.forEach { header(it.name, it.value) }
+    }
+}
+
+private suspend fun connectSse(
+    name: String,
+    url: String,
+    headers: List<HttpHeader>,
+    clientInfo: Implementation
+): McpServerConnection = connectOverHttp(name, clientInfo) { httpClient ->
+    // The MCP SDK deprecates classic SSE in favour of streamable HTTP (SEP-2596),
+    // but ACP's `mcpServers` still carries an `sse` transport variant that a client
+    // may hand us, so the transport stays until ACP drops it.
+    @Suppress("DEPRECATION")
+    httpClient.mcpSseTransport(url) {
+        headers.forEach { header(it.name, it.value) }
+    }
+}
+
+/**
+ * The shared HTTP connection flow of the streamable-HTTP and classic-SSE
+ * transports: one ktor client per connection (closed with it) and a transport
+ * built by [transportFactory].
+ */
+private suspend fun connectOverHttp(
+    name: String,
+    clientInfo: Implementation,
+    transportFactory: (HttpClient) -> Transport,
 ): McpServerConnection = withContext(Dispatchers.IO) {
     // The SSE plugin is required even for JSON-only streamable-HTTP servers:
     // after `notifications/initialized` the client probes the optional GET SSE
@@ -103,31 +135,7 @@ private suspend fun connectHttp(
     val httpClient = HttpClient(CIO) {
         install(SSE)
     }
-    val transport = httpClient.mcpStreamableHttpTransport(url) {
-        headers.forEach { header(it.name, it.value) }
-    }
     val client = Client(clientInfo = clientInfo)
-    client.connect(transport)
-    McpServerConnection(name, client, onClose = { httpClient.close() })
-}
-
-private suspend fun connectSse(
-    name: String,
-    url: String,
-    headers: List<HttpHeader>,
-    clientInfo: Implementation
-): McpServerConnection = withContext(Dispatchers.IO) {
-    val httpClient = HttpClient(CIO) {
-        install(SSE)
-    }
-    // The MCP SDK deprecates classic SSE in favour of streamable HTTP (SEP-2596),
-    // but ACP's `mcpServers` still carries an `sse` transport variant that a client
-    // may hand us, so the transport stays until ACP drops it.
-    @Suppress("DEPRECATION")
-    val transport = httpClient.mcpSseTransport(url) {
-        headers.forEach { header(it.name, it.value) }
-    }
-    val client = Client(clientInfo = clientInfo)
-    client.connect(transport)
+    client.connect(transportFactory(httpClient))
     McpServerConnection(name, client, onClose = { httpClient.close() })
 }

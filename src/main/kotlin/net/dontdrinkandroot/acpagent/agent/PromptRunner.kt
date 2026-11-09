@@ -7,10 +7,7 @@ import com.github.f4b6a3.uuid.UuidCreator
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.serialization.json.JsonObject
-import net.dontdrinkandroot.acpagent.llm.ChatCompleter
-import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
-import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
-import net.dontdrinkandroot.acpagent.llm.forModel
+import net.dontdrinkandroot.acpagent.llm.*
 import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesResponse
 import net.dontdrinkandroot.acpagent.llm.models.ResponsesUsage
@@ -107,7 +104,6 @@ internal class PromptRunner(
                 iteration.truncated && !continuationUsed -> {
                     continuationUsed = true
                     continuationPending = true
-                    val empty = iteration.text.isEmpty()
                     val partial = iteration.text.takeIf { it.isNotEmpty() }
                     logAbnormalRetry(iteration, iterations)
                     // All tool calls are dropped - including complete ones - so a
@@ -116,7 +112,7 @@ internal class PromptRunner(
                         state.appendToHistory(assistantMessageItem(partial))
                     }
                     state.appendToHistory(
-                        userMessageItem(if (empty) CONTINUE_EMPTY_PROMPT else CONTINUE_TRUNCATED_PROMPT)
+                        userMessageItem(if (partial == null) CONTINUE_EMPTY_PROMPT else CONTINUE_TRUNCATED_PROMPT)
                     )
                 }
 
@@ -167,51 +163,45 @@ internal class PromptRunner(
 
         if (windDown.truncated) {
             logAbnormalEnd(windDown, "in the wind-down pass")
-            val note = INTERRUPTED_NOTE
-            state.appendToHistory(assistantMessageItem(note))
-            emitTextChunk(emitter, note, newMessageId())
-            finishTurn(usage)
-            emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.MAX_TURN_REQUESTS)))
+            endTurn(emitter, usage, INTERRUPTED_NOTE, emitChunk = true, stopReason = StopReason.MAX_TURN_REQUESTS)
             return
         }
 
-        state.appendToHistory(assistantMessageItem(windDown.text))
-        finishTurn(usage)
-        emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.MAX_TURN_REQUESTS)))
+        endTurn(emitter, usage, windDown.text, emitChunk = false, stopReason = StopReason.MAX_TURN_REQUESTS)
     }
 
     /**
      * Ends a turn from one of the terminal loop branches: appends the final
-     * assistant message to the history, persists the turn's end state,
-     * reports the usage indicator and emits the END_TURN prompt response -
-     * the exit ceremony every terminal branch must run, in one place. The
-     * chunk is emitted only when the text was NOT already streamed live by
-     * the delta relay (the synthesized notes); re-emitting streamed text
-     * would duplicate it in the client's message (pinned by the e2e
-     * messageId-per-iteration contract).
+     * assistant message to the history, persists the turn's end state, emits
+     * the remaining message content, reports the usage indicator and emits the
+     * prompt response - the exit ceremony every terminal branch must run, in
+     * one place.
+     *
+     * The order is the turn's delivery invariant: content first, then the
+     * usage indicator, then the response. The chunk is emitted only when the
+     * text was NOT already streamed live by the delta relay (the synthesized
+     * notes); re-emitting streamed text would duplicate it in the client's
+     * message (pinned by the e2e messageId-per-iteration contract).
+     *
+     * Persisting before delivering keeps the record durable even when a client
+     * dies mid-ceremony; live reasoning is already gone - `run`'s `finally`
+     * drops it on every exit path, so a persisted turn never carries it either
+     * (issue #75).
      */
     private suspend fun endTurn(
         emitter: FlowCollector<Event>,
         usage: ResponsesUsage?,
         finalText: String,
         emitChunk: Boolean,
+        stopReason: StopReason = StopReason.END_TURN,
     ) {
         state.appendToHistory(assistantMessageItem(finalText))
-        finishTurn(usage)
+        state.persist()
         if (emitChunk && finalText.isNotEmpty()) {
             emitTextChunk(emitter, finalText, newMessageId())
         }
-        emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
-    }
-
-    /**
-     * The turn-end ceremony shared by every exit: the record is persisted.
-     * Live reasoning is already gone - `run`'s `finally` drops it on every exit
-     * path, so a persisted turn never carries it either (issue #75).
-     */
-    private suspend fun finishTurn(usage: ResponsesUsage?) {
-        state.persist()
         emitUsageUpdate(usage)
+        emitter.emit(Event.PromptResponseEvent(PromptResponse(stopReason = stopReason)))
     }
 
     /**
@@ -256,28 +246,10 @@ internal class PromptRunner(
             when (event.stringField("type")) {
                 "response.created" -> Unit
 
-                "response.output_item.added" -> {
+                "response.output_item.added", "response.output_item.done" -> {
                     val index = event.intField("output_index") ?: 0
                     val item = event.jsonObjectOrNull("item") ?: return@collect
-                    when {
-                        item.isReasoning -> reasoningItemAccum[index] = item
-                        item.isAssistantMessage -> messageItemAccum[index] = item
-                        item.isFunctionCall -> functionCallAccum.getOrPut(index) { MutableFunctionCall() }
-                            .also { it.applyItem(item) }
-                    }
-                }
-
-                "response.output_item.done" -> {
-                    val index = event.intField("output_index") ?: 0
-                    val item = event.jsonObjectOrNull("item") ?: return@collect
-                    when {
-                        item.isReasoning -> reasoningItemAccum[index] = item
-                        // The provider's own item: replayed verbatim, so `id`,
-                        // `status` and `annotations` stay intact.
-                        item.isAssistantMessage -> messageItemAccum[index] = item
-                        item.isFunctionCall -> functionCallAccum.getOrPut(index) { MutableFunctionCall() }
-                            .also { it.applyItem(item) }
-                    }
+                    accumulateOutputItem(item, index, reasoningItemAccum, messageItemAccum, functionCallAccum)
                 }
 
                 "response.reasoning.delta", "response.reasoning_summary_text.delta",
@@ -353,11 +325,28 @@ internal class PromptRunner(
         )
     }
 
+    /**
+     * Files one streamed output item under its `output_index`: reasoning and
+     * assistant message items are kept as the provider's own object (replayed
+     * verbatim, so `id`, `status` and `annotations` stay intact), function
+     * calls are merged into their per-index accumulator.
+     */
+    private fun accumulateOutputItem(
+        item: JsonObject,
+        index: Int,
+        reasoningItems: MutableMap<Int, JsonObject>,
+        messageItems: MutableMap<Int, JsonObject>,
+        functionCalls: MutableMap<Int, MutableFunctionCall>,
+    ) {
+        when {
+            item.isReasoning -> reasoningItems[index] = item
+            item.isAssistantMessage -> messageItems[index] = item
+            item.isFunctionCall -> functionCalls.getOrPut(index) { MutableFunctionCall() }.applyItem(item)
+        }
+    }
+
     private fun decodeResponse(response: JsonObject): ResponsesResponse =
-        net.dontdrinkandroot.acpagent.llm.llmWireJson.decodeFromJsonElement(
-            ResponsesResponse.serializer(),
-            response,
-        )
+        llmWireJson.decodeFromJsonElement(ResponsesResponse.serializer(), response)
 
     /**
      * Reports the context window usage of the last completed model call. The

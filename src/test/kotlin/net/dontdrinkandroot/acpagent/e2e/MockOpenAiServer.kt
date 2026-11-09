@@ -28,6 +28,8 @@ internal fun readFileArgs(path: String, limit: Int = 2000): JsonObject =
  * tool call, while requests without tools (the wind-down pass) get plain text.
  * With [toolCalls] the Nth completion request answers with the Nth tool call (a `null`
  * entry answers with plain text, ending the turn), falling back to plain text afterwards.
+ * With [incompleteWindDown] a tools-less request (the wind-down pass) answers `incomplete`
+ * with no content, so the agent's synthesized interrupted-note branch runs.
  */
 internal class MockOpenAiServer(
     private val targetPath: String,
@@ -39,6 +41,7 @@ internal class MockOpenAiServer(
     private val toolCalls: List<MockToolCall?> = emptyList(),
     private val firstTurnStreamDeltas: Boolean = false,
     private val alwaysToolCall: Boolean = false,
+    private val incompleteWindDown: Boolean = false,
     private val holdFirstRequest: Boolean = false,
 ) {
     val requestCount = AtomicInteger(0)
@@ -86,6 +89,8 @@ internal class MockOpenAiServer(
                 // without the tools field (the wind-down pass) gets plain text.
                 alwaysToolCall && lastRequestBody!!.contains("\"tools\"") ->
                     toolCallSse("write_file", writeFileArguments())
+
+                alwaysToolCall && incompleteWindDown -> incompleteSse()
 
                 alwaysToolCall -> textSse()
                 toolCalls.isNotEmpty() && n <= toolCalls.size -> {
@@ -228,15 +233,18 @@ internal class MockOpenAiServer(
         append(
             responseDoneEvent(
                 "completed",
-                buildJsonObject {
-                    put("input_tokens", 42)
-                    put("output_tokens", 5)
-                    put("total_tokens", 47)
-                },
+                testUsage(),
             )
         )
         append("data: [DONE]\n\n")
     }
+
+    /**
+     * A Responses-API stream cut off at the token limit before any output: no
+     * content, an `incomplete` terminal event with `incomplete_details` and usage.
+     */
+    private fun incompleteSse(): String =
+        responseDoneEvent("incomplete", testUsage(), incompleteReason = "max_output_tokens") + "data: [DONE]\n\n"
 
     private fun reasoningEvent(text: String): String =
         "data: " + buildJsonObject {
@@ -266,7 +274,11 @@ internal class MockOpenAiServer(
             put("item", item)
         } + "\n\n"
 
-    private fun responseDoneEvent(status: String, usage: JsonObject? = null): String =
+    private fun responseDoneEvent(
+        status: String,
+        usage: JsonObject? = null,
+        incompleteReason: String? = null,
+    ): String =
         "data: " + buildJsonObject {
             // The live endpoint emits response.completed / response.incomplete,
             // never the documented response.done (verified 2026-11-06).
@@ -275,7 +287,16 @@ internal class MockOpenAiServer(
                 put("id", "resp_test")
                 put("model", "test-model")
                 put("status", status)
+                incompleteReason?.let { reason ->
+                    put("incomplete_details", buildJsonObject { put("reason", reason) })
+                }
                 usage?.let { put("usage", it) }
             })
         } + "\n\n"
+
+    private fun testUsage(): JsonObject = buildJsonObject {
+        put("input_tokens", 42)
+        put("output_tokens", 5)
+        put("total_tokens", 47)
+    }
 }

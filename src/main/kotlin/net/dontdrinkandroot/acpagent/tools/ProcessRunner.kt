@@ -1,6 +1,7 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import kotlinx.coroutines.*
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -99,6 +100,24 @@ internal object ProcessRunner {
     }
 
     /**
+     * Starts a reader of one process stream into [tail]. A reader I/O error is
+     * recorded into the captured output instead of failing the whole tool call.
+     */
+    private fun startStreamReader(
+        scope: CoroutineScope,
+        stream: InputStream,
+        tail: StreamTail,
+    ): Deferred<Unit> = scope.async {
+        runInterruptible {
+            try {
+                readStreamTail(stream, tail)
+            } catch (e: IOException) {
+                tail.recordError(e)
+            }
+        }
+    }
+
+    /**
      * Runs [command] via `/bin/sh -c`. The [args] elements are appended as
      * positional parameters after the `$0` placeholder (`sh -c <command> sh
      * <args...>`), so they are delivered to the command as literal argv
@@ -113,7 +132,7 @@ internal object ProcessRunner {
     ): ProcessResult = withContext(Dispatchers.IO) {
         val process = ProcessBuilder(listOf("/bin/sh", "-c", command, "sh") + args)
             .apply {
-                cwd?.let { directory(java.io.File(it)) }
+                cwd?.let { directory(File(it)) }
             }
             .start()
         // The reader coroutines live in their own scope so a stuck read cannot
@@ -125,24 +144,8 @@ internal object ProcessRunner {
         val readerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val stdoutTail = StreamTail()
         val stderrTail = StreamTail()
-        val stdout = readerScope.async {
-            runInterruptible {
-                try {
-                    readStreamTail(process.inputStream, stdoutTail)
-                } catch (e: IOException) {
-                    stdoutTail.recordError(e)
-                }
-            }
-        }
-        val stderr = readerScope.async {
-            runInterruptible {
-                try {
-                    readStreamTail(process.errorStream, stderrTail)
-                } catch (e: IOException) {
-                    stderrTail.recordError(e)
-                }
-            }
-        }
+        val stdout = startStreamReader(readerScope, process.inputStream, stdoutTail)
+        val stderr = startStreamReader(readerScope, process.errorStream, stderrTail)
         val finished = try {
             runInterruptible { process.waitFor(timeoutSeconds, TimeUnit.SECONDS) }
         } catch (e: CancellationException) {

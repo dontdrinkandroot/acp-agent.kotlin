@@ -36,12 +36,7 @@ public class MoveDirectoryTool : AgentTool {
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
-        executeMove(
-            arguments,
-            context,
-            requireDirectory = true,
-            successPrefix = "Moved directory"
-        ) { source, destination ->
+        executeMove(arguments, context, MoveKind.DIRECTORY) { source, destination ->
             moveTreeEvidence(source, destination, context)
         }
 }

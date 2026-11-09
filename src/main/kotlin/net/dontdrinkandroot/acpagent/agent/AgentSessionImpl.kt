@@ -3,6 +3,7 @@ package net.dontdrinkandroot.acpagent.agent
 import com.agentclientprotocol.agent.AgentSession
 import com.agentclientprotocol.agent.clientInfo
 import com.agentclientprotocol.annotations.UnstableApi
+import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
@@ -243,7 +244,7 @@ internal class AgentSessionImpl(
      */
     private suspend fun setPlan(
         entries: List<PlanEntry>,
-        client: com.agentclientprotocol.common.ClientSessionOperations?
+        client: ClientSessionOperations?
     ) {
         state.setPlan(entries)
         client?.notify(SessionUpdate.PlanUpdate(entries))
@@ -254,7 +255,7 @@ internal class AgentSessionImpl(
         ensureActive()
         val client = clientOrNull()
         val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
-            ?: com.agentclientprotocol.model.ClientCapabilities()
+            ?: ClientCapabilities()
         val instructions = loadAgentsInstructions(cwd)
         val userParts = contentBlocksToInputParts(
             blocks = content,

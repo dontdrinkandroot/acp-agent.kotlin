@@ -6,6 +6,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
+import java.nio.file.Path as NioPath
 
 /**
  * Moves or renames a file. The destination must not exist; missing parent
@@ -40,9 +41,25 @@ public class MoveFileTool : AgentTool {
     override fun title(arguments: JsonObject): String? = formatToolTitle(name, arguments)
 
     override suspend fun execute(arguments: JsonObject, context: ToolContext): ToolResult =
-        executeMove(arguments, context, requireDirectory = false, successPrefix = "Moved") { source, destination ->
+        executeMove(arguments, context, MoveKind.FILE) { source, destination ->
             moveFileEvidence(source, destination, context)
         }
+}
+
+/**
+ * The source type a move tool expects: it drives the type gate's refusal text
+ * (and the sibling tool that refusal points to) and the result-text verb.
+ */
+internal enum class MoveKind(
+    val expectsDirectory: Boolean,
+    val siblingTool: String,
+    val successPrefix: String,
+) {
+    /** `move_file`: a regular file source, pointing at `move_directory` otherwise. */
+    FILE(expectsDirectory = false, siblingTool = "move_directory", successPrefix = "Moved"),
+
+    /** `move_directory`: a directory source, pointing at `move_file` otherwise. */
+    DIRECTORY(expectsDirectory = true, siblingTool = "move_file", successPrefix = "Moved directory"),
 }
 
 /**
@@ -90,14 +107,13 @@ private suspend fun moveFileEvidence(source: String, destination: String, contex
  * source - moving it away removes it just like a delete - nor the destination,
  * which would create or replace it), destination-exists refusal, missing-parent
  * creation, the change evidence ([collectEvidence], before the move takes the
- * file away - issue #56) and the move itself. [requireDirectory] selects which
- * source type is expected and names the sibling tool in the refusal.
+ * file away - issue #56) and the move itself. [kind] selects the expected
+ * source type, the refusal text and the sibling tool that refusal names.
  */
 internal suspend fun executeMove(
     arguments: JsonObject,
     context: ToolContext,
-    requireDirectory: Boolean,
-    successPrefix: String,
+    kind: MoveKind,
     collectEvidence: suspend (source: String, destination: String) -> MoveEvidence,
 ): ToolResult {
     // Both arguments are decoded before either is resolved (issue #80): a
@@ -119,17 +135,16 @@ internal suspend fun executeMove(
         val sourcePath = Path(source)
         val meta = fs.metadataOrNull(sourcePath)
             ?: return@executeSafely ToolResult("Source not found: $source", true)
-        if (meta.isDirectory != requireDirectory) {
-            val shape = if (requireDirectory) "is not a directory" else "is a directory"
-            val sibling = if (requireDirectory) "move_file" else "move_directory"
-            return@executeSafely ToolResult("Source $shape: $source (use $sibling)", true)
+        if (meta.isDirectory != kind.expectsDirectory) {
+            val problem = if (kind.expectsDirectory) "is not a directory" else "is a directory"
+            return@executeSafely ToolResult("Source $problem: $source (use ${kind.siblingTool})", true)
         }
         val destinationPath = Path(destination)
         if (fs.exists(destinationPath)) return@executeSafely ToolResult("Destination exists: $destination", true)
         fs.createDirectories(destinationPath.parent ?: Path("."))
         val evidence = collectEvidence(source, destination)
         movePath(sourcePath, destinationPath)
-        ToolResult("$successPrefix $source to $destination (${evidence.facts})", diffs = evidence.diffs)
+        ToolResult("${kind.successPrefix} $source to $destination (${evidence.facts})", diffs = evidence.diffs)
     }
 }
 
@@ -140,7 +155,7 @@ internal suspend fun executeMove(
  */
 internal fun movePath(source: Path, destination: Path) {
     Files.move(
-        java.nio.file.Path.of(source.toString()),
-        java.nio.file.Path.of(destination.toString()),
+        NioPath.of(source.toString()),
+        NioPath.of(destination.toString()),
     )
 }

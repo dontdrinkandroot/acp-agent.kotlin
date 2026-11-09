@@ -103,4 +103,56 @@ class E2eMaxTurnRequestsTest : E2eAgentTest() {
             }
         }
     }
+
+    @Test
+    fun `e2e max turn requests - the interrupted note precedes the usage indicator`() = runBlocking {
+        // The turn-end delivery order is a wire contract: the synthesized note
+        // (content) first, then the usage indicator, then the prompt response.
+        withE2eAgent("max-turns-note", { projectDir ->
+            MockOpenAiServer(
+                targetPath = File(projectDir, "phase4.txt").absolutePath,
+                alwaysToolCall = true,
+                incompleteWindDown = true,
+            )
+        }) {
+            val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "1"))
+            val operations = TestClientOperations()
+            try {
+                connection.client.initialize(testClientInfo())
+                val session = newSession(connection.client, projectDir, operations)
+                session.setConfigOption(SessionConfigId("mode"), SessionConfigOptionValue.of("build"))
+                val events = collectPrompt(
+                    session,
+                    listOf(ContentBlock.Text("Use the write_file tool, then summarize.")),
+                    timeoutMs = 120_000,
+                )
+
+                val noteText = "The response was interrupted before completion; the task may need a new prompt."
+                val noteIndex = events.indexOfFirst { event ->
+                    val update = (event as? Event.SessionUpdateEvent)?.update
+                    update is SessionUpdate.AgentMessageChunk &&
+                            (update.content as? ContentBlock.Text)?.text == noteText
+                }
+                assertTrue(noteIndex >= 0, "the truncated wind-down must emit the interrupted note, got: $events")
+                val usageIndex = events.indexOfFirst { event ->
+                    (event as? Event.SessionUpdateEvent)?.update is SessionUpdate.UsageUpdate
+                }
+                assertTrue(usageIndex >= 0, "the turn must report its usage, got: $events")
+                val responseIndex = events.indexOfFirst { it is Event.PromptResponseEvent }
+                assertTrue(responseIndex >= 0, "the turn must answer the prompt, got: $events")
+
+                assertTrue(
+                    noteIndex < usageIndex && usageIndex < responseIndex,
+                    "expected note ($noteIndex) -> usage_update ($usageIndex) -> response ($responseIndex)",
+                )
+                assertEquals(
+                    StopReason.MAX_TURN_REQUESTS,
+                    events.filterIsInstance<Event.PromptResponseEvent>().single().response.stopReason,
+                )
+                println("[ok] interrupted note precedes usage_update, which precedes the prompt response")
+            } finally {
+                connection.close()
+            }
+        }
+    }
 }
