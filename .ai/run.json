@@ -21,7 +21,7 @@
     },
     "dependency_updates": {
         "command": "timeout 180 ./gradlew dependencyUpdates",
-        "description": "Dependency update audit: stable-only candidates, report-only (not wired into check); Koog bumps additionally go through the AGENTS.md Koog upgrade checklist"
+        "description": "Dependency update audit: stable-only candidates, report-only (not wired into check)"
     },
     "lint_scripts": {
         "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh",

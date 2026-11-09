@@ -19,68 +19,60 @@ JVM-only application in a single module (`kotlin("jvm")` + `application`). Main 
 version catalog `gradle/libs.versions.toml` (single source of truth; declared versions match
 what actually resolves).
 
-| Layer            | Dependency                                                                            | Version                      |
-|------------------|---------------------------------------------------------------------------------------|------------------------------|
-| Kotlin / plugins | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.8) | 2.4.21                       |
-| Dep update check | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)      | 0.67.0                       |
-| ACP              | `com.agentclientprotocol:acp`                                                         | 0.34.0                       |
-| MCP              | `io.modelcontextprotocol:kotlin-sdk-client`                                           | 0.16.0                       |
-| HTTP             | ktor client (CIO engine)                                                              | 3.6.1                        |
-|                  | ktor-client-encoding (gzip/deflate for `web_fetch`)                                   | 3.6.1                        |
-| HTML parsing     | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                    | 1.23.2                       |
-| Coroutines       | kotlinx-coroutines-core                                                               | 1.11.0 (declared + resolved) |
-| IO               | kotlinx-io-core                                                                       | 0.9.2                        |
-| JSON             | kotlinx-serialization-json                                                            | 1.12.0 (declared + resolved) |
-| LLM wire models  | owned (`llm/models/ResponsesWireModels.kt`, Responses API, no LLM framework)         | -                            |
-| UUIDv7 ids       | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)       | 6.1.1                        |
-| Logging          | kotlin-logging via slf4j-simple                                                       | 8.0.4 / 2.0.20               |
+| Layer            | Dependency                                                                              | Version                      |
+|------------------|-----------------------------------------------------------------------------------------|------------------------------|
+| Kotlin / plugins | `kotlin("jvm")`, `kotlin("plugin.serialization")`, `application` (JDK 25, Gradle 9.8.2) | 2.4.21                       |
+| Dep update check | `io.github.ben-manes.versions` (project plugin via catalog; `dependencyUpdates`)        | 0.67.0                       |
+| ACP              | `com.agentclientprotocol:acp`                                                           | 0.34.0                       |
+| MCP              | `io.modelcontextprotocol:kotlin-sdk-client`                                             | 0.16.0                       |
+| HTTP             | ktor client (CIO engine)                                                                | 3.6.1                        |
+|                  | ktor-client-encoding (gzip/deflate for `web_fetch`)                                     | 3.6.1                        |
+| HTML parsing     | jsoup (HTML -> line-based text for `web_fetch`; zero runtime deps)                      | 1.23.2                       |
+| Coroutines       | kotlinx-coroutines-core                                                                 | 1.11.0 (declared + resolved) |
+| IO               | kotlinx-io-core                                                                         | 0.9.2                        |
+| JSON             | kotlinx-serialization-json                                                              | 1.12.0 (declared + resolved) |
+| LLM wire models  | owned (`llm/models/ResponsesWireModels.kt`, Responses API, no LLM framework)            | -                            |
+| UUIDv7 ids       | com.github.f4b6a3:uuid-creator (zero deps; `UuidCreator.getTimeOrderedEpoch()`)         | 6.1.1                        |
+| Logging          | kotlin-logging via slf4j-simple                                                         | 8.0.4 / 2.0.20               |
 
 kotlin-logging 8.0.4 is declared explicitly because ktor/ACP pull 7.0.0 and 8.0.01
-transitives; pinning 8.0.4 pins the banner-suppressing API. The Koog dependency
-(`ai.koog:prompt-executor-openrouter-client`) was removed 2026-11-06; the LLM wire types are
-owned in `llm/models/ResponsesWireModels.kt` (Responses API dialect, issue #75), so the LLM
-contract is ours (see the LLM provider bullet under Boundaries).
+transitives; pinning 8.0.4 pins the banner-suppressing API. There is no LLM framework:
+the wire types are owned in `llm/models/ResponsesWireModels.kt` (Responses API dialect,
+issue #75), so the LLM contract is ours (see the LLM provider bullet under Boundaries).
 
 ## Conventions
 
-- We always adhere to Clean Code principles:
-  - **Meaningful Names:** Choose names that reveal intent. A variable or function name should explain why it exists and
+* We always adhere to Clean Code principles:
+  * **Meaningful Names:** Choose names that reveal intent. A variable or function name should explain why it exists and
     what it does without needing a comment.
-  - **Functions Should Do One Thing:** Functions should be small and perform a single task. If you can extract a subset
+  * **Functions Should Do One Thing:** Functions should be small and perform a single task. If you can extract a subset
     of a function into another, it’s doing too much.
-  - **DRY (Don't Repeat Yourself):** Eliminate duplication. Every piece of logic should have a single, unambiguous
+  * **DRY (Don't Repeat Yourself):** Eliminate duplication. Every piece of logic should have a single, unambiguous
     representation in the codebase.
-  - **Comment on "why" not "how":** Code should explain itself. Use comments only when you cannot express intent through
+  * **Comment on "why" not "how":** Code should explain itself. Use comments only when you cannot express intent through
     code or to explain "why" (business logic), never "how." Make sure the "why" is always clear so when looking at the
     code again the intent is clear either through the code or comments.
-  - **The Boy Scout Rule:** Leave the code slightly better than you found it, but keep changes related to the requested
+  * **The Boy Scout Rule:** Leave the code slightly better than you found it, but keep changes related to the requested
     task.
-- We always adhere to SOLID principles:
-  - **Single Responsibility (SRP):** A class should have only one reason to change.
-  - **Open/Closed (OCP):** Software entities should be open for extension but closed for modification.
-  - **Liskov Substitution (LSP):** Subtypes must be substitutable for their base types.
-  - **Interface Segregation (ISP):** No client should be forced to depend on methods it does not use.
-  - **Dependency Inversion (DIP):** Depend on abstractions, not concretions.
-
+* We always adhere to SOLID principles:
+  * **Single Responsibility (SRP):** A class should have only one reason to change.
+  * **Open/Closed (OCP):** Software entities should be open for extension but closed for modification.
+  * **Liskov Substitution (LSP):** Subtypes must be substitutable for their base types.
+  * **Interface Segregation (ISP):** No client should be forced to depend on methods it does not use.
+  * **Dependency Inversion (DIP):** Depend on abstractions, not concretions.
 * We use test-driven development by default, in small red→green→refactor cycles writing tests first.
   Do not write multiple tests at once, always one test, then implementation, then refactor.
   The tests are documenting our specification and expectations.
   If a test would be overly complicated, ask the user first if it is worth it.
 * Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
-* _meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
-* Secrets never come from env vars: the OpenRouter key is read from a **file**
-  (`openRouter.apiKeyFile`, `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`, or the default
-  `<config dir>/openrouter.key`; owner-only `0600`/`0400`, issue #50). Never commit or
-  print them.
-    * The docker launcher has **no key logic at all**: it mounts the host config
-      directory (`$XDG_CONFIG_HOME/ddr-acp-agent`, i.e. `~/.config/ddr-acp-agent` by
-      default) read-only at the container's own config directory and the agent
-      resolves the key from there. The old `OPENROUTER_API_KEY` /
-      `OPENROUTER_API_KEY_FILE` inputs and the `0600` staging path are gone - a key value
-      therefore never appears in the agent env, a `set -x` trace, an `env` dump,
-      `/proc/*/environ` or the docker CLI argv.
-  *`build/` is generated output - never edit or commit it.
+* `_meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
+* Secrets never come from env vars: the OpenRouter key is read from an **owner-only file**
+  (`0600`/`0400`, issue #50) - resolution order and the redacting `Secret` holder are under
+  Configuration. Never commit or print a key; the docker launcher reads no key variable at
+  all, so a key value never reaches the agent env, a `set -x` trace, an `env` dump,
+  `/proc/*/environ` or the docker CLI argv.
+* `build/` is generated output - never edit or commit it.
 * **Never commit without the user requesting it**: the agent must not run
   `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
   unless the user explicitly asks. The `git` run config is for read-only
@@ -88,32 +80,30 @@ contract is ours (see the LLM provider bullet under Boundaries).
   git command.
 * **Commit messages are always a single line**: `<type>(<scope>): <summary>`,
   optionally ending in `(closes #N)` / `(fixes #N)` — no body, no trailing
-  paragraphs (matches the existing history, e.g.
-  `fix(config): clamp ACP_BASH_TIMEOUT_SECONDS to 1..3600 (closes #25)`).
+  paragraphs (e.g. `fix(tools): keep .git out of tree-mutation diff evidence (fixes #79)`).
 
 ## Building / running
 
-Use the `run` tool's configurations for the standard dev loop:
+The standard dev loop is `./gradlew compileKotlin` / `compileTestKotlin` (fast loop) -> `test`
+(unit + black-box e2e) -> `build` (the definition of done). The `run` tool's configurations wrap
+these and the auxiliary scripts in `timeout` (180s for the fast loop and single test classes, 300s
+for `build`/`test` incl. a cold daemon), so a hung daemon surfaces as a timeout instead of
+stalling the agent. The configurations are **not listed here**: they are rendered into the system
+prompt from `<cwd>/.ai/run.json` on every turn (name, command, description, re-read per iteration),
+so `run` is the source of truth, and they are managed with `list_run_configs` /
+`create_run_config` / `update_run_config` / `delete_run_config` (mechanics under Features / Run
+configurations).
+Project wiring worth knowing: `test_scripts` runs `tests/bash/run-all` and is wired into Gradle
+`check` as the `testScripts` Exec task, `show_failures` is backed by
+`.ai/scripts/show-test-failures.sh`, and `system_prompt` runs the `printSystemPrompt` JavaExec
+task (`agent/SystemPromptDump.kt`).
 
-- `compile` — compile main sources (fastest loop)
-- `test` — full suite (unit + black-box e2e; drives the installDist launcher)
-- `test_class` — single test class/method via `[args]` (re-links installDist)
-- `build` — assemble + all tests
-- `install_dist` — relink the e2e launcher
-- `dependency_updates` — outdated deps (stable-only)
-- `sources` — resolve + unpack the `-sources` jars of the main+test classpath into
-  `build/library-sources-unpacked/<artifact>/` for browsing library code at the exact resolved
-  versions (see Library-source investigation below)
-- `system_prompt` — print the assembled system prompt **without** AGENTS.md, rendered from
-  invented example values (cwd, trusted read paths, exclusion rules, run configurations) so
-  every section shows and the output is reproducible - for reviewing the static prompt
-  sections on their own
-
-The launchers take no args; configuration comes from `config.json` + the
+The launchers take no configuration flags; configuration comes from `config.json` + the
 `DDR_ACP_AGENT_*` env layer (the docker launcher mounts the host config directory):
 
 - `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
-- `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README)
+- `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README); `--skip-pull` skips the
+  image pull, every other argument is forwarded to the agent
 
 **Library-source investigation**: the `sources` run config (`./gradlew unpackLibrarySources`
 backed by the `downloadLibrarySources` + `unpackLibrarySources` Sync tasks in
@@ -131,17 +121,13 @@ at 9.x — gradle/gradle#26365) and is deliberately not used.
 client that closes stdin never sends `session/cancel`, so the in-flight prompt turn would
 otherwise keep running), `agentSupport.persistAllSessions()` (flush every live session - the
 cancelled turn's own persist races the JVM exit, the flush does not; issue #17), then
-`protocol.close()`.
+`protocol.close()`. It is deliberately **not** driven from the transport's `onClose`.
 
 ## Tool Usage
 
-* **Run configurations**: the `run` tool's named configurations serve the standard
-  build/test/lint loop (see Building / running). They are managed via
-  `list_run_configs` / `create_run_config` / `update_run_config` /
-  `delete_run_config`, and surface in the system prompt.
-* **Web research**: use the `exa_web_search_exa` and `exa_web_fetch_exa` tools for research, validating information and
-  looking things up when unsure — do not guess. Search first with `exa_web_search_exa`, then fetch the full page with
-  `exa_web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
+* **Web research**: use the `web_search_exa` and `web_fetch_exa` tools for research, validating information and
+  looking things up when unsure — do not guess. Search first with `web_search_exa`, then fetch the full page with
+  `web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
   upstream behavior against primary sources before relying on them; cite the sources you checked in your summary.
 * **GitHub issues**
   * Always set the **issue type** (`Bug` / `Feature` / `Task`).
@@ -226,7 +212,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # writable/unlistedPaths) + unlistedPathRefusal (issue #50)
     agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
                                      # build hash, mode description, run configurations,
-                                       # AGENTS.md instructions)
+                                     # AGENTS.md instructions)
     agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning/provider): option listing,
                                      # validation/assignment, effective reasoning effort,
                                      # effective provider slug
@@ -248,7 +234,7 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
                                      # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
-  tools/ScratchDirectory.kt        # prepareScratchDirectory: creates/verifies the read-trusted
+    tools/ScratchDirectory.kt        # prepareScratchDirectory: creates/verifies the read-trusted
                                      # scratch directory (0700, symlink/type/owner checks, mode repair)
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
     tools/ToolCatalog.kt             # localTools() + sessionTools(cwd): the production tool list
@@ -367,6 +353,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # before permission/execution (bash in build mode)
         E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
                                      # one latest-mode message at the next prompt start (issue #36)
+        E2eDeferredModeSwitchTest.kt # mid-turn mode switches: one current_mode_update at the
+                                     # turn-end flush, a cancelled turn drops the pending mode
+                                     # (issue #83)
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
                                      # (image data URI, inlined text resource, resource_link
                                      # markdown link)
@@ -417,6 +406,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2eMcpSseTransportTest.kt    # classic SSE transport end-to-end (issue #69) over
                                      # MockMcpSseServer: read-only prompt-free, unannotated
                                      # prompts + executes, McpServer.Sse.headers forwarded
+        E2eWebFetchTest.kt           # web_fetch: prompt-free plan-mode fetch with
+                                     # DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1,
+                                     # loopback refusal without it
 README.md                               # user-facing readme (install, IDE setup, config, troubleshooting)
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
 ddr-acp-agent                           # direct launcher (no docker): always runs installDist
@@ -430,11 +422,13 @@ tests/bash/                             # shell test suite (launcher composition
                                         # (assert lib), common.sh (launcher invocation +
                                         # sandbox under build/), stubs/fake-docker (DOCKER_BIN
                                         # stub recording argv; pull/inspect exit switches),
-                                        # test_permission_mounts/test_launcher_args/test_error_paths
+                                        # test_permission_mounts/test_config_mounts/
+                                        # test_launcher_args/test_error_paths/test_dockerfile/
                                         # test_harness + run-all
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
-.ai/run.json                            # run configurations (see Run configurations below)
+.ai/run.json                            # run configurations (injected into the system prompt
+                                        # each turn; mechanics: Features / Run configurations)
 .ai/scripts/gradle-unstick              # Gradle lock-timeout diagnosis/wipe (run configs
                                         # `gradleUnstick` / `gradleUnstickWipe`)
 .ai/scripts/show-test-failures.sh       # failure messages from the latest JUnit XML
@@ -481,8 +475,8 @@ reaches the agent.
 
 Value rules (both layers): booleans accept `1/true/yes/on` | `0/false/no/off`
 (case-insensitive, anything else is an error - a typo must not silently disable
-a safety feature), numbers are strict with the documented ranges (the old
-`coerceIn` clamping is gone), path lists are absolute-only (relative entries are
+a safety feature), numbers are strict with the documented ranges (never clamped),
+path lists are absolute-only (relative entries are
 an error), comma-separated in env, deduped, and a missing directory only warns.
 
 **API key: file only.** No variable ever holds the key itself. Resolution order
@@ -492,32 +486,32 @@ must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
 refused with the path (`requireOwnerOnly` in `Config.kt`). The resolved value is
 held as a `Secret` (`config/Secret.kt`, issue #78): `Config` stays freely
 loggable - every implicit rendering (`toString`, string interpolation, a
-data-class dump) prints `***` - and only an explicit `.value` reaches the key (the single production site is the
-`LlmClient` hand-off in `Main.kt`).
+data-class dump) prints `***` - and only an explicit `.value` reaches the key (the single
+production site is the `LlmClient` hand-off in `Main.kt`). Under the docker launcher the
+host config directory is mounted read-only at the container's own config directory (see
+Docker sandbox), which is the agent's only key source there.
 
 **Directory permission tiers** (`agent/PermissionPolicy.kt`, `permissionDecision`):
 the session cwd is implicitly read+write; `readableDirectories` covers the
 read-only path tools, `writableDirectories` the mutating ones (writable implies
-readable); everything else follows `unlistedPaths` (`prompt` = today's
-`session/request_permission`, `deny` = hard refusal naming the config entry,
+readable); everything else follows `unlistedPaths` (`prompt` = the
+`session/request_permission` prompt, `deny` = hard refusal naming the config entry,
 `unlistedPathRefusal`). A partially covered call (one target in, one out) is
 unlisted. `bash`, `run` and MCP tools are unaffected. Under the docker launcher
 the two lists **are the mount list** (readable mounted `:ro`, writable rw, at
 the identical in-container path), so the env layer is the docker source and the
-`config.json` lists are direct-run only; the launcher also mounts the host
-config directory (`$XDG_CONFIG_HOME/ddr-acp-agent`) read-only at the container's
-own config directory (a
-`~/.config` tmpfs underneath, same reason as `~/.local`).
-- `DDR_ACP_AGENT_SCRATCH_DIR` (default `/tmp/ddr-acp-agent`; the agent's own scratch
-  directory, read-trusted like a readable directory but a separate config field - it is
-  never part of `permissions.readableDirectories`. Must be absolute and must not be `/`.
-  Created `0700` and verified at session assembly: a symlink, a non-directory or a
-  foreign-owned directory fails session creation, a wider mode is repaired to `0700`.
+`config.json` lists are direct-run only.
+
+- `DDR_ACP_AGENT_SCRATCH_DIR`: the agent's own scratch directory (default
+  `/tmp/ddr-acp-agent`), read-trusted like a readable directory but a separate config field -
+  it is never part of `permissions.readableDirectories`. Must be absolute and must not be `/`.
   Never cleaned up. The docker launcher forwards it verbatim and never mounts it - inside
   the container the path lives on the ephemeral `/tmp` tmpfs, so scratch content is
-  per-container-session. See Features / Permissions)
+  per-container-session. Creation/verification at session assembly: see Features / Permissions.
 
 ## Features
+
+### Sessions & persistence
 
 - **Session cwd gate** (issue #74): the `cwd` of `session/new`/`session/load`/`session/resume`
   is validated by `sessionCwdProblem` (`agent/SessionCwd.kt`: absolute, existing, a directory -
@@ -560,7 +554,7 @@ own config directory (a
   reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
   (same `NonCancellable` flush before the resources go away) and **at
   shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
-  Shutdown; issue #17). **Crash-orphaned temp files are swept** (issue #20): the `finally`
+  Building / running; issue #17). **Crash-orphaned temp files are swept** (issue #20): the `finally`
   of the atomic write covers in-process failures only - a SIGKILL between write and move
   strands `session-*.tmp` files (0600, holding full history, invisible to `list()`, never
   cleaned before). `save()`/`list()` therefore run `sweepStaleTempFiles`
@@ -585,8 +579,8 @@ own config directory (a
   feed fetch fails. **Tool-call pairing invariant** (issue #38): a cancelled turn leaves the
   call it was running in the history without a result, and a strict provider (Azure/OpenAI)
   rejects any later chat request with 400 "No tool output found for function call <id>" —
-  observed on 13 of 172 real sessions. The invariant is therefore enforced at the **observation boundary, not at the
-  write sites**: `repairToolCallPairing`
+  observed on 13 of 172 real sessions. The invariant is therefore enforced at the **observation
+  boundary, not at the write sites**: `repairToolCallPairing`
   (`agent/ToolCallPairing.kt`, pure + idempotent) closes every assistant tool-call id that has
   no matching `role:"tool"` result with one synthetic FAILED result ("Tool call was
   interrupted before a result was produced; any effects may already be applied."), inserted
@@ -594,23 +588,20 @@ own config directory (a
   `replaySnapshot` / `buildRecord` — so the LLM request, the load replay and the persisted
   record are always pair-complete while the in-memory history is never mutated by the repair (an
   interrupted call reaches disk pair-complete at the turn's cancel persist, the close persist or
-  the shutdown flush - the pre-#17 "next persist" window is gone). One warn log per
-  snapshot keeps the dangling state visible on stderr.
+  the shutdown flush). One warn log per snapshot keeps the dangling state visible on stderr.
 - **Restore**: `initialize` advertises `loadSession` + `sessionCapabilities.list/delete/resume/close`.
   `session/load` reconnects MCP servers and replays history (user/agent chunks, pending
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
   `AgentSession.replayHistory()`, which the SDK runs **before** the load response - the order
-  the spec requires (issue #59 closed with `acp` 0.34.0, which added the hook; previously
-  `postInitialize()` emitted it after the response); the pure mapping is
+  the spec requires (issue #59; the hook arrived with `acp` 0.34.0); the pure mapping is
   `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`), and the
   ordering is pinned black-box by `E2eSessionPersistenceTest`, which asserts the updates are
   already delivered when `loadSession` returns (and therefore uses the SDK's early-delivery
   operations overload instead of the buffering factory);
-  `session/resume` restores without replay. `session/list`
-  filters by cwd, sorts by recency (on the raw epoch millis), skips corrupt records; the SDK pages the result (10
-  entries per page + `nextCursor`
-  over our `Sequence` override since `acp` 0.33.0). Its `updatedAt` is rendered by
+  `session/resume` restores without replay. `session/list` filters by cwd, sorts by recency (on
+  the raw epoch millis), skips corrupt records; the SDK pages the result (10 entries per page +
+  `nextCursor` over our `Sequence` override). Its `updatedAt` is rendered by
   `formatSessionUpdatedAt` as `uuuu-MM-dd'T'HH:mm:ss.SSSxxx` in the system zone (`2026-09-23T15:37:02.123+02:00`,
   `+00:00` on a UTC host - never a `Z` suffix, never
   the shortened `toString()` forms that drop seconds/millis), so clients that render it
@@ -621,7 +612,7 @@ own config directory (a
   type, so `session/list` marks the sessions open in this process with
   `_meta = {"net.dontdrinkandroot/active": true}` (`ACTIVE_SESSION_META` in
   `agent/AgentSupportImpl.kt`); its absence means "not open here". The live map is the
-  single source of liveness and is now self-cleaning: `AgentSessionImpl` fires a one-shot
+  single source of liveness and self-cleaning: `AgentSessionImpl` fires a one-shot
   `onSessionReleased` callback when the session ends - `session/close`, `session/delete`, or
   a failing `replayHistory` (the SDK drops its wrapper there, so the session would otherwise
   stay "already active" and leak its MCP/LLM resources) - and `AgentSupportImpl.register`
@@ -638,6 +629,9 @@ own config directory (a
   `SessionStateTitleTest`, black-box by `E2eSessionPersistenceTest`.
   Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
+
+### Modes & agent loop
+
 - **Agent loop**: up to `tools.maxTurnRequests` tool-calling LLM iterations per prompt (default 100,
   `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`, rejected below 1); text streamed as `AgentMessageChunk`,
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
@@ -648,17 +642,17 @@ own config directory (a
   `function.arguments` string, compared verbatim, not parsed) to the immediately
   preceding *executed* call of the same turn, but only once that identical call has already
   produced the identical result twice in a row (result = error flag + result text, the
-  model-visible outcome; the client-facing diff is excluded) - so the error fires on the *third* identical call, with a
-  FAILED result naming the repetition and the
-  raw arguments ("A third identical call cannot yield new information"). A single identical
+  model-visible outcome; the client-facing diff is excluded) - so the error fires on the *third*
+  identical call, with a FAILED result naming the repetition and the raw arguments ("A third
+  identical call cannot yield new information"). A single identical
   repeat always executes (a retry can legitimately reveal a new result - flaky command, changed
   state), and a changed result resets the streak. The refusal never
   reaches permission/execution, records `failed` (replay/pairing-safe), leaves the streak armed (4th+ identical calls
   keep failing) and is cleared at every
   turn start (`onTurnStart` from `PromptRunner.run`) so a legitimate identical call in a later
   turn always runs. Conservative by design: a formatting variant of the same parsed arguments (spacing/key order) is NOT
-  a repeat, and an alternating A/B cycle (the `limit=70/75` loop from
-  the #39 session) stays unguarded - that needs the full per-signature fix still tracked by #39.
+  a repeat, and an alternating A/B cycle (e.g. `limit=70`, `limit=75`,
+  `limit=70`) stays unguarded - that needs the full per-signature fix still tracked by #39.
   The session is a thin
   SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
   `ModeState` (the mode machine incl. deferred switching - issue #83),
@@ -678,40 +672,37 @@ own config directory (a
   statement; the current mode and the tools available in it are stated in the
   conversation history instead — modal status messages (a `system`-role message item,
   LLM-internal, never rendered by the client), each stating the mode's semantics ("Mode: ... Read-only /
-  Read-write / ...") plus the tools available in it (`ToolRegistry.availableForMode`). **The mode status message has a
-  single
-  writer: prompt start** (`SessionState.indicateCurrentMode`, called from the
-  prompt flow before the user message is appended; fixes #36): it appends the
-  message iff the current mode differs from the last *indicated* one, so the
-  model sees exactly one message per mode that actually governs a turn. No
-  session-start seed (a fresh session states the mode at its first prompt),
-  no message on the switch itself: idle switches only flip `currentMode` (+
-  immediate client notification, never deferred), mid-turn switches apply at
-  the turn-end flush, and both write their message at the *next* prompt start
-  - N flips without submitting coalesce into one message for the latest mode,
-    and a flip back to the already-indicated mode writes nothing. Restore parses
-    `lastIndicatedMode` from the trail's last `Mode: <id>.` system message (`SessionState.lastIndicatedTrailMode`), so a
-    switch applied after the last
-    message (e.g. a turn-end flush persisted, then a crash before the next
-    prompt) self-heals at the next prompt start; a legacy record without mode
-    messages (pre-#36) gets one message at its next prompt instead of staying
-    silent forever. **Mode
-  switches are deferred**: a `mode` request while a prompt turn is running only
-    records a pending mode in `ModeState` (`SessionState.mode.requestMode`, latest wins) and is
-  applied as a single flush when the turn hands control back (`SessionState.mode.flushPendingMode()` in the prompt
-    flow's try, before `setPromptActive(false)`),
-    with one `current_mode_update` at that point (the flush flips the mode only -
-    its status message waits for the next prompt start); the `finally` drops whatever is
-  still pending and clears `promptActive` (so a cancelled turn never leaks its
-  requested mode into the next turn), and `notifyModeState` is suppressed only
-  while a mode is pending (`hasPendingMode`) so mid-turn model/reasoning
-  switches still notify immediately. Idle switches still
-  apply immediately. The prompt is still rebuilt per
-  turn so mid-session `create_run_config` / `AGENTS.md` edits apply (it carries
+  Read-write / ...") plus the tools available in it (`ToolRegistry.availableForMode`). **The mode
+  status message has a single writer: prompt start** (`SessionState.indicateCurrentMode`, called
+  from the prompt flow before the user message is appended; fixes #36): it appends the message iff
+  the current mode differs from the last *indicated* one, so the model sees exactly one message per
+  mode that actually governs a turn. No session-start seed (a fresh session states the mode at its
+  first prompt), no message on the switch itself: idle switches only flip `currentMode` (+
+  immediate client notification, never deferred), mid-turn switches apply at the turn-end flush,
+  and both write their message at the *next* prompt start - N flips without submitting coalesce
+  into one message for the latest mode, and a flip back to the already-indicated mode writes
+  nothing. Restore parses `lastIndicatedMode` from the trail's last `Mode: <id>.` system message
+  (`SessionState.lastIndicatedTrailMode`), so a switch applied after the last message (e.g. a
+  turn-end flush persisted, then a crash before the next prompt) self-heals at the next prompt
+  start; a legacy record without mode messages (pre-#36) gets one message at its next prompt
+  instead of staying silent forever. **Mode switches are deferred**: a `mode` request while a
+  prompt turn is running only records a pending mode in `ModeState`
+  (`SessionState.mode.requestMode`, latest wins) and is applied as a single flush when the turn
+  hands control back (`SessionState.mode.flushPendingMode()` in the prompt flow's try, before
+  `setPromptActive(false)`), with one `current_mode_update` at that point (the flush flips the
+  mode only - its status message waits for the next prompt start); the `finally` drops whatever
+  is still pending and clears `promptActive` (so a cancelled turn never leaks its requested mode
+  into the next turn), and `notifyModeState` is suppressed only while a mode is pending (`hasPendingMode`) so mid-turn
+  model/reasoning switches still notify immediately. Idle switches
+  still apply immediately. The prompt is still rebuilt per turn so mid-session
+  `create_run_config` / `AGENTS.md` edits apply (it carries
   `cwd`, today's date, the available run configurations (name + command +
   description, re-read from local disk per iteration) and `Agent build: <sha>[-dirty]`).
   A `mode` config option (`session/set_config_option` + legacy `set_mode`) echoes
   the *governing* mode until the flush; unknown -> invalid-params.
+
+### Run configurations & build hash
+
 - **Run configurations**: the `run` tool (every mode, `tools/RunTool.kt`) executes a
   configuration from `<cwd>/.ai/run.json` (`{"name": {"command": "...", "description": "..."}}`,
   read from local disk every access, fail-open like AGENTS.md). The tool's description is a static,
@@ -719,12 +710,12 @@ own config directory (a
   the system prompt instead. Commands are shell strings run
   via `ProcessRunner`; the model's `args` are an **array of strings** delivered as **positional
   parameters** at the command's `[args]` slot (one element = one argv token, never
-  shell-interpreted; fixes #4's raw `{args}` string splice, which let a model-controlled
+  shell-interpreted; a raw `{args}` string splice would let a model-controlled
   `args` value execute arbitrary shell prompt-free even in plan mode - hard switch: a config
-  still carrying the legacy `{args}` placeholder no longer substitutes and must be migrated;
+  still carrying the legacy `{args}` placeholder does not substitute and must be migrated;
   quoting around the slot, e.g. `--tests "[args]"`, silently degrades: the quotes concatenate
   to nothing and the expansion loses its quoting, so `'a b'` word-splits and `*` globs - the
-  shipped `test_class` was migrated to `--tests [args]` for exactly this). Every `[args]`
+  shipped `test_class` uses `--tests [args]` for exactly this). Every `[args]`
   occurrence becomes a quoted `"$@"` (so elements with whitespace stay
   one token) and the command runs as `/bin/sh -c '<command>' sh <args...>`; configs without the
   slot reject non-empty args (empty arrays pass). `mutating = false` so `run` never asks for
@@ -745,44 +736,14 @@ own config directory (a
   is a default file-access exclusion, so `read_file`/`edit_file`/`write_file`/`delete_file`
   refuse it and `list_dir`/`glob`/`grep` hide it (issue #70 - the permission prompt of the
   write tools must not be bypassable by an in-project `edit_file`; see File-access exclusions).
-  The repo ships a default `.ai/run.json` with the standard dev
-  loop (already available via `run`): `compile` (`compileKotlin`), `build` (full `build`),
-  `test` (full `test` suite), `test_class` (single class/method via `[args]`),
-  `install_dist` (relink the e2e launcher), `dependency_updates` (stable-only audit,
-  report-only),
-  `lint_scripts` (`bash -n` + `shellcheck` on the launchers/build, `.ai/scripts/*` and shell-test scripts),
-  `test_fresh` (`test --rerun-tasks`, the cache-defeating full suite for the false-green
-  pitfall below), `test_scripts` (`tests/bash/run-all`, the shell test suite pinning the
-  docker launcher composition - also wired into Gradle `check` as the `testScripts` Exec
-  task),
-  `show_failures` (failure messages from the latest JUnit XML reports, backed by
-  `.ai/scripts/show-test-failures.sh`) and `sources` (resolve + unpack the `-sources` jars of the
-  main+test classpath into `build/library-sources-unpacked/<artifact>/` via the Gradle tasks
-  `downloadLibrarySources` + `unpackLibrarySources` in `build.gradle.kts`, for browsing library
-  code at the exact resolved versions - see Library-source investigation under Building / running)
-  and `system_prompt` (prints the assembled system prompt without AGENTS.md, rendered from
-  invented example values - cwd, trusted read paths, exclusion rules, run configurations - via
-  the `printSystemPrompt` JavaExec task and `agent/SystemPromptDump.kt`, so the static prompt
-  sections can be reviewed on their own and every section shows regardless of the checkout).
-  The gradle configs are
-  wrapped in `timeout` (180s for the fast loop and single test classes, 300s for the
-  full `build`/`test` suites incl. a cold daemon) so
-  a hung daemon surfaces as a timeout instead of stalling the agent, plus a generic `git`
-  config (`git [args]`, arbitrary arguments, read-only inspection only), a `listLibs`
-  config (resolved dependency trees via `./gradlew dependencies`,
-  `--configuration runtimeClasspath` / `testRuntimeClasspath`) and two Gradle
-  lock-timeout configs backed by `.ai/scripts/gradle-unstick`: `gradleUnstick`
-  (diagnosis: stops container-local daemons, then classifies every lock file by real
-  flock contention) and `gradleUnstickWipe` (guarded delete of uncontended lock
-  records; see the "Gradle lock timeout" Pitfall). A
-  `test_fsproxy`
-  run config was removed because it is redundant: the e2e harness itself strips a
-  leaked `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` from the spawned agent's environment (unless a
-  scenario explicitly sets it), so the full `test` suite already covers the
-  fs-proxy scenarios regardless of the host environment (`E2eAgentTest`).
+  The repo ships a default `.ai/run.json` with the standard dev loop (the loop itself, the
+  `timeout` wrapping and the project wiring are under Building / running).
 - **Build hash**: `generateGitProperties` writes `git.properties` (`git.commit=<sha>[-dirty]`,
   `unknown` outside git) into resources; `BuildInfo.kt` reads it. Docker injects it via the
   `GIT_SHA` build-arg (no `.git` in the build context).
+
+### Model, reasoning & provider options
+
 - **Model + reasoning + provider options**: `session/new`/`load`/`resume` fetch the OpenRouter model feed
   (`llm/LlmModels.kt`:
   tool-capable text-output models, sorted; failure fails session creation).
@@ -810,6 +771,9 @@ own config directory (a
       warn (stale slug, checked at snapshot seed/refresh). Persisted as `SessionRecord.provider` alongside
       `model`/`reasoning`, restored on load/resume; reset to auto on model switch (slugs are per-model). Pinned by
       `SessionConfigOptionsTest`/`SessionStateProviderSelectionTest` (unit) and `E2eProviderOptionTest` (e2e).
+
+### Planning & usage
+
 - **Plan updates**: `update_plan` (`tools/PlanTool.kt`, kind `think`, every mode) emits ACP
   `PlanUpdate` and stores entries for persistence/replay; decoded into the SDK's typed
   `PlanEntry` (strict enums - deliberate deviation from the Go raw-string passthrough). **Prompt guidance**
@@ -838,9 +802,12 @@ own config directory (a
   when the text was not streamed live), then the `usage_update`, then the prompt response -
   so the usage indicator never splits a reply. Pinned black-box by `E2eMaxTurnRequestsTest`
   (the interrupted-note branch's event order).
+
+### Tools, file access & output caps
+
 - **File-access exclusions**: the file tools enforce a shared exclusion policy (`tools/FileAccessExclusions.kt`,
-  threaded as `ToolContext.fileExclusions`): files whose
-  cwd-relative path matches an exclusion glob rule are refused to direct-target tools (`read_file`/`edit_file`/
+  threaded as `ToolContext.fileExclusions`): files whose cwd-relative path matches an exclusion
+  glob rule are refused to direct-target tools (`read_file`/`edit_file`/
   `write_file`/`delete_file` hard-error before any I/O - no client
   fs proxy round trip, no permission prompt, uniform incl. new-file writes) through the single
   `resolveToolTarget` seam (`tools/ToolTarget.kt`, issue #80 - the choke point every path-tool
@@ -932,8 +899,8 @@ own config directory (a
   the tool description so the model knows exactly what it may write. Errors are
   positional (`Unexpected token ')' at position 8`); safety caps: 1000-char
   expressions, 64 nesting levels, division/modulo by zero and non-finite results (overflow, `ln(0)`) refused; `Double`
-  results,
-  integrals rendered without `.0`), registered in `Main.kt`,
+  results, integrals rendered without `.0`),
+  registered in `Main.kt`,
   copied per session; MCP tools are bridged per session (`mcp/McpBridge.kt`) but a name
   collision with a local tool is ignored with a warning - locals can never be shadowed. All
   path-scoped tools resolve relative paths against the session cwd before I/O (the file touched
@@ -945,9 +912,8 @@ own config directory (a
   lines (the content - including its leading indentation - is verbatim after the `│`, so
   the model can read indentation directly off the line rather than inferring it from a
   whitespace-only prefix), byte-identical except for the stripped trailing newline
-  terminator, plus a
-  `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when the window does
-  not cover the whole file, so a truncated read is
+  terminator, plus a `(Showing lines X-Y of N. Use line=Z and limit to continue.)` footer when
+  the window does not cover the whole file, so a truncated read is
   unambiguous and the model can page forward (line numbers are display-only - `edit_file`
   matches raw content, so the model must strip the `number│` prefix; through the client fs
   proxy the footer total is `?` unless the window was resolved via the whole-file fallback,
@@ -955,8 +921,8 @@ own config directory (a
   `tools/VisualLines.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
   zero lines, a blank line between terminators is real — an empty file/window renders the
   explicit `(empty content)` instead of a phantom `   1│`. That numbering, the CRLF strip,
-  the per-line clamp and the continue footer are one implementation (`renderNumberedWindow` in `tools/VisualLines.kt`,
-  issue #81) shared by `read_file` and
+  the per-line clamp and the continue footer are one implementation (`renderNumberedWindow` in
+  `tools/VisualLines.kt`, issue #81) shared by `read_file` and
   `web_fetch` (which passes its own `startLine`/`maxLines` labels), so the two renderings
   cannot diverge; `MAX_WINDOW_LINES` is the shared 2000-line paging cap and
   `lineWindowStartError` the shared start-line bounds guard (issue #45). `grep` match
@@ -976,10 +942,10 @@ own config directory (a
   falls back to `complete = false` (a phantom footer beats a silently missing one) and
   cancellation still propagates. Tool arguments are decoded strictly (`JsonObject.stringArg`/`longArg` in
   `tools/Tool.kt`): an explicit JSON `null` is rejected with a dedicated
-  `'x' must not be null` error (previously `null` was silently coerced to the string
-  "null" - e.g. written into files or run as a shell command), an absent key stays
-  `Missing 'x'`. Tool-call diffs describe the **whole file** (`edit_file` was fragment-only
-  before, which clients like Zed misrender). The emission rule is the shared policy in
+  `'x' must not be null` error (never coerced into the literal string "null", which would be
+  written into files or run as a shell command), an absent key stays
+  `Missing 'x'`. Tool-call diffs describe the **whole file** (a fragment-only diff is what
+  clients like Zed misrender). The emission rule is the shared policy in
   `tools/DiffPolicy.kt` (issue #58): diffs are suppressed **only** for changes the client
   fs proxy renders itself (`write_file`/`edit_file` written through `ClientFileStore` -
   avoids a stale duplicate and the pre-read round-trip); every local-only mutation (`delete_file`, `delete_directory`,
@@ -1021,9 +987,8 @@ own config directory (a
   directory-consuming tools fail loudly on a wrong root instead of silently returning an
   empty result (`No matches`/empty listing) — `Path not found` (missing), `Not a directory`
   (file as root; fixes the silent `No matches` of #31), `Not readable` (chmod-000 root,
-  fixes #32's silent empty `list_dir` listing). `list_dir`'s missing-path message changed
-  from `Not a directory` to `Path not found`. The parameter is `path` (renamed from `root`
-  in #41; a directory is not a root, and `list_dir`/`read_file` already used `path`).
+  fixes #32's silent empty `list_dir` listing). The parameter is `path` (not `root`:
+  a directory is not a root, and `list_dir`/`read_file` already used `path`; #41).
   Out-of-scope residual (documented here so it stays visible): an unlistable subdirectory
   mid-walk still silently prunes its whole subtree (`File.list()` returns null on I/O
   error - the walk-time swallow is deliberate for unreadable dirs, only the root is
@@ -1035,8 +1000,8 @@ own config directory (a
   memory while reading, UTF-8 chunk-safe) - the output is captured **progressively** into a
   synchronized tail buffer (`ProcessRunner.StreamTail`), so when a backgrounded child holds
   the pipe fds open and the drain grace expires, the tree is force-killed, re-drained once,
-  and the output captured so far is snapshotted, never discarded (before this, such a command
-  surfaced a fake `(no output, exit N)`); a reader I/O error is recorded into the captured
+  and the output captured so far is snapshotted, never discarded (a fake `(no output, exit N)`
+  would misreport such a command); a reader I/O error is recorded into the captured
   output. `read_file` requires `limit` (1..2000 lines; anything else is
   rejected before I/O), refuses non-regular files (`not a regular file: <path>` - a FIFO/device would otherwise
   block on `open(2)` or stream forever),
@@ -1055,10 +1020,11 @@ own config directory (a
   the file caps off `read_file`/`grep`; the kept prefix is always >= 16384 chars, so the
   2000/500-char display caps always mark a clamped line visibly (never silent truncation).
   `read_file`'s `line` and
-  `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE` (issue #45): a value outside
-  the Int range used to overflow at the `toInt()` narrowing to a negative start line,
-  defeating the window/past-EOF guards and rendering negative line numbers; it is now a
-  clean `'line'`/`'startLine' must be at most 2147483647` validation error before any I/O.
+  `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE` (issue #45): a larger value
+  would overflow at the `toInt()` narrowing to a negative start line,
+  defeating the window/past-EOF guards, so it is refused with the
+  clean `'line'`/`'startLine'` validation message
+  `'<arg>' must be at most 2147483647` before any I/O.
   `list_dir`/`glob` list at most
   500 entries with a `...(N more entries omitted)` suffix; `grep` caps matches at 500 **while collecting** (only the 500
   smallest by path/line are kept, so a broad pattern
@@ -1072,7 +1038,7 @@ own config directory (a
   discarded on the binary verdict) and excluded files (see File-access exclusions),
   reporting skips as
   `...(N binary or excluded files skipped)`. `grep` streams its lines (no whole-file
-  `split`, issue #24) and there is **no 1 MB file skip** anymore; matching runs on each
+  `split`, issue #24) and skips no file for its size; matching runs on each
   line's kept 64 KB prefix, so a match past the accumulation cap *inside one line* is the
   documented trade-off (pinned by `GrepToolTest`).
   `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
@@ -1089,16 +1055,17 @@ own config directory (a
   `TreeDiffCollector` in `tools/DiffPolicy.kt`), skips are counted in
   the `(original content reported for M of N files)` note and every dropped diff is
   visible in the result text and on stderr (issue #57). MCP tool results are intentionally uncapped.
+
+### Permissions
+
 - **Permissions (path-aware, tiered)**: path-scoped tools inside the session cwd run without asking;
   anything outside - reads and writes alike - and any mutating non-path tool (`bash`) ask via
-  `session/request_permission` (unless the tier below covers it). `permissions.readableDirectories`
-  names absolute **read-trusted** paths (the docker launcher mounts exactly these paths, read-only); the
-  non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run prompt-free when all
-  targets resolve inside one of them (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
-  against the session cwd so a symlink escape still gates); writes/moves/deletes under them
-  always prompt. `permissions.writableDirectories` covers the mutating path tools prompt-free
-  and implies readable; paths in neither tier nor the cwd follow `permissions.unlistedPaths`
-  (`agent/PermissionPolicy.kt`, see Configuration / Directory permission tiers). **The agent's own scratch directory is
+  `session/request_permission` (unless a tier covers it; the tiers themselves are under
+  Configuration / Directory permission tiers). The non-mutating path tools (`read_file`/`list_dir`/`glob`/`grep`) run
+  prompt-free when all targets resolve inside the
+  readable tier (`isWithinAnyRoot` in `tools/Containment.kt`, resolved
+  against the session cwd so a symlink escape still gates); writes/moves/deletes under it
+  always prompt. **The agent's own scratch directory is
   read-trusted like a readable directory**
   (`Config.scratchDir`, env `DDR_ACP_AGENT_SCRATCH_DIR`, default `/tmp/ddr-acp-agent`,
   issue #10): `AgentSessionImpl` merges `config.readableDirectories + scratchDir` into one
@@ -1147,49 +1114,33 @@ own config directory (a
   keys) must change these pins explicitly rather than silently regress the
   contract. `SessionState` owns them behind `grantAlways`/`rejectAlways`/
   `permissionDecisionFor` (issue #83) and exposes a read-only view, so
-  `ToolCallExecutor` never mutates the map directly. **Tool-call titles**: the JetBrains ACP client renders only the
-  `title` of a tool call
-  in
-  permission prompts and progress - it ignores the `rawInput` field that carries the actual
-  arguments, so a bare `run`/`bash` title leaves the user confirming blind. Tools with **Observed (JetBrains,
-  2026-09)**: the permission dialog in practice showed the bare
-  argument value (`echo permission-test`) instead of our `bash(command: ...)` title - the
-  "only title is rendered" claim did not hold for the permission surface. Keep titles
-  argument-bearing anyway (other clients render them) and make commands self-describing;
-  re-verify against a concrete client rather than assuming. Working hypothesis (unverified, no matching JetBrains bug
-  report found 2026-09): the dialog
-  special-cases a `command` value in `rawInput` and renders it as a
-  syntax-highlighted runnable block, falling back to the title otherwise - this
-  fits `create_run_config`/`bash` showing their `command` argument while `run`
-  (`config`/`args` keys) and `delete_run_config` (`name` only) showed their
-  titles, and matches the JetBrains rendering behavior reported in
-  google-gemini/gemini-cli#23018 (title rendered as command block) and the
-  "bug in how the IntelliJ ACP client renders tool call parameters" confirmation
-  on the Cursor forum. All of this is hypothesis until verified against a
-  concrete client. Tools with
-  meaningful arguments therefore override `AgentTool.title(arguments)` (hook in
-  `tools/Tool.kt`, default `null` = bare tool name). The `run` tool and the
-  run-config write tools lead with the config name (`run(echo)`, `run(echo: <args>)`,
-  `create_run_config(echo: <command>)`,
-  `delete_run_config(echo)`) so client-side title elision cannot hide which
-  configuration is executed/created - `formatRunToolTitle` /
-  `formatRunConfigToolTitle` in `tools/Tool.kt` read named keys, so titles are
-  order-independent regardless of the JSON key order the model chose. The
-  remaining tools use `formatToolTitle(name, args)` - a `name(key: value, ...)`
-  summary, gemini-cli style - and every formatter caps each value part at 100
-  chars (ellipsized; was 50 for the whole argument part, which could push the
-  identifying name out of the title);
-  `rawInput` is still sent unchanged for clients that do render it (Zed). Currently
-  implemented for `bash`, `run`, the run-config write tools and the move/delete tools (their prompts are
-  safety-critical: a bare title would leave the user confirming a
-  deletion blind); titles flatten embedded newlines so permission prompts stay
-  single-line; the remaining path tools only prompt for out-of-project access and are
-  untouched. **Tool-call results**: completed/failed
+  `ToolCallExecutor` never mutates the map directly. **Tool-call titles**: the JetBrains ACP client
+  renders only the `title` of a tool call in permission prompts and progress and ignores the
+  `rawInput` field that carries the arguments, so a bare `run`/`bash` title would leave the user
+  confirming blind. Observed (JetBrains, 2026-09): the permission dialog showed the bare
+  `command` argument instead of the `bash(command: ...)` title, so keep titles argument-bearing
+  anyway (other clients render them) and make commands self-describing; re-verify against a
+  concrete client rather than assuming. Tools with meaningful arguments therefore override
+  `AgentTool.title(arguments)` (hook in `tools/Tool.kt`, default `null` = bare tool name):
+  `bash`, `write_file` (path + content size), `web_fetch`, `calc`, the `run` tool, the
+  run-config write tools and the move/delete tools (their prompts are safety-critical: a bare
+  title would leave the user confirming a deletion blind). The `run` tool and the run-config
+  write tools lead with the config name (`run(echo)`, `run(echo: <args>)`,
+  `create_run_config(echo: <command>)`, `delete_run_config(echo)`) so client-side title elision
+  cannot hide which configuration is executed/created - `formatRunToolTitle` /
+  `formatRunConfigToolTitle` in `tools/Tool.kt` read named keys, so titles are order-independent
+  regardless of the JSON key order the model chose. The remaining overriding tools use
+  `formatToolTitle(name, args)` - a `name(key: value, ...)` summary, gemini-cli style - and every
+  formatter caps each value part at 100 chars (ellipsized per value, so a long value cannot push
+  the identifying name out of the title) and flattens embedded newlines so permission prompts
+  stay single-line. `rawInput` is still sent unchanged for clients that do render it (Zed). The
+  path tools that only prompt for out-of-project access (`read_file`/`edit_file`/`list_dir`/
+  `glob`/`grep`) keep the bare tool name. **Tool-call results**: completed/failed
   `tool_call_update`s carry the result text as `content` blocks (and the error text on
   permission denial), so clients that ignore `rawOutput` still render the outcome;
   edit-kind tools additionally emit `ToolCallContent.Diff` (spec v1 `diff` blocks) so
   file changes are visible without the client fs proxy - every diff describes the **whole file**: `edit_file` emits
-  the full old/new content (was fragment-only, which
+  the full old/new content (a fragment-only diff is what
   Zed-style clients misrender), `write_file` best-effort pre-reads the old
   content (`oldText = null` **only** for a genuinely absent file - `FileAbsentException`, so an
   existing-but-unreadable file never claims to be new, issue #55), `delete_file`/`delete_directory`
@@ -1206,11 +1157,14 @@ own config directory (a
   (`tool_call`, `request_permission` and load replay) for the client's follow-along
   surface. `rawOutput` keeps the plain result for wire compat. The spec's optional
   programmatic `tool_call.name` is **not** emitted: no `acp` SDK release up to 0.34.0 carries
-  it (`SessionUpdate.ToolCall` still has no `name` property) - tracked by issue #64. **Revert path**: when JetBrains
-  renders
+  it (`SessionUpdate.ToolCall` still has no `name` property) - tracked by issue #64. **Revert
+  path**: when JetBrains renders
   `rawInput` (or ACP v2 permission `subject`), drop the one-line `title` overrides and the
   call sites (`tool_call` notification, `request_permission`, completed/denied updates,
   load replay in `AgentSessionImpl.kt`) fall back to `tool.name` without further changes.
+
+### MCP consumption
+
 - **MCP consumption**: servers come exclusively from the client's `session/new` `mcpServers`;
   all three transports work on JVM (see Recipes); `initialize` advertises
   `mcpCapabilities.http/sse`. **All three transports are covered end-to-end**
@@ -1263,6 +1217,9 @@ own config directory (a
   `type = "object"` pin is the SDK's own `@EncodeDefault`, not a loss). Pinned at
   the unit level (`McpBridgeTest`) and at the wire level (e2e: the schema
   reaches the chat request's `function.parameters`).
+
+### LLM streaming & auto provider routing
+
 - **LLM streaming** (Responses API dialect, issue #75): a hand-rolled SSE line scan
   (`data:` events, `[DONE]` terminator, see Boundaries) that relays **raw event objects**;
   the runner switches on `type` and skips unknown event types, so a new upstream event cannot
@@ -1303,8 +1260,7 @@ own config directory (a
   this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
   runtime is upgraded - the v1 equivalence is pinned **v1-only** by the labelled assertion in
   `E2eWireConformanceTest` (finding the mandatory v2 flip, issue #63).
-  Requests carry app attribution headers (`HTTP-Referer`
-  + `X-OpenRouter-Title`).
+  Requests carry app attribution headers (`HTTP-Referer` + `X-OpenRouter-Title`).
 - **Auto provider routing**: by default (`openRouter.autoThroughputSorting: false`
   disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
   median endpoint completion price}` (USD per million tokens,
@@ -1315,9 +1271,11 @@ own config directory (a
   itself, while the provider option reads the feed regardless (the picker stays visible). Unparseable completion
   prices are excluded from the median instead of failing the feed (all-unparseable fails open - never a $0 cap);
   such endpoints stay selectable as manual picks. `ProviderPreferences` is all-optional (`sort`/`order`/`max_price`), so
-  the
-  auto policy sends sort+cap and a manual pick sends `order` only; `llmWireJson`'s
-  `explicitNulls=false` keeps absent members off the wire.
+  the auto policy sends sort+cap and a manual pick sends
+  `order` only; `llmWireJson`'s `explicitNulls=false` keeps absent members off the wire.
+
+### Prompt & cancellation
+
 - **Prompt capabilities**: advertises `image` + `embeddedContext` (no `audio`). Image blocks
   become base64 data URIs (mime default `image/png`) only when the model's
   `architecture.input_modalities` lists image, else a text placeholder; text `resource` blocks
@@ -1343,15 +1301,13 @@ own config directory (a
   non-cancellation catch, so a failing pre-read drops only the diff and the write/delete still proceeds). Same
   contract for the fs-proxy file tools (`ReadFileTool`/`EditFileTool`/`WriteFileTool` - with
   the client fs proxy their
-  `FileStore` calls are suspending RPCs; #28, fixed 2026-09-24, incl. the inner
-  `writeResultDiff` pre-read catch; #29, fixed 2026-10-18, added `delete_file`'s pre-read rethrow, which was the one
-  remaining swallow - note only `delete_file`'s *pre-read* goes through the `FileStore`, the delete itself is
-  local-disk-only). Testing this swallow needs an outcome-capture
+  `FileStore` calls are suspending RPCs; note only `delete_file`'s *pre-read* goes through
+  the `FileStore`, the delete itself is local-disk-only). Testing this swallow needs an outcome-capture
   detector, not `Deferred.isCancelled` — a `cancelAndJoin`ed deferred is
   `isCancelled` even when the body swallowed and returned a value (`BashToolTest`/`RunToolTest` "cancelling the tool
   during a running command"
   and `FileToolCancelTest` "executeSafely rethrows cancellation"
-  tests; verified to fail with the bug re-introduced). Today the SDK's
+  tests; each fails with the swallow re-introduced). The SDK's
   `SafeCollector.emit` (`currentContext.ensureActive()`) masks a swallowed
   cancellation before the bogus `ToolCallUpdate(FAILED)` is emitted, so the
   end-to-end symptom is latent, not observed.
@@ -1359,6 +1315,9 @@ own config directory (a
   `NonCancellable` when the turn did not complete, so the user message, the streamed partial
   reply and every applied tool call survive the cancel (issue #17; the dangling call is closed
   by the #38 repair).
+
+### Docker sandbox
+
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
   `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
   builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
@@ -1407,8 +1366,8 @@ own config directory (a
   `UV_CACHE_DIR` -> `~/.cache/uv`, ...) - relocation stays necessary there because
   the container home differs from the host home. **pnpm** is a regular tool cache:
   `PNPM_CONFIG_STORE_DIR`/`PNPM_CONFIG_CACHE_DIR` (pnpm reads `pnpm_config_*`/
-  `PNPM_CONFIG_*` env vars, pnpm.io/configuring - `npm_config_*` is gone since
-  pnpm 12) go through the same explicit/fallback policy as the other tool caches,
+  `PNPM_CONFIG_*` env vars, pnpm.io/configuring) go through the same explicit/fallback
+  policy as the other tool caches,
   and `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` is forwarded when set (it makes
   `node_modules` symlink into the shared store, so host and container projects only
   share one layout when it travels with the identity-bound store). `PNPM_HOME` is
@@ -1446,8 +1405,8 @@ own config directory (a
   keeps the seeded `nosuid,nodev` when merging): toolchains execute native binaries
     extracted into those caches - AGP's AAPT2 from Maven, the compiled Kotlin DSL
     scripts under `caches/<ver>/kotlin-dsl` and Kotlin/Native under `~/.konan` (when the
-    konan cache is not mounted from the host) - which the former host
-  bind-mount home never restricted (noexec surfaced as
+    konan cache is not mounted from the host) - which a bind-mounted home
+    does not restrict (noexec surfaces as
   `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
   noexec default (nothing executes from there).
   `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
@@ -1512,7 +1471,10 @@ exists because a Gradle test worker's
 own classloader), and the stdio MCP mock must be launched as a separate JVM
 (`java -cp <testClasspath> ...StdioMcpMockServer`). It is injected through a
 `CommandLineArgumentProvider` with a `@get:Classpath` property, so the classpath
-stays a task input instead of a stale constant.
+stays a task input instead of a stale constant. The harness also strips a leaked
+`DDR_ACP_AGENT_TOOLS_FS_PROXY=0` from the spawned agent's environment (unless a scenario
+explicitly sets it), so the full `test` suite covers the fs-proxy scenarios regardless of the
+host environment (`E2eAgentTest`).
 
 - **Wire flow** — initialize/session/config-option/prompt/tool-call/permission,
   model/reasoning switches, the chat request's `reasoning` effort, `usage_update`,
@@ -1528,51 +1490,43 @@ stays a task input instead of a stale constant.
   conversion (image data URI, inlined resources, `ResourceLink` as a markdown link -
   the baseline prompt content every agent MUST support), `mcpCapabilities` (http/sse),
   AGENTS.md injection, the `Agent build:` hash round-tripped from `git.properties`.
-- **Security & permissions** — path-aware permissions + client fs proxy (in-project prompt-free, out-of-project read
-  prompts, the `allow_always`
-  session grant prompting once for two prompts' out-of-project reads (issue #65
-  pin of the tool-name-keyed semantics)), `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` and the **fs-capability negative** (issue
-  #61: with the
-  default `ClientCapabilities()` -
-  `fs` absent - `read_file` + `write_file` run through the local store and never
-  call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT attempt to
-  call the corresponding filesystem method") local-store fallback), the **permission option contract** (issue #61: all
-  four `PermissionOptionKind`s
-  offered, distinct non-blank ids and names, id/kind pairing - the previously
-  collected-but-never-asserted `TestClientOperations.permissionOptions`), run tool
-  prompt-free in every mode, run-config tools
-  (build-mode permission prompt, plan-mode absence of write tools), move/delete
-  tools (out-of-project move destination prompts), MCP tool annotations (`E2eMcpToolPermissionTest` over
-  `MockMcpServer`) and the same over the stdio
-  transport (`E2eMcpStdioTransportTest`: the spec-mandatory stdio server as a real
-  child process - read-only prompt-free, unannotated prompts + executes, a
-  `read_file`-named server tool ignored with a warning while the local `read_file`
-  still runs, an unstartable server failing open with only a logged warning) and over
-  the classic SSE transport (`E2eMcpSseTransportTest`: read-only prompt-free,
-  unannotated prompts + executes, `McpServer.Sse.headers` forwarded),
-  `$/cancel_request` dismissal
-  of a stuck permission prompt, mode enforcement
-  (`E2eModeRestrictionTest`: registered tool disabled in the current mode is
-  refused before permission/execution; `get_current_mode` prompt-free with the
-  governing mode's status text), and the coalesced mode indication (`E2eModeIndicationTest`: idle/mid-turn switches emit
-  their client
-  notifications immediately but write one `Mode:` system message for the latest
-  mode, at the next prompt start only — never one per flip, none for a mode
-  that did not govern a turn; deferred switching itself pinned by
+- **Security & permissions** — path-aware permissions + client fs proxy (in-project
+  prompt-free, out-of-project read prompts, the `allow_always` session grant prompting once for
+  two prompts' out-of-project reads (issue #65 pin of the tool-name-keyed semantics)),
+  `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` and the **fs-capability negative** (issue #61: with the
+  default `ClientCapabilities()` - `fs` absent - `read_file` + `write_file` run through the
+  local store and never call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT
+  attempt to call the corresponding filesystem method" local-store fallback), the **permission
+  option contract** (issue #61: all four `PermissionOptionKind`s offered, distinct non-blank
+  ids and names, id/kind pairing via `TestClientOperations.permissionOptions`), run tool
+  prompt-free in every mode, run-config tools (build-mode permission prompt, plan-mode absence
+  of write tools), move/delete tools (out-of-project move destination prompts), MCP tool
+  annotations (`E2eMcpToolPermissionTest` over `MockMcpServer`) and the same over the stdio
+  transport (`E2eMcpStdioTransportTest`: the spec-mandatory stdio server as a real child
+  process - read-only prompt-free, unannotated prompts + executes, a `read_file`-named server
+  tool ignored with a warning while the local `read_file` still runs, an unstartable server
+  failing open with only a logged warning) and over the classic SSE transport (`E2eMcpSseTransportTest`: read-only
+  prompt-free, unannotated prompts + executes,
+  `McpServer.Sse.headers` forwarded), `$/cancel_request` dismissal of a stuck permission
+  prompt, mode enforcement (`E2eModeRestrictionTest`: registered tool disabled in the current
+  mode is refused before permission/execution; `get_current_mode` prompt-free with the
+  governing mode's status text), and the coalesced mode indication (`E2eModeIndicationTest`:
+  idle/mid-turn switches emit their client notifications immediately but write one `Mode:`
+  system message for the latest mode, at the next prompt start only — never one per flip, none
+  for a mode that did not govern a turn; deferred switching itself pinned by
   `E2eDeferredModeSwitchTest`).
 - **Sessions** — persistence across three restarts (`session/list` ->
   `session/load` with replay -> `session/resume` -> delete), `update_plan`
   persistence/replay, and the replay outcome contract: one prompt in plan mode
   with a rejecting permission client denies an out-of-project `read_file` and
   an unknown tool call, then `session/load` pins both replayed `tool_call_update`s
-  as FAILED with their denial text (was the issue #5 blanket-COMPLETED bug) and
+  as FAILED with their denial text (never blanket-COMPLETED) and
   the `update_plan` scenario pins the successful call replaying COMPLETED.
   The **cwd gate** (issue #74) is pinned at the unit level (`SessionCwdTest`:
   absolute/existing/directory, plus the unparseable-path refusal;
   `SessionLifecycleTest`: `createSession` refuses and leaves no record; `loadSession`/
   `resumeSession` refuse while the record survives, and an unknown id keeps its own
-  refusal) and
-  black-box in `E2eSessionPersistenceTest` (`session/new` with a missing path and
+  refusal) and black-box in `E2eSessionPersistenceTest` (`session/new` with a missing path and
   with a regular file as cwd both fail with invalid params, no record appears).
   The `session/list` `updatedAt` shape is pinned twice: unit-level in
   `SessionLifecycleTest` (a fixed `Europe/Berlin` zone renders summer/winter offsets,
@@ -1643,8 +1597,7 @@ stays a task input instead of a stale constant.
   outside every range, so a prefix-mask off-by-one fails; a bracketed IPv6
   literal, and the IPv4-mapped literal as a regression pin) are pinned against
   a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; public IP literals);
-  black-box e2e in
-  `E2eWebFetchTest` (prompt-free plan-mode fetch with
+  black-box e2e in `E2eWebFetchTest` (prompt-free plan-mode fetch with
   `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
@@ -1662,38 +1615,37 @@ argument label pairs and an unknown total); move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
 payloads, local-disk-only), the whole-file diff convention and the shared diff policy (issue #58: store-rendered
 write/edit suppressed, local-only ops always emit - pinned by
-the `delete_file` fs-proxy flip in `DeleteFileToolTest`), the omitted-diff notes (issue #57: cap sizes and pre-read
-errors named in the result text, in
+the `delete_file` fs-proxy flip in `DeleteFileToolTest`), the omitted-diff notes (issue #57:
+cap sizes and pre-read errors named in the result text, in
 `WriteFileToolTest`/`EditFileToolTest`/`DeleteFileToolTest`), the tree/move diff evidence (issue #56: delete+add rename
 pairs, the bounded tree caps and the `M of N` note, in
 `DeleteDirectoryToolTest`/`MoveFileToolTest`/`MoveDirectoryToolTest` (incl. the 50-file and
 aggregate-budget caps and the excluded-file content skip), multi-diff emission
 in `ToolCallExecutorTest`; the wire pin `E2eWireConformanceTest` - a `delete_directory`
 result carries `{"type":"diff"}` blocks on the raw wire),
-the strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted `readOnlyHint`, kind
-mapping, `title` annotation) are unit-tested in
+the strict JSON-null argument rejections, and the MCP annotation mapping (trusted/untrusted
+`readOnlyHint`, kind mapping, `title` annotation) are unit-tested in
 the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
 `EditFileToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`, `DeleteFileToolTest`,
 `DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
 per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`; issue #55's
 absent-vs-unreadable split is pinned in `WriteFileToolTest`, the store's regular-files-only
 guard in `FileStoreTest`, and the stdio MCP launch contract (env allowlist + client entries
-winning) in `McpConnectorTest`. The
-client fs-proxy windowing contract (issue #6: no phantom footer past EOF, whole-file
-fallback for limit-ignoring clients, EOF-probe arguments + conservative probe-failure
-fallback) is pinned in `PermissionAndFileStoreTest` (strict `SlicingFsClient` /
-`FailingProbeFsClient` doubles) and `ReadFileToolTest` (rendering). The
+winning) in `McpConnectorTest`. The client fs-proxy windowing contract (issue #6: no phantom
+footer past EOF, whole-file fallback for limit-ignoring clients, EOF-probe arguments +
+conservative probe-failure fallback) is pinned in `PermissionAndFileStoreTest` (strict
+`SlicingFsClient` / `FailingProbeFsClient` doubles) and `ReadFileToolTest` (rendering). The
 calc expression language (operator precedence incl. right-associative `^`,
 functions/constants, positional error messages, length/nesting caps) is unit-tested in
-`CalcExpressionTest`/`CalcToolTest`. The stale-temp sweep of crashed atomic writes (issue #20) is pinned in
-`AtomicWriteTest` (stale temps of the name prefix deleted, fresh
+`CalcExpressionTest`/`CalcToolTest`. The stale-temp sweep of crashed atomic writes (issue #20)
+is pinned in `AtomicWriteTest` (stale temps of the name prefix deleted, fresh
 temps and unrelated names kept, symlinks/directories never touched, and the
 `writeAtomically` sweep of the target's temp naming).
 
 **Tool schema pins**: every registered local tool pins its `parameters` schema as an
 encoded string (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive —
-JsonObject equality is order-insensitive) in its own tool test class (`ReadFileToolTest`, `WriteFileToolTest`,
-`EditFileToolTest`, `ListDirToolTest`,
+JsonObject equality is order-insensitive) in its own tool test class (`ReadFileToolTest`,
+`WriteFileToolTest`, `EditFileToolTest`, `ListDirToolTest`,
 `GlobToolTest`, `GrepToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`,
 `DeleteFileToolTest`, `DeleteDirectoryToolTest` cover the path tools; the remaining
 tools in their dedicated classes: `BashToolTest`, `WebFetchToolTest`, `RunToolTest`,
@@ -1705,10 +1657,9 @@ The registry-wide guard test
 `properties` object and a `required` string array for every tool. It checks
 **structure only**: a tool newly added to `ToolCatalog.kt` will pass it until its
 schema pin is added, so treat touching the catalog list as the reminder to add the
-pin in the same change. The schema
-builder itself is pinned at the raw-string level by `ToolSchemaWireTest`
-(`ToolSchemaWireTest.kt` - the file name freed the `ToolSchemaTest` class name for the
-guard test).
+pin in the same change. The schema builder itself is pinned at the raw-string level by
+`ToolSchemaWireTest` (`ToolSchemaWireTest.kt` - the file name freed the `ToolSchemaTest`
+class name for the guard test).
 
 **e2e change policy**: e2e scenarios pin the agent's **wire contract** — protocol
 message flow, security boundaries (permission routing, mode restrictions,
@@ -1724,86 +1675,67 @@ invariant as observed in a chat request) and `collapseConsecutiveDuplicates()`
 (streamed deltas -> one entry per contiguous id run) so scenarios pin shapes instead of
 chunk counts or positions.
 
-**Known e2e gaps against the ACP spec** (reviewed 2026-10-18, re-reviewed 2026-11-03; file
-new issues for new findings, don't just note them): `tool_call.name` is never
-emitted and no SDK release up to 0.34.0 can express it - #64; `session/list`
-pagination is unexercised (no scenario has >10 sessions, and the SDK batches at
-`batchSize = 10` - #61 deliberately left this one unwired: the capability is marked
-UNSTABLE upstream and the paging is SDK-supplied). (#61 closed the rest of the gap list
-with the cheap conformance assertions pinned in their feature-area classes - stdout
-hygiene, version negotiation, the complete capability advertisement, the fs-capability
-negative, `ResourceLink` and the permission-option contract; #63 left the gap list with
-the orchestration-level assertions replaced by effect-based ones: no LLM call totals, no
-mock filler text, no positional chunk pins; #69 left the gap list with
-`E2eMcpSseTransportTest` covering the classic SSE transport - the mirror of #60, which
-left it with `E2eMcpStdioTransportTest` covering the spec-mandatory stdio transport;
-#62 left it with the `acp` 0.33.0 upgrade: `E2eCancelTest` now pins the cancelled
-`PromptResponse`/`StopReason.CANCELLED`; #59 left it with the 0.34.0 upgrade: the replay now
-runs before the load response; #73 left it with the title announcement: the prompt flow
-sends `session_info_update`, pinned in `E2eSessionPersistenceTest`; #17 left it with the
-graceful-shutdown pin: `E2eShutdownTest` covers the client closing stdin mid-turn and
-`session/cancel` mid-turn.)
+**Known e2e gaps against the ACP spec** (file new issues for new findings, don't just note
+them): `tool_call.name` is never emitted and no SDK release up to 0.34.0 can express it -
+#64; `session/list` pagination is unexercised (no scenario has >10 sessions, and the SDK
+batches at `batchSize = 10` - the capability is marked UNSTABLE upstream and the paging is
+SDK-supplied).
 
 **Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
 `testScripts` wired into `check`): black-box tests for the **launcher composition** —
 the JVM suites cannot see which argv/env the `ddr-acp-agent-docker` launcher composes.
-The stub `tests/bash/stubs/fake-docker` is plugged in via the launcher's own
-`DOCKER_BIN` seam (record mode: every invocation appended to `$FAKE_DOCKER_LOG`,
-`FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths);
-`tests/bash/harness.sh` is a zero-dependency assert lib (each test runs in its own
-subshell and the first failing assert aborts it via `_fail`'s `exit` - bash ignores
-`set -e` in the runner's capture context, which had let tests false-green until
-issue #52), `tests/bash/common.sh` provides the
-launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`; env
-assignments must precede flags, and the launcher-visible host config (`ANDROID_HOME`/`ANDROID_SDK_ROOT`/`TZ`, the
-tool-cache env vars - `UV_CACHE_DIR`
-& friends, `UV_LINK_MODE`, the `PNPM_CONFIG_*` cache vars - and the whole
-`DDR_ACP_AGENT_*` family) is always cleared).
-Suites: `test_permission_mounts.bash` (the permission lists as the mount list:
-ro/rw per tier, a path in both tiers mounted rw once, covered paths skipped,
-lists forwarded once and unchanged), `test_config_mounts.bash` (the agent config
-directory mount: host dir read-only at the container's own config directory on a
-uid-mapped `~/.config` tmpfs, bind landing on top of the tmpfs, a missing host
-dir mounting nothing, a config dir inside the project dir skipped),
-`test_launcher_args.bash`
-(sandbox flags, env forwarding, the no-key-handling contract: legacy
-`OPENROUTER_API_KEY`/`OPENROUTER_API_KEY_FILE` are inert (no key mount, no key env,
-host file untouched), `.env.local` masking, git
-identity, pull fallback, `DDR_ACP_AGENT_SCRATCH_DIR` forwarded verbatim without a mount,
-`DDR_ACP_AGENT_CONFIG_FILE` forwarded as a bare file name,
-`--network host` as the default + `--add-host=host.docker.internal:(127.0.0.1|host-gateway)`
-depending on the network mode (always present)
 
-+ `--network` honoring `DDR_ACP_AGENT_DOCKER_NETWORK` + `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS`
-  appending, the launcher's own `DDR_ACP_AGENT_DOCKER_*` knobs carved out of the forwarded
-  agent config (a knob must never reach the agent env), the legacy `ACP_DOCKER_*` spellings
-  inert, Gradle
-  GUH sharing (content-addressed leaves incl. `build-cache-*`/`transforms-*`,
-  version-bound `transforms`/`generated-gradle-jars` incl. wrapper-dist-derived
-  versions, per-version tmpfs, #67), cache sharing (issue #51): explicit
-  cache dir identity-mounted
-+ env forwarded verbatim, forwarded without a mount when inside the project dir,
-  `UV_LINK_MODE` forwarding, `TZ` forwarding (the agent's rendered timestamps follow
-  the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
-  `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the
-  container defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`
-  forwarding), `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit
-  config ignored and not even validated), Android SDK sharing: explicit
-  `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both vars carrying the configured value (lone `ANDROID_SDK_ROOT`
-  synthesizes `ANDROID_HOME`, `ANDROID_HOME` wins on conflict),
-  default-dir pickup relocated + pinned, absent -> nothing, in-project SDK keeps the
-  host path),
-`test_error_paths.bash` (fail-loudly exits before any `docker run`, incl. the
-  set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`:
-  relative, `/`, uncreatable; `PNPM_CONFIG_STORE_DIR`: relative) refusals) and `test_harness.bash` (harness self-test -
-  the #52 regression pin: a failing assert must abort the test inside `run_tests`'
-  capture context and later code must never run; each test there ends in ONE
-  decisive all-properties assertion kept last, so it also fails under a
-  non-aborting `_fail`). Fixtures live under
-  `build/` (never `/tmp`: the launcher skips permission paths inside the container tmpfs;
-never `/home/dev` either - container-only and unwritable on a host, see the
-  env-independence pitfall); no test needs a key value at all (the launcher never
-  reads one).
+- `tests/bash/stubs/fake-docker` is plugged in via the launcher's own `DOCKER_BIN` seam (record mode: every invocation
+  appended to `$FAKE_DOCKER_LOG`,
+  `FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths).
+- `tests/bash/harness.sh` is a zero-dependency assert lib: each test runs in its own
+  subshell and the first failing assert aborts it via `_fail`'s `exit` (bash ignores
+  `set -e` in the runner's capture context, see the Pitfalls).
+- `tests/bash/common.sh` provides the launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`;
+  env assignments must precede
+  flags) and clears the launcher-visible host config (`ANDROID_HOME`/`ANDROID_SDK_ROOT`/`TZ`,
+  the tool-cache env vars - `UV_CACHE_DIR` & friends, `UV_LINK_MODE`, the `PNPM_CONFIG_*`
+  cache vars - and the whole `DDR_ACP_AGENT_*` family).
+- `test_permission_mounts.bash`: the permission lists as the mount list (ro/rw per tier, a
+  path in both tiers mounted rw once, covered paths skipped, lists forwarded once and unchanged).
+- `test_config_mounts.bash`: the agent config directory mount (host dir read-only at the
+  container's own config directory on a uid-mapped `~/.config` tmpfs, bind landing on top of
+  the tmpfs, a missing host dir mounting nothing, a config dir inside the project dir skipped).
+- `test_launcher_args.bash`: sandbox flags; env forwarding; the no-key-handling contract (legacy `OPENROUTER_API_KEY`/
+  `OPENROUTER_API_KEY_FILE` are inert - no key mount, no key env,
+  host file untouched); `.env.local` masking; git identity; pull fallback;
+  `DDR_ACP_AGENT_SCRATCH_DIR` forwarded verbatim without a mount;
+  `DDR_ACP_AGENT_CONFIG_FILE` forwarded as a bare file name; `--network host` as the default +
+  `--add-host=host.docker.internal:(127.0.0.1|host-gateway)` depending on the network mode (always present); `--network`
+  honoring `DDR_ACP_AGENT_DOCKER_NETWORK`;
+  `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS` appending; the launcher's own `DDR_ACP_AGENT_DOCKER_*`
+  knobs carved out of the forwarded agent config (a knob must never reach the agent env), the
+  legacy `ACP_DOCKER_*` spellings inert; Gradle GUH sharing (content-addressed leaves incl.
+  `build-cache-*`/`transforms-*`, version-bound `transforms`/`generated-gradle-jars` incl.
+  wrapper-dist-derived versions, per-version tmpfs, #67); cache sharing (issue #51) - explicit
+  cache dir identity-mounted + env forwarded verbatim, forwarded without a mount when inside
+  the project dir, `UV_LINK_MODE` forwarding, `TZ` forwarding (the agent's rendered timestamps
+  follow the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
+  `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the container
+  defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` forwarding),
+  `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit config ignored and not even
+  validated), Android SDK sharing (explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both
+  vars carrying the configured value, lone `ANDROID_SDK_ROOT` synthesizes `ANDROID_HOME`,
+  `ANDROID_HOME` wins on conflict, default-dir pickup relocated + pinned, absent -> nothing,
+  in-project SDK keeps the host path).
+- `test_error_paths.bash`: fail-loudly exits before any `docker run`, incl. the
+  set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`: relative,
+  `/`, uncreatable; `PNPM_CONFIG_STORE_DIR`: relative) refusals.
+- `test_dockerfile.bash`: the Dockerfile builder stage's build-input COPY allowlist against the
+  real build inputs (a new file the Gradle build reads must be added to that list).
+- `test_harness.bash`: harness self-test - the #52 regression pin: a failing assert must abort
+  the test inside `run_tests`' capture context and later code must never run; each test there
+  ends in ONE decisive all-properties assertion kept last, so it also fails under a
+  non-aborting `_fail`.
+
+Fixtures live under `build/` (never `/tmp`: the launcher skips permission paths inside the
+container tmpfs; never `/home/dev` either - container-only and unwritable on a host, see the
+env-independence pitfall); no test needs a key value at all (the launcher never reads one).
 
 Manual validation (the run configurations cannot do this):
 - Docker: validate `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
@@ -1822,27 +1754,16 @@ the exact resolved sources (`sources` unpacks `acp-jvm-<version>/` + `acp-model-
 (1) `model/SessionUpdate.kt` - does `SessionUpdate.ToolCall` carry the programmatic `name`
 property yet? If so, emit it (`tool.name` in `ToolCallExecutor`, the persisted
 `call.function.name` in `ReplayUpdates`) and close issue #64; (2) cancellation semantics (`agent/Agent.kt`
-`SessionWrapper.prompt`) - a cancelled turn
-must still be answered with `PromptResponse(StopReason.CANCELLED)`, which `E2eCancelTest`
-pins; watch `protocol/Exceptions.kt` for new error types in the permission path (`AcpRequestCancelledException` since
-0.33.0 is deliberately *not* a
-`CancellationException`); (3) `AgentSupport` contracts - `deleteSession` must keep succeeding for unknown/already
+`SessionWrapper.prompt`) - a cancelled turn must still be answered with
+`PromptResponse(StopReason.CANCELLED)`, which `E2eCancelTest` pins; watch
+`protocol/Exceptions.kt` for new error types in the permission path (`AcpRequestCancelledException` is deliberately
+*not* a `CancellationException`); (3) `AgentSupport` contracts - `deleteSession` must keep succeeding for
+unknown/already
 deleted ids (pinned by `AgentSupportImplTest`), and `session/list` pagination over our
-`Sequence` override (10 per page + `nextCursor` since 0.33.0); (4) symbol stability - the JSON-RPC error helpers
-(`AcpExpectedError`, `JsonRpcException`,
-`acpFail`, `jsonRpcInvalidParams`, `ACPJson`) moved from `Protocol.kt`/
-`Protocol.extensions.kt` into `Exceptions.kt` between 0.30.1 and 0.33.0 with packages
-unchanged; expect file moves, watch for renames.
-Upgrade history: 0.30.1 -> 0.33.0 (2026-10-19): all four verified, no source changes
-needed beyond the `E2eCancelTest` pin (fixes #62); `SessionUpdate.ToolCall.name` still
-absent (#64 stays open). 0.33.0 -> 0.34.0 (2026-11-02): `AgentSession` gained
-`replayHistory()` (run before the load response - the replay moved there from
-`postInitialize()` and **#59 is closed**; `E2eSessionPersistenceTest` now uses the SDK's
-early-delivery `loadSession(..., operations)` overload and asserts the replay already arrived
-when the call returns); `SessionUpdate.ToolCall` still has no `name` (#64 stays open);
-`Agent.kt` session wrappers/`AgentSupport` contracts unchanged (all existing pins green);
-`Exceptions.kt` helpers unchanged, `AcpRequestCancelledException` still not a
-`CancellationException`.
+`Sequence` override (10 per page + `nextCursor`); (4) symbol stability - the JSON-RPC error
+helpers (`AcpExpectedError`, `JsonRpcException`, `acpFail`, `jsonRpcInvalidParams`,
+`ACPJson`) live in `Exceptions.kt` with their packages unchanged; expect file moves, watch
+for renames.
 
 **Definition of done**: a change is done when the `build` run configuration passes
 (compile + all tests incl. the black-box e2e).
@@ -1870,10 +1791,7 @@ communicate that with the user so we can review them.
 - **LLM provider**: OpenRouter, spoken through its **Responses API** (`POST /responses`,
   issue #75). The **wire types in `llm/models/ResponsesWireModels.kt` are the internal LLM
   contract** - a deliberate single-provider design decision; do not wrap them in
-  domain/anti-corruption types. History: Koog `ai.koog:prompt-executor-openrouter-client`
-  wire types until 2026-11-06 (dependency dropped, consumed surface owned byte-equivalently,
-  pinned by `LlmWireGoldensTest`, now `LlmResponseGoldensTest`); the chat-completion types
-  were then deleted outright when the transport moved to the Responses dialect. `LlmClient` in
+  domain/anti-corruption types. `LlmClient` in
   `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON).
   - **Raw-item transport**: conversation items travel as `JsonObject`s, not a polymorphic
     type hierarchy. Reasoning items must be replayed byte-verbatim (OpenRouter normalizes
@@ -1893,8 +1811,8 @@ communicate that with the user so we can review them.
     Consumers therefore read an item's **meaning**, not its variant
     (`userTextOrNull`/`systemTextOrNull`/`toolCallIdOrNull`/`toolOutputTextOrNull`/
     `assistantTextOrNull`), so a captured item still drives title derivation, the mode trail,
-    the pairing repair and load replay. `Captured` no longer means "we failed to understand
-    it", it means "we did not build it". Pinned by `ToolCallPairingRepairTest`
+      the pairing repair and load replay. `Captured` means "we did not build it", not
+      "we failed to understand it". Pinned by `ToolCallPairingRepairTest`
     (re-typing vs. capture) and `SessionStateRepairTest` (restore -> record reproduces the
     wire items exactly), `ReplayHistoryTest` (a captured user/tool item replays like its typed
     counterpart).
@@ -1931,14 +1849,6 @@ communicate that with the user so we can review them.
     server and the goldens emit the real names. `response.failed` and top-level
     `{"error":…}` events raise `LlmException`. Every wire-shaped byte round-trips through
     the shared `llmWireJson`.
-  - **Live-verified (2026-11-06)** with a throwaway key against the real endpoint, via a
-    local capture proxy (`openRouter.baseUrl` pointed at it - no production code involved):
-    reasoning items accumulate across a tool loop (`1, 2, 3, …` per request) for
-    `openai/gpt-oss-20b` (`google-gemini-v1`) and `anthropic/claude-haiku-5.5`
-    (`anthropic-claude-v1`), no signature-related 400; a non-reasoning model
-    (`meta-llama/llama-3.1-8b-instruct`) fails open with no reasoning items; the reasoning
-    deltas arrive as `response.reasoning_text.delta` and reach the client as
-    `agent_thought_chunk`.
   - **Pre-dialect session records: assumed gone, no compat shim.** `history` is
     `List<JsonObject>`, so an old Chat-Completions record still *decodes* - deliberately
     unmigrated (an item the typed model cannot reproduce is kept verbatim, see below). It is
@@ -1969,21 +1879,17 @@ communicate that with the user so we can review them.
   install validates stale sources - re-link (`installDist`) first.
 - **Shell tests can pass for the wrong reason** (issue #52): `run_tests` captures each
   test via `out=$(...) || status=$?`, where bash ignores `set -e` - asserts must abort
-  via `_fail`'s `exit`, not `return`. Until that was fixed, ten-plus `tests/bash` tests
-  were false-green (fixture missing `OPENROUTER_API_KEY` so the wrong error text was
-  asserted; `KEY=VALUE` env args after `--skip-pull` silently became container args;
-  a staged file asserted after the EXIT trap removed it; a lossy space-joined stub
-  log asserted against a value with spaces). When adding a shell test, verify it
+  via `_fail`'s `exit`, not `return`. When adding a shell test, verify it
   fails when the behavior under test is removed, and remember the first FAIL line is
   the real one. The harness self-test (`test_harness.bash`, the #52 regression pin) is
-  itself vulnerable to the same pitfall - it was green with `_fail` reverting to
-  `return 1` until its decisive all-properties assertion was moved to the END of each
-  test (the earlier granular asserts only improve failure messages, the last one alone
+  itself vulnerable to the same pitfall: each of its tests ends in ONE decisive
+  all-properties assertion kept last, so it also fails under a non-aborting `_fail`
+  (the earlier granular asserts only improve failure messages, the last one alone
   decides the status).
 - **The shell suite must be env-independent (host vs container)**: it runs inside
   the agent container *and* on a bare host (`./gradlew build`, Gradle `check` wires
-  `testScripts`), whose environments differ. Two traps (2026-10, first host run after
-  the #51 shell tests): (a) the container env sets `XDG_STATE_HOME` (state bind lands
+  `testScripts`), whose environments differ. Two traps: (a) the container env sets
+  `XDG_STATE_HOME` (state bind lands
   outside any fixture `HOME`), a host usually does not - the state bind then derives
   from the test's overridden `HOME` and a bare `assert_not_contains ... "gradle"`
   matched the *fixture name* (`gradle-home/.local/state/...`), not a GUH bind; assert
@@ -1997,9 +1903,8 @@ communicate that with the user so we can review them.
   dies with a confusing downstream cascade.
 - **Gradle build cache can report a false green**: outputs are cacheable, so a
   `test`/`build` run that *just changed test sources or the classpath* may come
-  back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (observed: a new
-  `WebFetcherTest` failing but every `test`/`build` invocation "passing" from
-  cache because an earlier run had stored the up-to-date-looking output). When a
+  back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (an earlier run's
+  up-to-date-looking output is replayed). When a
   run reports no executed test task (`test FROM-CACHE` / `UP-TO-DATE` with no
   `:test` execution line), distrust it: rerun with `./gradlew clean test
   --tests <Class>` or the `test_fresh` run config (`--rerun-tasks`) before
@@ -2034,12 +1939,6 @@ communicate that with the user so we can review them.
   responses as `AcpExpectedError` (message only, not `JsonRpcException` with the
   agent-side code); agent-side direct calls (unit tests) see `JsonRpcException`
   for `jsonRpcInvalidParams`.
-- **Shutdown**: do not drive shutdown from the transport's `onClose`; `runAgent` polls
-  `transport.state.value == Transport.State.CLOSED`, then cancels the pending incoming
-  requests, flushes every live session and calls `protocol.close()` (`Main.kt`). Cancelling
-  first is what stops a turn the client abandoned by closing stdin - the SDK never sees a
-  `session/cancel` there - and the flush is what guarantees the record: a cancelled
-  coroutine's own persist races the JVM exit, the flush does not (issue #17).
 - **Gradle lock timeout**: `Timeout waiting to lock ...` means an OS *flock* on a lock file is
   held - the blocker is real contention, not the lock file's existence: idle daemons keep
   `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),
@@ -2108,5 +2007,9 @@ This guidelines file is a living document and MUST be actively maintained by the
   * Ensure all tech stack versions and library names are accurate.
   * Make sure the most important features are clearly documented.
   * Keep the project structure up to date so that the most important files and directories are visible at a glance.
+* **No history:** this file documents the current state, not how it came about. Git holds the history, so do not keep
+  changelog-style narration (what was removed/renamed/fixed, "previously", "used to", upgrade logs, closed-issue
+  recaps). Keep only what still guides a decision: the rationale ("why") of a design choice, boundaries, and the
+  constraints a future change must respect. When you touch a paragraph, prune its history in the same edit.
 * **Proactivity:** Do not wait for explicit instructions to update these guidelines if you identify a discrepancy
   between the guidelines and the actual codebase.
