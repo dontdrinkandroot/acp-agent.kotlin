@@ -145,10 +145,12 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     Main.kt                          # `main` (logging setup) + `runAgent`: registry, session
                                      # factory (AgentSessionFactory: create/restore), store
                                      # wiring, transport, isoDateToday
-    BuildInfo.kt                     # build commit hash from git.properties (classpath)
+    BuildInfo.kt                     # build commit hash from git.properties (classpath) + the
+                                     # agent version (announced in initialize and shown by /info)
     config/Config.kt                 # resolved config: Config.load layering (env >
                                      # config.json > defaults), EnvValues accessors,
-                                     # key-file resolution + owner-only check
+                                     # key-file resolution + owner-only check, the resolved
+                                     # key file path (Config.openRouterApiKeyFile, never the key)
     config/ConfigFile.kt             # strict config.json parser (ConfigFile, UnlistedPaths,
                                      # path/scratch validation shared with the env layer)
     config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
@@ -198,6 +200,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # owns the `Mode:` trail and the status text
     agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
                                      # AgentSession interface (config options, prompt plumbing);
+                                     # postInitialize advertises the /info slash command, prompt
+                                     # answers it before any state is touched;
                                      # one-shot onSessionReleased hook (close/delete/failed replay);
                                      # persist-on-interrupt (prompt finally + close) - issue #17
     agent/PromptContent.kt           # contentBlocksToInputParts: prompt content blocks ->
@@ -221,6 +225,12 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
                                      # tool calls executed sequentially, wind-down synthesis pass
     agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
+    agent/InfoCommand.kt             # the `/info` slash command: the advertised command entry
+                                     # (shared with the detector, so name and matching cannot
+                                     # drift), strict invocation detection (one text block,
+                                     # `/info` + word boundary) + the pure Markdown dump
+                                     # (InfoSnapshot/renderInfo) of the resolved config and the
+                                     # live session selections
     agent/SystemPromptDump.kt        # reviewSystemPrompt + `main`: renders the prompt without
                                      # AGENTS.md from invented example values (run config
                                      # system_prompt / Gradle task printSystemPrompt)
@@ -359,6 +369,11 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
                                      # (image data URI, inlined text resource, resource_link
                                      # markdown link)
+        E2eInfoCommandTest.kt        # the /info slash command: advertisement on session
+                                     # setup, one-chunk Markdown reply with the resolved
+                                     # config, zero LLM calls, no record, the discarded-text
+                                     # note, /infofoo staying an ordinary prompt and /info
+                                     # never entering the next request's history
         E2eFileStoreTest.kt          # client fs proxy (on/off) + the fs-capability negative
                                      # (no fs capability advertised -> local store, no
                                      # fs/read_text_file or fs/write_text_file call, issue #61)
@@ -1285,6 +1300,38 @@ the identical in-container path), so the env layer is the docker source and the
 - **Project instructions**: `<cwd>/AGENTS.md` is read from disk every turn and injected as
   `## Project Instructions (from AGENTS.md)` (re-read per turn, so mid-session edits apply);
   missing file ignored, read errors logged and never fail the turn (`agent/AgentsMd.kt`).
+- **Slash command `/info`**: advertised right after every session setup by
+  `AgentSession.postInitialize` (the SDK hook for "additional notifications like Commands") as
+  one `available_commands_update` carrying the single command `info` (`infoAvailableCommand()`
+  in `agent/InfoCommand.kt` - the same file holds the detector, so the advertised name and the
+  matched name cannot drift apart); the notification is a
+  complete replacement list, so re-sending it on load/resume stays correct. The invocation is a
+  regular `session/prompt` whose **single** text block trims to `/info` or starts with `/info`
+  followed by whitespace - a word boundary keeps `/infofoo` an ordinary prompt, as do prose
+  mentioning it, any second content block and a different case. The reply is one
+  `agent_message_chunk` (Markdown: agent version + build, session id/cwd/mode with the mode's
+  advertised description, default + session model, the reasoning/provider values the config
+  surface states, the behaviour switches, and the trusted paths incl. the API key *file* - never
+  the key - and the session's *prepared* scratch directory, which is the path the trust checks
+  actually use) followed by `END_TURN`. **Verified in the JetBrains ACP client (2026-11): the advertised
+  command shows up in the client's slash-command list and autocompletion**, so the advertisement is
+  the discovery path; a manually typed `/info` reaches the same interception, so a client that
+  ignores the notification still works (re-verify client-side rendering by hand, the e2e harness
+  cannot pin it - see Manual validation). It is answered **before any state is touched**: no history
+  entry, no record, no LLM call, no tokens - a diagnostic must not become context for later
+  turns, so a `/info`-only session stays untitled and the dump is never stored; a record
+  written at close/shutdown (standard for any open session, issue #17) carries an empty history.
+  Text after the command word is
+  discarded and the reply leads with a note naming it (`**Note:** … discarded: "<text>"`,
+  flattened and capped at 200 chars), so a user's words are never dropped silently.
+  `InfoSnapshot`/`renderInfo` (`agent/InfoCommand.kt`) are pure; the session only fills the
+  snapshot with its live selections (`SessionConfigOptions.reasoningStatus/providerStatus`).
+  `Config.openRouterApiKeyFile` (recorded by `Config.load`, path only) backs the key-file line.
+  No staleness note by design: the README states that the config is resolved once at startup.
+  Pinned by `InfoCommandTest` (detection, rendering, no key value), `AgentSessionInfoTest`
+  (one chunk + `END_TURN`, no record, `-32002` on a closed session) and `E2eInfoCommandTest`
+  (advertisement, zero model calls, discarded note, `/infofoo` reaching the model, `/info`
+  absent from the next request's history).
 - **`$/cancel_request`**: handled natively by the SDK in both directions; a cancelled
   `session/request_permission` dismisses the client's prompt, and `shouldAllow` rethrows
   `CancellationException` instead of swallowing it into a bogus "Permission denied". A
@@ -1490,6 +1537,10 @@ host environment (`E2eAgentTest`).
   conversion (image data URI, inlined resources, `ResourceLink` as a markdown link -
   the baseline prompt content every agent MUST support), `mcpCapabilities` (http/sse),
   AGENTS.md injection, the `Agent build:` hash round-tripped from `git.properties`.
+- **Slash commands** — `/info` is advertised on session setup and answered locally (`E2eInfoCommandTest`): one Markdown
+  chunk with the resolved config, zero LLM calls, no
+  session record, the discarded-text note for extra input, and `/infofoo` still reaching the
+  model while `/info` never enters the next request's history.
 - **Security & permissions** — path-aware permissions + client fs proxy (in-project
   prompt-free, out-of-project read prompts, the `allow_always` session grant prompting once for
   two prompts' out-of-project reads (issue #65 pin of the tool-name-keyed semantics)),
@@ -1747,6 +1798,10 @@ Manual validation (the run configurations cannot do this):
 - Direct: validate `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the
   same way via `./ddr-acp-agent` (keep stdin open briefly after the request — closing
   it immediately races the transport teardown and swallows the response).
+- Client UI: the e2e harness sees the wire but not the IDE, so anything rendered
+  client-side is verified by hand in the JetBrains client (session setup, type `/` and
+  look for the agent's advertised command). `/info` was confirmed this way (2026-11:
+  listed and autocompleted); tool-call titles are the other surface with no automated pin.
 
 **ACP SDK upgrade checklist**: on every `com.agentclientprotocol:acp` bump, read the
 release notes (github.com/agentclientprotocol/kotlin-sdk/releases) and re-verify against

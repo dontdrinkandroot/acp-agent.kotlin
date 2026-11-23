@@ -158,7 +158,12 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                     llmMock.requestCount.get(),
                     "session/resume must restore without calling the LLM",
                 )
-                assertTrue(resumeOps.notifications.isEmpty(), "resume must not replay history")
+                // Resume re-advertises the /info slash command (the SDK runs
+                // postInitialize after every setup response) and nothing else.
+                assertTrue(
+                    resumeOps.notifications.all { it is SessionUpdate.AvailableCommandsUpdate },
+                    "resume must not replay history, got: ${resumeOps.notifications}",
+                )
                 println("[ok] session/resume restores mode without replay")
 
                 assertFailsWith<AcpExpectedError>("cwd mismatch must fail") {
@@ -287,7 +292,10 @@ class E2eSessionPersistenceTest : E2eAgentTest() {
                         .single().entries.map { it.content },
                 )
                 assertTrue(
-                    loadOps.notifications.last() is SessionUpdate.PlanUpdate,
+                    // The command advertisement may follow the replay (postInitialize
+                    // runs after the response); the last *replayed* update is the plan.
+                    loadOps.notifications.last { it !is SessionUpdate.AvailableCommandsUpdate }
+                            is SessionUpdate.PlanUpdate,
                     "the plan update must be replayed after the history",
                 )
                 val replayedResultUpdates = loadOps.notifications.filterIsInstance<SessionUpdate.ToolCallUpdate>()

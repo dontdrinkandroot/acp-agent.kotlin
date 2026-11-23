@@ -12,6 +12,7 @@ import com.agentclientprotocol.protocol.jsonRpcInvalidParams
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import net.dontdrinkandroot.acpagent.BuildInfo
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -85,7 +86,7 @@ internal class AgentSupportImpl(
             ),
             implementation = Implementation(
                 name = "acp-agent.kotlin",
-                version = "0.1.0",
+                version = BuildInfo.version,
                 title = "ACP Agent (Kotlin)"
             )
         )

@@ -52,6 +52,15 @@ public data class Config(
      * never becomes a trust root unverified.
      */
     val scratchDir: String = DEFAULT_SCRATCH_DIR,
+    /**
+     * The file the API key was resolved from - the *path*, never the key
+     * (issue #78). `/info` names it so "which key file is this agent using?"
+     * is answerable without inspecting the process environment.
+     *
+     * Declared last so the existing positional construction order stays put;
+     * [load] always sets it, the default serves direct construction in tests.
+     */
+    val openRouterApiKeyFile: String? = null,
 ) {
     public companion object {
         private const val DEFAULT_MODEL = "openrouter/auto"
@@ -96,9 +105,10 @@ public data class Config(
             val configDir = configDir(env, home)
             val file = readConfigFile(env[CONFIG_FILE_ENV], configDir)
             val envValues = EnvValues(env)
+            val apiKey = resolveApiKey(envValues, file.openRouter?.apiKeyFile, configDir)
 
             return Config(
-                openRouterApiKey = Secret(resolveApiKey(envValues, file.openRouter?.apiKeyFile, configDir)),
+                openRouterApiKey = apiKey.secret,
                 openRouterModel = envValues.string("openRouter.defaultModel")
                     ?: file.openRouter?.defaultModel ?: DEFAULT_MODEL,
                 openRouterBaseUrl = envValues.string("openRouter.baseUrl")
@@ -125,6 +135,7 @@ public data class Config(
                 scratchDir = envValues.string("scratchDir")?.let { requireScratchDir(it, EnvValues.name("scratchDir")) }
                     ?: file.scratchDir
                     ?: DEFAULT_SCRATCH_DIR,
+                openRouterApiKeyFile = apiKey.path.toString(),
             ).also { config -> config.directoryWarnings().forEach(warnings) }
         }
 
@@ -202,7 +213,7 @@ public data class Config(
          * non-empty); a failure names the path. When nothing resolves, the error
          * lists the tried sources.
          */
-        internal fun resolveApiKey(envValues: EnvValues, fileKeyFile: String?, configDir: Path): String {
+        internal fun resolveApiKey(envValues: EnvValues, fileKeyFile: String?, configDir: Path): ResolvedApiKey {
             val keyFileEnv = EnvValues.name("openRouter.apiKeyFile")
             val defaultKeyFile = configDir.resolve(DEFAULT_API_KEY_FILE_NAME)
             val candidates: List<Pair<String, Path>> = buildList {
@@ -235,7 +246,7 @@ public data class Config(
                 }
                 .trim()
             require(content.isNotEmpty()) { "OpenRouter API key file from $source is empty" }
-            return content
+            return ResolvedApiKey(secret = Secret(content), path = path)
         }
 
         /**
@@ -283,6 +294,15 @@ public data class Config(
         }
     }
 }
+
+/**
+ * The resolved API key together with the file it came from. The key is typed as
+ * a [Secret] from the moment it is read, so the carrier stays loggable by
+ * construction (issue #78); the path is recorded in
+ * [Config.openRouterApiKeyFile] so `/info` can name the source without
+ * re-running the resolution order.
+ */
+internal data class ResolvedApiKey(val secret: Secret, val path: Path)
 
 /**
  * The environment layer: typed, strict accessors over the `DDR_ACP_AGENT_*`

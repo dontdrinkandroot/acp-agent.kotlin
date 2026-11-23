@@ -90,6 +90,12 @@ internal class SessionConfigOptions(
     fun effectiveProviderSlug(): String = state.providerSelection
 
     /**
+     * The provider picker's current value: the selected slug, or `auto` for
+     * OpenRouter routing. Also the value `/info` reports.
+     */
+    fun providerStatus(): String = state.providerSelection.ifEmpty { PROVIDER_AUTO }
+
+    /**
      * A persisted slug the current model no longer lists (a stale restore or a
      * model change elsewhere) heals back to auto with a warn. Pure membership
      * check against the given snapshot; an unavailable feed (null) never
@@ -175,7 +181,7 @@ internal class SessionConfigOptions(
         return SessionConfigOption.select(
             id = "provider",
             name = "Provider",
-            currentValue = state.providerSelection.ifEmpty { PROVIDER_AUTO },
+            currentValue = providerStatus(),
             options = SessionConfigSelectOptions.Flat(
                 buildList {
                     add(
@@ -282,4 +288,11 @@ internal class SessionConfigOptions(
         val selector = reasoningSelector() ?: return null
         return selector.current.takeIf { it != REASONING_OFF }
     }
+
+    /**
+     * The reasoning value the config surface states (the picker's current
+     * value: the selected effort, the model default, or `none` when off), or
+     * null when the current model exposes no reasoning option at all.
+     */
+    fun reasoningStatus(): String? = reasoningSelector()?.current
 }

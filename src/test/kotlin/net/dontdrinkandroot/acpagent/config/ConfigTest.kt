@@ -47,6 +47,17 @@ class ConfigTest {
     }
 
     @Test
+    fun `the resolved key file is recorded as a path, never as key material`() {
+        val config = load()
+        assertEquals(
+            home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+                .resolve(Config.DEFAULT_API_KEY_FILE_NAME).toString(),
+            config.openRouterApiKeyFile,
+        )
+        assertFalse(config.openRouterApiKeyFile!!.contains("sk-default"), "only the path may be recorded")
+    }
+
+    @Test
     fun `a rendered config carries no key material`() {
         val config = load()
         val rendered = config.toString()

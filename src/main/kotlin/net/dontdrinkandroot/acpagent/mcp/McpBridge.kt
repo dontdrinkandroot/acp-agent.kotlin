@@ -7,6 +7,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.BuildInfo
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolResult
@@ -122,4 +123,4 @@ private fun JsonElement.toAny(): Any? = when (this) {
     is JsonArray -> map { it.toAny() }
 }
 
-public fun createMcpClientInfo(): Implementation = Implementation(name = "acp-agent", version = "0.1.0")
+public fun createMcpClientInfo(): Implementation = Implementation(name = "acp-agent", version = BuildInfo.version)

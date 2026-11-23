@@ -36,6 +36,10 @@ edits your project, runs commands, and talks to LLMs via
 - **Bounded output & budgets** — tool output is capped (no context explosions),
   shell commands are killed after a configurable timeout, and tool-calling turns are
   capped with a final synthesis pass.
+- **`/info` slash command** — prints the configuration the agent actually resolved (version/build, session
+  mode/cwd/model, reasoning and provider, behaviour switches,
+  trusted paths incl. the API key *file*). Answered locally: no model call, no tokens,
+  and it never enters the conversation.
 
 ## Requirements
 
@@ -236,6 +240,24 @@ Every key has a derived env variable: the path in UPPER_SNAKE, prefixed with
 Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive);
 anything else is a startup error. Numbers are strict — an out-of-range value is
 an error, never silently clamped.
+
+### Inspecting the effective configuration (`/info`)
+
+Type `/info` in a chat turn — the agent advertises it as a slash command, so the
+IDE offers it in the command list and autocompletion — to print the
+configuration it actually resolved: agent version and build, the session's cwd,
+mode and model, the effective reasoning/provider selection, the behaviour
+switches, and the trusted paths including the API key **file** (never the key
+itself).
+
+The command is answered locally: it spends no tokens, does not call the model
+and does not become part of the conversation (not stored in the session record,
+not replayed when the session is loaded). Everything after the command word is
+ignored and the reply says so; `/infofoo` is an ordinary prompt.
+
+Because the configuration is resolved once at startup (see above), `/info`
+shows the values from when the agent was launched — restart the agent after
+changing `config.json` or the environment.
 
 ### API key
 

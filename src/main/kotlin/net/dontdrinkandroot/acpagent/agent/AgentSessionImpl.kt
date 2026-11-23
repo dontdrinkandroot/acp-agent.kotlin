@@ -11,10 +11,12 @@ import com.agentclientprotocol.rpc.JsonRpcErrorCode
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
+import net.dontdrinkandroot.acpagent.BuildInfo
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
@@ -217,6 +219,17 @@ internal class AgentSessionImpl(
     }
 
     /**
+     * Advertises the `/info` slash command right after session setup - the SDK
+     * hook for "additional notifications like Commands". The notification
+     * carries the complete command list, so re-sending it on load/resume (the
+     * hook runs for every setup response) stays correct.
+     */
+    override suspend fun postInitialize() {
+        val client = clientOrNull() ?: return
+        client.notify(SessionUpdate.AvailableCommandsUpdate(listOf(infoAvailableCommand())))
+    }
+
+    /**
      * Replays a restored conversation to the client while serving
      * `session/load`. The SDK runs this hook inside the session context
      * (client operations available) and, since `acp` 0.34.0, *before* the load
@@ -250,9 +263,54 @@ internal class AgentSessionImpl(
         client?.notify(SessionUpdate.PlanUpdate(entries))
     }
 
+    /**
+     * Answers a `/info` invocation: the rendered dump as a single message chunk
+     * (one client message, one `messageId`), then the turn's end.
+     */
+    @OptIn(UnstableApi::class)
+    private suspend fun FlowCollector<Event>.emitInfoReply(discardedText: String) {
+        emit(
+            Event.SessionUpdateEvent(
+                SessionUpdate.AgentMessageChunk(
+                    ContentBlock.Text(renderInfo(infoSnapshot(discardedText))),
+                    newMessageId(),
+                )
+            )
+        )
+        emit(Event.PromptResponseEvent(PromptResponse(stopReason = StopReason.END_TURN)))
+    }
+
+    /** Captures the values `/info` reports; the session-scoped ones are the live selections. */
+    private fun infoSnapshot(discardedText: String): InfoSnapshot {
+        val mode = state.mode.currentMode
+        return InfoSnapshot(
+            config = config,
+            agentVersion = BuildInfo.version,
+            buildCommit = BuildInfo.commit,
+            sessionId = sessionId.value,
+            cwd = cwd,
+            mode = mode.value,
+            modeDescription = availableModes.firstOrNull { it.id == mode }?.description.orEmpty(),
+            sessionModel = state.currentModel,
+            reasoning = sessionConfigOptions.reasoningStatus(),
+            provider = sessionConfigOptions.providerStatus(),
+            scratchDir = scratchDir ?: config.scratchDir,
+            discardedText = discardedText,
+        )
+    }
+
     @OptIn(UnstableApi::class)
     override suspend fun prompt(content: List<ContentBlock>, _meta: JsonElement?): Flow<Event> = flow {
         ensureActive()
+        // A slash command is answered before any session state is touched: no
+        // history entry, no record, no LLM call. A diagnostic that becomes
+        // context for later turns would cost tokens on every subsequent
+        // request, and a `/info`-only session has nothing worth titling.
+        val infoRemainder = infoCommandRemainder(content)
+        if (infoRemainder != null) {
+            emitInfoReply(infoRemainder)
+            return@flow
+        }
         val client = clientOrNull()
         val clientCapabilities = runCatching { currentCoroutineContext().clientInfo.capabilities }.getOrNull()
             ?: ClientCapabilities()
