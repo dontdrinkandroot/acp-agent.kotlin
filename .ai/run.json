@@ -43,14 +43,6 @@
         "command": "git [args]",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
     },
-    "gradleUnstick": {
-        "command": "bash .ai/scripts/gradle-unstick status",
-        "description": "Diagnose Gradle 'Timeout waiting to lock ...' states (safe to run any time): stops container-local daemons, then classifies every Gradle lock file by real flock contention, visible holders and recorded owner PID. Ends with VERDICT: RETRY-OK (nothing flocked, just retry) | BUSY (visible holder, listed) | INVISIBLE-HOLDER (flocked but no visible process = host GUH build -> escalate to the user, never delete); exit 2 = action required"
-    },
-    "gradleUnstickWipe": {
-        "command": "bash .ai/scripts/gradle-unstick wipe",
-        "description": "Delete Gradle lock records (*.lock/*.lck) ONLY when each is flock-proven uncontended and no Gradle process is visible (VERDICT: WIPED); refuses otherwise (VERDICT: REFUSED). For the stale-record case where Gradle times out although nothing holds the lock. Lock records are recreated on demand; nothing else in caches/wrapper/jdks is ever touched - those are shared with the host GUH, so escalate instead of deleting anything beyond lock records"
-    },
     "test_scripts": {
         "command": "timeout 300 tests/bash/run-all",
         "description": "Run the shell test suite (tests/bash) pinning the docker launcher composition"
