@@ -159,13 +159,21 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # transport, isoDateToday
     BuildInfo.kt                     # build commit hash from git.properties (classpath) + the
                                      # agent version (announced in initialize and shown by /info)
-    config/Config.kt                 # resolved config: Config.load (config.json > defaults),
-                                     # profile selection, key-file resolution + owner-only
-                                     # check, the resolved key file path
-                                     # (Config.openRouterApiKeyFile, never the key)
+    config/Config.kt                 # resolved config: Config.load (config.json >
+                                     # project overlay > defaults), profile selection,
+                                     # key-file resolution + owner-only check, the resolved
+                                     # key file path (Config.openRouterApiKeyFile, never the
+                                     # key), ConfigSources/readConfigSources (the shared,
+                                     # key-free source step both entry points use),
+                                     # PermissionTiers/mergePermissionTiers (the pure merge)
     config/ConfigFile.kt             # strict config.json parser (ConfigFile incl. the
                                      # shape-only `sandbox` group, UnlistedPaths,
-                                     # path/scratch/mount-path validation)
+                                     # path/scratch/mount-path validation) + the JSON value
+                                     # helpers shared with the overlay parser
+    config/ProjectConfig.kt          # the project permission overlay (issue #85):
+                                     # <cwd>/.ai/ddr-acp-agent.json, strict at every level,
+                                     # parseProjectPermissions + readProjectConfig
+                                     # (directory-existence check)
     config/AgentArguments.kt         # the strict `--profile <name>` parser + profileFileName
                                      # (the .json convention, single definition); the sandbox
                                      # supervisor reuses both
@@ -209,7 +217,9 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # lists, no concatenation/word splitting)
     sandbox/HostEnvironment.kt       # supervisor inputs: host facts (UnixSystem ids, shared
                                      # stateHome/configDir resolvers, git identity, tool-env
-                                     # allowlist) + the config read without the API key
+                                     # allowlist) + the config read without the API key: the
+                                     # shared readConfigSources step and the merged tiers, so the
+                                     # mounts match what the agent trusts (issue #85)
     sandbox/SandboxMain.kt           # the `acp-agent-sandbox` entry point: resolve -> compose
                                      # -> docker run, byte pumps, stdin half-close, signal
                                      # forwarding, exit-code propagation, docker from PATH
@@ -280,7 +290,8 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
                                      # persistAllSessions(): the shutdown flush - issue #17
     tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
     tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
-                                     # text; DEFAULT = .env*.local + .ai/run.json; future source: .aiignore
+                                     # text; DEFAULT = .env*.local + .ai/run.json +
+                                     # .ai/ddr-acp-agent.json; future source: .aiignore
     tools/ScratchDirectory.kt        # prepareScratchDirectory: creates/verifies the read-trusted
                                      # scratch directory (0700, symlink/type/owner checks, mode repair)
     tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
@@ -455,6 +466,11 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # readable-tier read + writable-tier write prompt-free, a write
                                      # in the readable tier still prompts, unlistedPaths=deny refuses
                                      # without a prompt naming the config entry
+        E2eProjectConfigTest.kt      # the project permission overlay (issue #85): prompt-free
+                                     # access to its directories (and the merged tier in the
+                                     # system prompt), the same read prompting without it, the
+                                     # overlay refused to the file tools, a session-cwd overlay
+                                     # ignored when the launch cwd differs (the residual)
         E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
         E2eProviderOptionTest.kt     # provider config option (issue #42): advertisement, request
                                      # wire shape order, fail-open hidden, manual-beats-env,
@@ -506,7 +522,8 @@ build-docker                            # local image build script (tags
 ### Configuration (config.json, file-only)
 
 Resolved once at startup (`Config.load`, no live reload): **built-in defaults <
-`$XDG_CONFIG_HOME/ddr-acp-agent/config.json`**. The configuration is **file-only** (issue
+`$XDG_CONFIG_HOME/ddr-acp-agent/config.json` < `<launch cwd>/.ai/ddr-acp-agent.json`**. The
+configuration is **file-only** (issue
 #84) - no environment variable supplies, selects or overrides a setting; `--profile <name>`
 (`config/AgentArguments.kt`) is the only startup argument. A profile selects `<name>.json` in
 the config directory (`work` -> `work.json`; bare name, no path, `.json` suffix rejected -
@@ -515,9 +532,11 @@ it resolves identically on the host and inside the docker container. A selected 
 exist, a missing default file means "all defaults". The parser is **strict**: an unknown
 argument (a mistyped `--profil`, the removed `--skip-pull`) exits with code 2 and names it,
 so a typo can never silently run on the default profile (`AgentArgumentsTest`,
-`E2eStartupArgumentsTest`). Everything else in the process
-environment is inert as agent config: `DDR_ACP_AGENT_*` (current and legacy spellings such as
-`OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_*`) is not read and produces no warning.
+`E2eStartupArgumentsTest`); a broken config file (base or project overlay) exits with code 2
+and one `acp-agent: <message>` line instead of a stack trace (`main` catches the
+`IllegalArgumentException`, the same shape as the argument error). Everything else in the
+process environment is inert as agent config: `DDR_ACP_AGENT_*` (current and legacy spellings
+such as `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_*`) is not read and produces no warning.
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `TZ`, `HOME` and the tool variables (`UV_CACHE_DIR`,
 `GRADLE_USER_HOME`, `ANDROID_HOME`, ...) remain - they are standard variables, host facts or
 the tools' own configuration, not agent config.
@@ -526,8 +545,45 @@ the tools' own configuration, not agent config.
 unknown keys ignored, errors name the JSON path (`tools.bash.timeoutSeconds must be between 1
 and 3600, got -5`). Value rules: booleans are JSON booleans in the file, numbers are strict
 with the documented ranges (never clamped), path lists are absolute-only (relative entries
-are an error) with trailing slashes normalized (so `/srv/` and `/srv` collapse to one entry),
+are an error), never the filesystem root (a `/` tier would make every path prompt-free in a
+direct run while the sandbox cannot mount it - both readers must agree), with trailing
+slashes normalized (so `/srv/` and `/srv` collapse to one entry),
 deduped, and a missing directory only warns.
+
+**Project permission overlay** (issue #85, `config/ProjectConfig.kt`). An optional
+`<launch cwd>/.ai/ddr-acp-agent.json` adds project-specific directories on top of the
+selected base configuration, so a repository that needs one extra directory next to its
+checkout does not have to widen the global lists for every project. Scope is exactly
+`permissions.{readableDirectories, writableDirectories, unlistedPaths}` - nothing else is
+project-overridable (no tool settings, `mcp.*`, `openRouter.*`, `scratchDir`, `sandbox.*`;
+secrets and key-file locations stay in the user's file). Rules:
+
+- **Strict at every level** (the inverse of the base file's leniency): an unknown key at the
+  top level or inside `permissions` aborts startup; a *known* global key gets the more useful
+  message that it cannot be set per project and names `config.json` instead. A newer global
+  file must not kill an older agent, but an ignored key here would silently fail to grant
+  exactly what the file exists to grant, so there is no forward-compat surface.
+- **Merge** (`mergePermissionTiers`, pure): the directory lists are **unioned** (base order
+  first) - a project can add entries but never remove a base entry; `unlistedPaths` is
+  replaced outright in either direction.
+- **Paths**: absolute only, never `/`, and every named directory must **exist** - stricter
+  than `Config.directoryWarnings` (a warning in a direct run) because the overlay is checked
+  in with the repository, while a base entry may name a mount another machine lacks.
+- **Read once at startup from the launch cwd**, not per session: the sandbox supervisor
+  composes the mounts from the same directory, so a per-session decision could trust a path
+  the container does not have. A session opened on a different directory runs under the
+  launch directory's overlay (the launch-cwd == session-cwd assumption, documented residual,
+  pinned by `E2eProjectConfigTest`).
+- **One source step for both readers**: `readConfigSources(env, home, configFileName, cwd)`
+  (key-free) returns the config dir, the base `ConfigFile` and the overlay;
+  `Config.load(cwd)` and `loadSandboxSpec` both project from it, so the agent's decisions and
+  the supervisor's mounts cannot drift apart. The overlay's file path is recorded in
+  `Config.projectConfigFile` and named by `/info` (merged entries carry no provenance marker
+  in the system prompt by design - the model needs the path, not its origin).
+- **Excluded from the file tools** like `.ai/run.json`: a grant file the model could rewrite
+  is not a boundary (see File-access exclusions).
+- **No consent mechanism**: the overlay applies unconditionally - the agent runs on the
+  user's own repositories.
 
 | Config path                        | Default                        | Meaning                                                                                             |
 |------------------------------------|--------------------------------|-----------------------------------------------------------------------------------------------------|
@@ -540,15 +596,16 @@ deduped, and a missing directory only warns.
 | `tools.bash.timeoutSeconds`        | `600`                          | Shell command timeout, 1..3600.                                                                     |
 | `tools.webFetch.allowPrivate`      | `false`                        | Allow non-public HTTP targets.                                                                      |
 | `mcp.trustAnnotations`             | `true`                         | `false` treats all MCP tools as untrusted.                                                          |
-| `permissions.readableDirectories`  | *(none)*                       | Prompt-free read roots.                                                                             |
-| `permissions.writableDirectories`  | *(none)*                       | Prompt-free write roots (implies readable).                                                         |
-| `permissions.unlistedPaths`        | `prompt`                       | `prompt` or `deny` for uncovered paths.                                                             |
+| `permissions.readableDirectories`  | *(none)*                       | Prompt-free read roots (unioned with the project overlay's entries).                                |
+| `permissions.writableDirectories`  | *(none)*                       | Prompt-free write roots (implies readable; unioned with the overlay).                               |
+| `permissions.unlistedPaths`        | `prompt`                       | `prompt` or `deny` for uncovered paths (the overlay replaces it outright).                          |
 | `scratchDir`                       | `/tmp/ddr-acp-agent`           | The agent's scratch directory (read-trusted, never cleaned).                                        |
 
 **`sandbox` group (shape only, no agent field).** `ConfigFile.Sandbox` holds the supervisor's
 settings - `network` (default `host`), `stateDir` (nullable: host-resolved default
 `$XDG_STATE_HOME/ddr-acp-agent`), `mountCaches`, `homeVolume`, `extraArgs`, `capAdd`,
-`rwRootfs`. It is validated for **shape only** in the shared parser - types, absolute-path
+`rwRootfs`. The project overlay cannot carry it (its parser refuses every non-`permissions`
+key). It is validated for **shape only** in the shared parser - types, absolute-path
 form (`stateDir` never `/`, trailing slashes normalized), lists of strings, errors naming the
 JSON path - and the agent's `Config` deliberately carries no sandbox field. The rule: **no
 `sandbox` key is validated against a host fact in the shared parser**; everything needing a
@@ -556,7 +613,11 @@ host fact (creating `stateDir`, probing caches, mount sources existing) belongs 
 plan resolution on the host. That is what keeps the group invisible to the containerized
 agent: the host `config.json` is mounted read-only there, so its `sandbox` keys are parseable
 but can never fault the agent with a host path. Pinned by `ConfigFileTest` (shape errors) and
-`ConfigTest` (`sandbox keys parse but cannot fault the agent`).
+`ConfigTest` (`sandbox keys parse but cannot fault the agent`, plus the overlay layering:
+union, no removal, `unlistedPaths` both ways, the recorded `projectConfigFile`, "broken
+overlay before missing key") and `ProjectConfigTest` (strict at every level, the
+unscoped-key message pointing at `config.json`, path rules incl. the root refusal and the
+directory-existence check).
 
 **API key: file only.** No variable ever holds the key itself. Resolution order
 `openRouter.apiKeyFile` > `<config dir>/openrouter.key` > fail listing the tried sources.
@@ -575,7 +636,9 @@ read-only path tools, `writableDirectories` the mutating ones (writable implies
 readable); everything else follows `unlistedPaths` (`prompt` = the
 `session/request_permission` prompt, `deny` = hard refusal naming the config entry,
 `unlistedPathRefusal`). A partially covered call (one target in, one out) is
-unlisted. `bash`, `run` and MCP tools are unaffected. Under the docker sandbox
+unlisted. `bash`, `run` and MCP tools are unaffected. The lists a session applies
+are `mergePermissionTiers(config.json, .ai/ddr-acp-agent.json)` (see Project
+permission overlay). Under the docker sandbox
 the two lists **are the mount list** (readable mounted `:ro`, writable rw, at
 the identical in-container path) - one config file, two readers (agent and
 supervisor), so the trust domain and the mounts cannot drift apart.
@@ -894,9 +957,12 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
   in the walk callback; `grep` folds them into the existing skip suffix, while a single-file
   grep `path` is refused like a direct target). The default rule
-  set holds two fixed entries: the `.env*.local` secret-file exclusion (bare name, matches at
-  any depth) and the rooted `.ai/run.json` privilege-boundary rule (issue #70 - see below;
-  gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
+  set holds three fixed entries: the `.env*.local` secret-file exclusion (bare name, matches
+  at any depth) and the two rooted privilege-boundary rules of the `.ai` directory, the
+  `.ai/run.json` command file (issue #70) and the `.ai/ddr-acp-agent.json` permission overlay
+  (issue #85) - both are files the model must not be able to rewrite, since a granted
+  privilege the model could re-apply with an in-project `edit_file` is no boundary at all
+  (gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
   also checks the symlink-resolved target name, so an alias link to an excluded file cannot
   smuggle the read (unresolvable paths only skip that extra check - a block, not a gate).
   Refusals name the matched rule (`'<path>' is excluded from tool access (matches exclusion
@@ -1549,11 +1615,16 @@ supervisor), so the trust domain and the mounts cannot drift apart.
 - **Permission lists are the mount list** (issue #50, one config file, two readers):
   `permissions.readableDirectories` mounts each path `:ro`, `…writableDirectories` mounts it
   rw (a path in both is mounted rw once), at the identical in-container path (src == dst like
-  the CWD). Absolute only, `/` is rejected, host existence is required only for paths actually
-  mounted - paths under the covered roots (project dir/container home/`tmpfs`) are skipped
-  with a typed warning regardless of host existence. A configured directory that is missing is
-  a warning in a direct run (`Config.directoryWarnings`) but **fatal in sandbox mode** (docker
-  cannot bind-mount a missing source). Mounts are emitted before every built-in mount and
+  the CWD). The lists are the **merged** ones (`mergePermissionTiers(config.json,
+  .ai/ddr-acp-agent.json)`, issue #85), read through the shared key-free source step
+  (`readConfigSources`) - the supervisor mounts exactly what the containerized agent trusts.
+  Absolute only, `/` is rejected in the parser, host existence is required only for paths
+  actually mounted - paths under the covered roots (project dir/container home/`tmpfs`) are
+  skipped with a typed warning regardless of host existence. A configured directory that is
+  missing is a warning in a direct run (`Config.directoryWarnings`) but **fatal in sandbox
+  mode** (docker cannot bind-mount a missing source) - and already fatal at parse time when
+  it comes from the project overlay (a checked-in file names directories of *this*
+  checkout). Mounts are emitted before every built-in mount and
   sorted shallowest-first, so built-ins and later, deeper mounts shadow shallower ones
   (mounting a CWD parent ro works; the project dir itself stays rw). `scratchDir` is never
   mounted (a container path; the container's `/tmp` is a private tmpfs, so scratch content is
@@ -1819,7 +1890,9 @@ the exec surface.
   `acp-agent-sandbox` with the fixture docker on `PATH` - byte-transparent relay,
   stdout/stderr separation, stdin-EOF half-close (the child must finish), signal forwarding,
   exit-code propagation, mask-file cleanup, docker-from-`PATH` (127), strict arguments,
-  fail-loudly config, `--profile` forwarding, uid/gid against `id -u`/`id -g`.
+  fail-loudly config, `--profile` forwarding, uid/gid against `id -u`/`id -g`, and the
+  project overlay (issue #85): its directories reach the `--mount` list, a broken overlay or
+  one naming a missing directory refuses before any `docker run`.
 - `DockerfileBuildInputsTest`: the builder-stage COPY allowlist against the real build inputs
   and the `ENTRYPOINT` path pin.
 - `FakeDocker`: the fixture docker CLI (`src/test/resources/sandbox/fake-docker`, installed on

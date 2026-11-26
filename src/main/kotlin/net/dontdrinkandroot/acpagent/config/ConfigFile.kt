@@ -133,82 +133,87 @@ public data class ConfigFile(
             )
         }
 
-        /** The sub-object at [key], or null when absent; a non-object is an error. */
-        private fun JsonObject.group(key: String): JsonObject? {
-            val value = this[key] ?: return null
-            if (value is JsonNull) return null
-            return value as? JsonObject ?: throw IllegalArgumentException("$key must be an object")
-        }
-
-        private fun JsonObject.stringValue(path: String, key: String): String? =
-            primitive(path, key)?.also {
-                if (!it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a string")
-            }?.content
-
-        private fun JsonObject.nonBlankStringValue(path: String, key: String): String? =
-            stringValue(path, key)?.also {
-                if (it.isBlank()) throw IllegalArgumentException("${qualified(path, key)} must not be blank")
-            }?.trim()
-
-        /** An array of strings, trimmed; [allowBlank] entries are kept only when true. */
-        private fun JsonObject.stringListValue(path: String, key: String, allowBlank: Boolean = true): List<String>? {
-            val value = this[key] ?: return null
-            if (value is JsonNull) return null
-            val array = value as? JsonArray
-                ?: throw IllegalArgumentException("${qualified(path, key)} must be an array of strings")
-            return array.mapIndexed { index, item ->
-                val text = (item as? JsonPrimitive)?.takeIf { it.isString }?.content
-                    ?: throw IllegalArgumentException("${qualified(path, key)}[$index] must be a string")
-                val trimmed = text.trim()
-                if (!allowBlank && trimmed.isEmpty()) {
-                    throw IllegalArgumentException("${qualified(path, key)}[$index] must not be blank")
-                }
-                trimmed
-            }
-        }
-
-        private fun JsonObject.booleanValue(path: String, key: String): Boolean? =
-            primitive(path, key)?.let {
-                if (it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a boolean")
-                it.booleanOrNull ?: throw IllegalArgumentException("${qualified(path, key)} must be a boolean")
-            }
-
-        private fun JsonObject.intValue(path: String, key: String, range: IntRange): Int? =
-            primitive(path, key)?.let {
-                if (it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a number")
-                val value = it.intOrNull
-                    ?: throw IllegalArgumentException("${qualified(path, key)} must be a number")
-                if (value !in range) {
-                    throw IllegalArgumentException(
-                        "${qualified(path, key)} must be ${rangeText(range)}, got $value"
-                    )
-                }
-                value
-            }
-
-        /** An array of absolute paths: absolute-only, no globbing, no `~`, deduped. */
-        private fun JsonObject.pathListValue(path: String, key: String): List<String>? {
-            val value = this[key] ?: return null
-            if (value is JsonNull) return null
-            val array = value as? JsonArray
-                ?: throw IllegalArgumentException("${qualified(path, key)} must be an array of paths")
-            val seen = mutableSetOf<String>()
-            return array.mapIndexedNotNull { index, item ->
-                val text = (item as? JsonPrimitive)?.takeIf { it.isString }?.content
-                    ?: throw IllegalArgumentException("${qualified(path, key)}[$index] must be a string")
-                requireAbsolutePath(qualified(path, key), text).takeIf { seen.add(it) }
-            }
-        }
-
-        private fun JsonObject.primitive(path: String, key: String): JsonPrimitive? {
-            val value = this[key] ?: return null
-            if (value is JsonNull) return null
-            return value as? JsonPrimitive ?: throw IllegalArgumentException("${qualified(path, key)} must be a value")
-        }
-
-        private fun qualified(path: String, key: String): String = if (path.isEmpty()) key else "$path.$key"
     }
 }
+
+/**
+ * The typed JSON accessors shared by the global ([ConfigFile.parse]) and the strict
+ * project-file parser: both must apply the same value rules (a path is a path), so
+ * only the *key policy* differs between the two files.
+ */
+internal fun JsonObject.group(key: String): JsonObject? {
+    val value = this[key] ?: return null
+    if (value is JsonNull) return null
+    return value as? JsonObject ?: throw IllegalArgumentException("$key must be an object")
+}
+
+internal fun JsonObject.stringValue(path: String, key: String): String? =
+    primitive(path, key)?.also {
+        if (!it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a string")
+    }?.content
+
+internal fun JsonObject.nonBlankStringValue(path: String, key: String): String? =
+    stringValue(path, key)?.also {
+        if (it.isBlank()) throw IllegalArgumentException("${qualified(path, key)} must not be blank")
+    }?.trim()
+
+/** An array of strings, trimmed; [allowBlank] entries are kept only when true. */
+internal fun JsonObject.stringListValue(path: String, key: String, allowBlank: Boolean = true): List<String>? {
+    val value = this[key] ?: return null
+    if (value is JsonNull) return null
+    val array = value as? JsonArray
+        ?: throw IllegalArgumentException("${qualified(path, key)} must be an array of strings")
+    return array.mapIndexed { index, item ->
+        val text = (item as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?: throw IllegalArgumentException("${qualified(path, key)}[$index] must be a string")
+        val trimmed = text.trim()
+        if (!allowBlank && trimmed.isEmpty()) {
+            throw IllegalArgumentException("${qualified(path, key)}[$index] must not be blank")
+        }
+        trimmed
+    }
+}
+
+internal fun JsonObject.booleanValue(path: String, key: String): Boolean? =
+    primitive(path, key)?.let {
+        if (it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a boolean")
+        it.booleanOrNull ?: throw IllegalArgumentException("${qualified(path, key)} must be a boolean")
+    }
+
+internal fun JsonObject.intValue(path: String, key: String, range: IntRange): Int? =
+    primitive(path, key)?.let {
+        if (it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a number")
+        val value = it.intOrNull
+            ?: throw IllegalArgumentException("${qualified(path, key)} must be a number")
+        if (value !in range) {
+            throw IllegalArgumentException(
+                "${qualified(path, key)} must be ${rangeText(range)}, got $value"
+            )
+        }
+        value
+    }
+
+/** An array of absolute paths: absolute-only, no globbing, no `~`, deduped. */
+internal fun JsonObject.pathListValue(path: String, key: String): List<String>? {
+    val value = this[key] ?: return null
+    if (value is JsonNull) return null
+    val array = value as? JsonArray
+        ?: throw IllegalArgumentException("${qualified(path, key)} must be an array of paths")
+    val seen = mutableSetOf<String>()
+    return array.mapIndexedNotNull { index, item ->
+        val text = (item as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?: throw IllegalArgumentException("${qualified(path, key)}[$index] must be a string")
+        requireAbsolutePath(qualified(path, key), text).takeIf { seen.add(it) }
+    }
+}
+
+internal fun JsonObject.primitive(path: String, key: String): JsonPrimitive? {
+    val value = this[key] ?: return null
+    if (value is JsonNull) return null
+    return value as? JsonPrimitive ?: throw IllegalArgumentException("${qualified(path, key)} must be a value")
+}
+
+internal fun qualified(path: String, key: String): String = if (path.isEmpty()) key else "$path.$key"
 
 /**
  * Renders an accepted numeric range for an error message (`between 1 and 3600`,
@@ -242,12 +247,18 @@ internal fun requireAbsoluteMountPath(label: String, value: String): String {
     return stripped
 }
 
+/**
+ * A permission tier entry: absolute (no globbing, no `~`), slash-normalized so `/srv/`
+ * and `/srv` collapse to one entry, deduped by the caller. The filesystem root is
+ * refused in **both** files: as a tier it would make every path prompt-free in a direct
+ * run, while the sandbox cannot mount it - the two readers would disagree about the same
+ * entry, so it is rejected before either of them sees it.
+ */
 internal fun requireAbsolutePath(label: String, value: String): String {
     require(value.startsWith("/")) { "$label entries must be absolute paths, got '$value'" }
-    // Slash-normalized like sandbox.stateDir: "/srv/" and "/srv" name the same directory, and a
-    // duplicate mount entry would be a launcher bug (docker applies the last one). The root
-    // stays "/", so the plan resolution still refuses it by name.
-    return value.trimEnd('/').ifEmpty { "/" }
+    val normalized = value.trimEnd('/')
+    require(normalized.isNotEmpty()) { "$label entries must not be the filesystem root" }
+    return normalized
 }
 
 /**

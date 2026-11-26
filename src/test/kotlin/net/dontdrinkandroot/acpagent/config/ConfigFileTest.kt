@@ -171,10 +171,36 @@ class ConfigFileTest {
         // Mount paths are slash-normalized like sandbox.stateDir: "/srv/" and "/srv" name the
         // same mount, and a duplicate --mount would be a launcher bug (the last one wins).
         val file = ConfigFile.parse(
-            """{"permissions": {"readableDirectories": ["/srv/", "/srv", "/mnt//", "/"], "writableDirectories": ["/w/"]}}"""
+            """{"permissions": {"readableDirectories": ["/srv/", "/srv", "/mnt//"], "writableDirectories": ["/w/"]}}"""
         )
-        assertEquals(listOf("/srv", "/mnt", "/"), file.permissions?.readableDirectories)
+        assertEquals(listOf("/srv", "/mnt"), file.permissions?.readableDirectories)
         assertEquals(listOf("/w"), file.permissions?.writableDirectories)
+    }
+
+    @Test
+    fun `the filesystem root is refused as a permission path`() {
+        // A "/" tier would make every path prompt-free in a direct run, while the sandbox
+        // cannot mount it - the two readers would disagree about the same entry, so it is
+        // refused in the shared parser before either of them sees it.
+        assertEquals(
+            "permissions.readableDirectories entries must not be the filesystem root",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"permissions": {"readableDirectories": ["/"]}}""")
+            }.message,
+        )
+        assertEquals(
+            "permissions.writableDirectories entries must not be the filesystem root",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"permissions": {"writableDirectories": ["/"]}}""")
+            }.message,
+        )
+        assertEquals(
+            "permissions.readableDirectories entries must not be the filesystem root",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"permissions": {"readableDirectories": ["//"]}}""")
+            }.message,
+            "a spelling variant must not slip past the root refusal",
+        )
     }
 
     @Test

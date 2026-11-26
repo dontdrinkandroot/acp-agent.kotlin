@@ -116,6 +116,7 @@ internal fun renderInfo(snapshot: InfoSnapshot): String = buildString {
     appendLine()
     appendLine("## Paths")
     appendLine("- API key: ${keyFile(config.openRouterApiKeyFile)}")
+    appendLine("- Project file: ${projectFile(config.projectConfigFile)}")
     appendLine("- Readable: ${paths(config.readableDirectories)}")
     appendLine("- Writable: ${paths(config.writableDirectories)}")
     appendLine("- Unlisted paths: ${config.unlistedPaths.name.lowercase()}")
@@ -138,6 +139,13 @@ private fun paths(directories: List<String>): String =
     if (directories.isEmpty()) "(none)" else directories.joinToString(", ") { code(it) }
 
 private fun keyFile(path: String?): String = if (path == null) "(unknown)" else "${code(path)} (owner-only)"
+
+/**
+ * The project overlay that was applied, or `(none)`. The merged tiers above cannot
+ * show provenance by design (the model needs the path, not its origin), so the dump
+ * names the file once - "why can this session read `/srv/data`?" stays answerable.
+ */
+private fun projectFile(path: String?): String = if (path == null) "(none)" else code(path)
 
 private fun modeSuffix(description: String): String = if (description.isBlank()) "" else " (${oneLine(description)})"
 

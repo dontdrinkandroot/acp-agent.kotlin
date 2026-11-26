@@ -91,8 +91,14 @@ abstract class E2eAgentTest {
          * deep-merged over the harness base config (LLM endpoint + model), written into the
          * isolated config directory - the agent is configured exclusively through that file
          * (issue #84: no agent settings come from the environment any more).
+         *
+         * [workingDir] is the agent process's launch directory and defaults to the project
+         * dir, like an IDE launching the agent in the project it opened. It matters beyond
+         * process hygiene: the project permission overlay is read from it (issue #85), so a
+         * default of "wherever the test JVM happens to run" would let this repository's own
+         * `.ai/ddr-acp-agent.json` leak into every scenario.
          */
-        suspend fun connect(configJson: String? = null, workingDir: File? = null): AgentConnection =
+        suspend fun connect(configJson: String? = null, workingDir: File? = projectDir): AgentConnection =
             startConnectedAgent(llmMock.port, stateHome, configJson, workingDir)
     }
 

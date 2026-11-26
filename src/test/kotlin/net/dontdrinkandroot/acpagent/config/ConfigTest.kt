@@ -11,10 +11,17 @@ class ConfigTest {
 
     private val home: Path = Files.createTempDirectory("acp-home")
 
+    /**
+     * The launch directory. Isolated per test: the project overlay is read from it, so a
+     * test must never pick up this repository's own `.ai/ddr-acp-agent.json`.
+     */
+    private val cwd: Path = Files.createTempDirectory("acp-cwd")
+
     /** A `Config.load` call with an isolated HOME and a key file in the config dir. */
     private fun load(
         env: Map<String, String> = emptyMap(),
         configJson: String? = null,
+        projectJson: String? = null,
         profile: String? = null,
         warnings: MutableList<String> = mutableListOf(),
     ): Config {
@@ -23,8 +30,15 @@ class ConfigTest {
         if (configJson != null) {
             configDir.resolve(profile?.let { profileFileName(it) } ?: Config.CONFIG_FILE_NAME).writeText(configJson)
         }
+        if (projectJson != null) writeProjectConfig(projectJson)
         writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-default")
-        return Config.load(env = env, home = home, profile = profile, warnings = { warnings += it })
+        return Config.load(env = env, home = home, profile = profile, cwd = cwd, warnings = { warnings += it })
+    }
+
+    /** Writes the project overlay into this test's isolated launch directory. */
+    private fun writeProjectConfig(json: String): Path {
+        val directory = cwd.resolve(PROJECT_CONFIG_DIR).apply { createDirectories() }
+        return directory.resolve(PROJECT_CONFIG_FILE).apply { writeText(json) }
     }
 
     /** Writes a profile file next to the default config file. */
@@ -43,7 +57,9 @@ class ConfigTest {
     fun `a missing key is reported with the tried sources`() {
         val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
         configDir.createDirectories()
-        val e = assertFailsWith<IllegalArgumentException> { Config.load(env = emptyMap(), home = home) }
+        val e = assertFailsWith<IllegalArgumentException> {
+            Config.load(env = emptyMap(), home = home, cwd = cwd)
+        }
         assertEquals(
             "No OpenRouter API key configured. Set openRouter.apiKeyFile in config.json, " +
                     "or create '${configDir.resolve("openrouter.key")}'.",
@@ -97,7 +113,9 @@ class ConfigTest {
         val keyFile = configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME)
         keyFile.writeText("sk-leaky")
         Files.setPosixFilePermissions(keyFile, PosixFilePermissions.fromString("rw-r--r--"))
-        val e = assertFailsWith<IllegalArgumentException> { Config.load(env = emptyMap(), home = home) }
+        val e = assertFailsWith<IllegalArgumentException> {
+            Config.load(env = emptyMap(), home = home, cwd = cwd)
+        }
         assertTrue(e.message!!.startsWith("API key file '$keyFile' (default location '$keyFile') must be owner-only"))
     }
 
@@ -191,7 +209,7 @@ class ConfigTest {
         assertEquals(
             "config file '${configDir.resolve("work.json")}' is not a regular file",
             assertFailsWith<IllegalArgumentException> {
-                Config.load(env = emptyMap(), home = home, profile = "work")
+                Config.load(env = emptyMap(), home = home, profile = "work", cwd = cwd)
             }.message,
         )
 
@@ -199,7 +217,7 @@ class ConfigTest {
         assertEquals(
             "config file '${configDir.resolve("work.json")}': tools.maxTurnRequests must be at least 1, got 0",
             assertFailsWith<IllegalArgumentException> {
-                Config.load(env = emptyMap(), home = home, profile = "work")
+                Config.load(env = emptyMap(), home = home, profile = "work", cwd = cwd)
             }.message,
         )
     }
@@ -315,7 +333,97 @@ class ConfigTest {
         writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-xdg")
         assertEquals(
             "sk-xdg",
-            Config.load(env = mapOf("XDG_CONFIG_HOME" to xdg.toString()), home = home).openRouterApiKey.value,
+            Config.load(env = mapOf("XDG_CONFIG_HOME" to xdg.toString()), home = home, cwd = cwd)
+                .openRouterApiKey.value,
+        )
+    }
+
+    @Test
+    fun `the project overlay unions the base lists`() {
+        val baseDir = Files.createTempDirectory("acp-base-tier").toString()
+        val projectDir = Files.createTempDirectory("acp-project-tier").toString()
+        val config = load(
+            configJson = """{"permissions": {"readableDirectories": ["$baseDir"], "writableDirectories": ["$baseDir"]}}""",
+            projectJson = """{"permissions": {"readableDirectories": ["$projectDir"]}}""",
+        )
+        assertEquals(listOf(baseDir, projectDir), config.readableDirectories)
+        assertEquals(
+            listOf(baseDir),
+            config.writableDirectories,
+            "an overlay that does not name the write tier must not narrow it - a project can add, never remove",
+        )
+    }
+
+    @Test
+    fun `a project entry repeating a base entry collapses`() {
+        val shared = Files.createTempDirectory("acp-shared-tier").toString()
+        val config = load(
+            configJson = """{"permissions": {"readableDirectories": ["$shared"]}}""",
+            projectJson = """{"permissions": {"readableDirectories": ["$shared/"]}}""",
+        )
+        assertEquals(listOf(shared), config.readableDirectories)
+    }
+
+    @Test
+    fun `the project overlay replaces unlisted paths in either direction`() {
+        assertEquals(
+            UnlistedPaths.DENY,
+            load(
+                configJson = """{"permissions": {"unlistedPaths": "prompt"}}""",
+                projectJson = """{"permissions": {"unlistedPaths": "deny"}}""",
+            ).unlistedPaths,
+        )
+        assertEquals(
+            UnlistedPaths.PROMPT,
+            load(
+                configJson = """{"permissions": {"unlistedPaths": "deny"}}""",
+                projectJson = """{"permissions": {"unlistedPaths": "prompt"}}""",
+            ).unlistedPaths,
+            "the overlay may also narrow back to a prompt - unlistedPaths is a mode, not an accumulation",
+        )
+    }
+
+    @Test
+    fun `a project without an overlay reports none`() {
+        assertNull(load().projectConfigFile)
+    }
+
+    @Test
+    fun `the applied project overlay is recorded by path`() {
+        val file = writeProjectConfig("""{"permissions": {"unlistedPaths": "deny"}}""")
+        assertEquals(file.toString(), load().projectConfigFile)
+    }
+
+    @Test
+    fun `a broken project overlay is reported before the missing key`() {
+        // Both start-up failures are pending (no key is configured). The overlay wins: its
+        // error is about a checked-in file, which the user can only fix knowing about it.
+        writeProjectConfig("""{"tools": {"maxTurnRequests": 3}}""")
+        val file = cwd.resolve(PROJECT_CONFIG_DIR).resolve(PROJECT_CONFIG_FILE)
+        val message = assertFailsWith<IllegalArgumentException> {
+            Config.load(env = emptyMap(), home = home, cwd = cwd)
+        }.message
+        assertTrue(message!!.startsWith("project file '$file'"), "expected the overlay to be named, was: $message")
+        assertTrue(message.contains("'tools' cannot be set in a project file"), message)
+    }
+
+    @Test
+    fun `a project directory that does not exist fails while a base one only warns`() {
+        val warnings = mutableListOf<String>()
+        val config = load(
+            configJson = """{"permissions": {"readableDirectories": ["/does/not/exist"]}}""",
+            warnings = warnings,
+        )
+        assertEquals(listOf("/does/not/exist"), config.readableDirectories)
+        assertEquals(listOf("configured directory '/does/not/exist' does not exist"), warnings)
+
+        val missing = cwd.resolve("missing-tier")
+        val message = assertFailsWith<IllegalArgumentException> {
+            load(projectJson = """{"permissions": {"readableDirectories": ["$missing"]}}""")
+        }.message
+        assertTrue(
+            message!!.contains("'$missing' does not exist or is not a directory"),
+            "the overlay is part of the checkout, so its paths must exist: $message",
         )
     }
 }

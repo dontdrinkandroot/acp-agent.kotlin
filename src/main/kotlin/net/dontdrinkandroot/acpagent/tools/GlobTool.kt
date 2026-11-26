@@ -8,7 +8,7 @@ public class GlobTool : AgentTool {
     override val name = "glob"
     override val description =
         "Find files matching a glob pattern (e.g. src/**/*.kt) under a directory. " +
-                "Files matching an exclusion rule (the .env*.local secret files and .ai/run.json) are omitted."
+                "Files matching an exclusion rule are omitted."
     override val kind = ToolKind.SEARCH
     override val mutating = false
     override val parameters: JsonObject = jsonSchema(

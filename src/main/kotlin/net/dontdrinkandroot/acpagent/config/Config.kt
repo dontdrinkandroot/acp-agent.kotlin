@@ -29,16 +29,21 @@ public data class Config(
     /**
      * Absolute paths the read-only path tools (`read_file`, `list_dir`, `glob`,
      * `grep`) may access without a permission prompt even though they lie
-     * outside the session cwd (`permissions.readableDirectories`).
+     * outside the session cwd (`permissions.readableDirectories`, unioned with
+     * the project overlay's entries - see [mergePermissionTiers]).
      */
     val readableDirectories: List<String> = emptyList(),
     /**
      * Absolute paths the mutating path tools (`write_file`, `edit_file`,
      * `move_*`, `delete_*`) may access without a permission prompt
-     * (`permissions.writableDirectories`). Writable implies readable.
+     * (`permissions.writableDirectories`, unioned with the project overlay's
+     * entries). Writable implies readable.
      */
     val writableDirectories: List<String> = emptyList(),
-    /** Treatment of paths in neither list nor the cwd (`permissions.unlistedPaths`). */
+    /**
+     * Treatment of paths in neither list nor the cwd (`permissions.unlistedPaths`):
+     * the project overlay replaces the base value outright, in either direction.
+     */
     val unlistedPaths: UnlistedPaths = UnlistedPaths.PROMPT,
     /**
      * The agent's own scratch directory (default `/tmp/ddr-acp-agent`):
@@ -62,6 +67,13 @@ public data class Config(
      * [load] always sets it, the default serves direct construction in tests.
      */
     val openRouterApiKeyFile: String? = null,
+    /**
+     * The project-local overlay that was applied - the *path*, or null when the
+     * launch directory has none (issue #85). `/info` names it so a project grant
+     * can be told apart from a global one without annotating the tiers the model
+     * sees.
+     */
+    val projectConfigFile: String? = null,
 ) {
     public companion object {
         private const val DEFAULT_MODEL = "openrouter/auto"
@@ -80,8 +92,9 @@ public data class Config(
         public const val DEFAULT_API_KEY_FILE_NAME: String = "openrouter.key"
 
         /**
-         * Resolves the configuration: built-in defaults overridden by the selected
-         * `config.json`.
+         * Resolves the configuration: built-in defaults, overridden by the selected
+         * `config.json` and then by the project overlay
+         * ([PROJECT_CONFIG_RELATIVE_PATH] in [cwd]).
          *
          * The config file is `$XDG_CONFIG_HOME/ddr-acp-agent/config.json`
          * (fallback `~/.config`). [profile] selects `<profile>.json` *inside that
@@ -89,38 +102,52 @@ public data class Config(
          * the host and inside the docker container. An absent default file means
          * "all defaults"; a selected profile must exist.
          *
+         * [cwd] is the launch directory, which is also the session cwd by
+         * assumption (the sandbox binds the project at the identical path and pins
+         * it as `--workdir`). It is read exactly once, here: a session opened on a
+         * different directory runs under the launch directory's overlay. Deliberately
+         * required - a default bound to the process directory would make the overlay
+         * read implicit at every call site, tests included.
+         *
          * Only `XDG_CONFIG_HOME` is read from [env] - the agent's settings are
          * file-only, and a `DDR_ACP_AGENT_*` variable is deliberately inert
          * (issue #84).
          *
          * [warnings] receives non-fatal findings (a configured directory that
-         * does not exist); they never fail the startup.
+         * does not exist); they never fail the startup. A broken *project* file is
+         * fatal instead: it belongs to the checkout, and silently running with
+         * fewer permissions is exactly the failure it must not have.
          */
         public fun load(
             env: Map<String, String> = platformEnv(),
             home: Path = Path.of(System.getProperty("user.home")),
             profile: String? = null,
+            cwd: Path,
             warnings: (String) -> Unit = {},
         ): Config {
-            val configDir = configDir(env, home)
-            val file = readConfigFile(profile?.let { profileFileName(it) }, configDir)
-            val apiKey = resolveApiKey(file.openRouter?.apiKeyFile, configDir)
+            // The sources are read before the key: a broken project file must be reported
+            // even when no key is configured, or the user would fix the key first and hit
+            // the same wall again.
+            val sources = readConfigSources(env, home, profile?.let { profileFileName(it) }, cwd)
+            val tiers = mergePermissionTiers(sources.base.permissions, sources.project?.permissions)
+            val apiKey = resolveApiKey(sources.base.openRouter?.apiKeyFile, sources.configDir)
 
             return Config(
                 openRouterApiKey = apiKey.secret,
-                openRouterModel = file.openRouter?.defaultModel ?: DEFAULT_MODEL,
-                openRouterBaseUrl = file.openRouter?.baseUrl ?: DEFAULT_BASE_URL,
-                autoThroughputSortingEnabled = file.openRouter?.autoThroughputSorting ?: true,
-                fsProxyEnabled = file.tools?.fsProxy ?: true,
-                mcpTrustAnnotations = file.mcp?.trustAnnotations ?: true,
-                bashTimeoutSeconds = file.tools?.bash?.timeoutSeconds ?: DEFAULT_BASH_TIMEOUT_SECONDS,
-                maxTurnRequests = file.tools?.maxTurnRequests ?: DEFAULT_MAX_TURN_REQUESTS,
-                webFetchAllowPrivate = file.tools?.webFetch?.allowPrivate ?: false,
-                readableDirectories = file.permissions?.readableDirectories.orEmpty(),
-                writableDirectories = file.permissions?.writableDirectories.orEmpty(),
-                unlistedPaths = file.permissions?.unlistedPaths ?: UnlistedPaths.PROMPT,
-                scratchDir = file.scratchDir ?: DEFAULT_SCRATCH_DIR,
+                openRouterModel = sources.base.openRouter?.defaultModel ?: DEFAULT_MODEL,
+                openRouterBaseUrl = sources.base.openRouter?.baseUrl ?: DEFAULT_BASE_URL,
+                autoThroughputSortingEnabled = sources.base.openRouter?.autoThroughputSorting ?: true,
+                fsProxyEnabled = sources.base.tools?.fsProxy ?: true,
+                mcpTrustAnnotations = sources.base.mcp?.trustAnnotations ?: true,
+                bashTimeoutSeconds = sources.base.tools?.bash?.timeoutSeconds ?: DEFAULT_BASH_TIMEOUT_SECONDS,
+                maxTurnRequests = sources.base.tools?.maxTurnRequests ?: DEFAULT_MAX_TURN_REQUESTS,
+                webFetchAllowPrivate = sources.base.tools?.webFetch?.allowPrivate ?: false,
+                readableDirectories = tiers.readableDirectories,
+                writableDirectories = tiers.writableDirectories,
+                unlistedPaths = tiers.unlistedPaths,
+                scratchDir = sources.base.scratchDir ?: DEFAULT_SCRATCH_DIR,
                 openRouterApiKeyFile = apiKey.path.toString(),
+                projectConfigFile = sources.project?.file?.toString(),
             ).also { config -> config.directoryWarnings().forEach(warnings) }
         }
 
@@ -265,3 +292,70 @@ public data class Config(
  * re-running the resolution order.
  */
 internal data class ResolvedApiKey(val secret: Secret, val path: Path)
+
+/**
+ * The configuration sources of one process, read once (issue #85): the selected base
+ * file plus the project overlay. This is the **single** place that decides which files
+ * are read and in which order - both entry points project from it, the agent
+ * ([Config.load]) and the sandbox supervisor (`loadSandboxSpec`), so the trust domain
+ * the agent applies and the mount list the supervisor composes cannot diverge.
+ *
+ * Deliberately key-free: the supervisor must be able to read the same sources without
+ * an API key, which is why this step does not resolve one.
+ */
+internal data class ConfigSources(
+    val configDir: Path,
+    val base: ConfigFile,
+    /** The project overlay that was found, or null when the launch directory has none. */
+    val project: ProjectConfigSource?,
+)
+
+/**
+ * Reads the base config file (which may be absent) and then the project overlay of
+ * [cwd]. The order is load-bearing: a broken base file is reported before a broken
+ * overlay, and a profile selected with `--profile` must exist on both sides anyway.
+ */
+internal fun readConfigSources(
+    env: Map<String, String>,
+    home: Path,
+    configFileName: String?,
+    cwd: Path,
+): ConfigSources {
+    val directory = Config.configDir(env, home)
+    return ConfigSources(
+        configDir = directory,
+        base = Config.readConfigFile(configFileName, directory),
+        project = readProjectConfig(cwd),
+    )
+}
+
+/** The resolved `permissions` tiers after the layering: defaults < base file < project overlay. */
+internal data class PermissionTiers(
+    val readableDirectories: List<String> = emptyList(),
+    val writableDirectories: List<String> = emptyList(),
+    val unlistedPaths: UnlistedPaths = UnlistedPaths.PROMPT,
+)
+
+/**
+ * Layers the project overlay over the base `permissions` group:
+ *
+ * - the directory lists are **unioned** (base order first), so a project can add entries
+ *   but never remove a base entry - a checkout must not be able to narrow the user's own
+ *   global configuration;
+ * - [PermissionTiers.unlistedPaths] is replaced outright in either direction, because it
+ *   is a single mode and not an accumulation.
+ *
+ * Pure, so the layering rule is unit-pinned once and both readers share it.
+ */
+internal fun mergePermissionTiers(
+    base: ConfigFile.Permissions?,
+    project: ConfigFile.Permissions?,
+): PermissionTiers = PermissionTiers(
+    readableDirectories = unionDirectories(base?.readableDirectories, project?.readableDirectories),
+    writableDirectories = unionDirectories(base?.writableDirectories, project?.writableDirectories),
+    unlistedPaths = project?.unlistedPaths ?: base?.unlistedPaths ?: UnlistedPaths.PROMPT,
+)
+
+/** Base entries first, project additions appended; `distinct()` keeps the first occurrence. */
+private fun unionDirectories(base: List<String>?, project: List<String>?): List<String> =
+    (base.orEmpty() + project.orEmpty()).distinct()

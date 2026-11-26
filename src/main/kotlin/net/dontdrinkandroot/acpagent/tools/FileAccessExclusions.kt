@@ -1,5 +1,6 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import net.dontdrinkandroot.acpagent.config.PROJECT_CONFIG_RELATIVE_PATH
 import java.nio.file.Path
 
 /**
@@ -11,10 +12,11 @@ import java.nio.file.Path
  *
  * Rule semantics follow gitignore conventions: a bare name (no '/') matches at
  * any depth, a rooted pattern matches against the cwd-relative path. The
- * default rule set holds the `.env*.local` secret-file exclusion and the
- * rooted `.ai/run.json` privilege-boundary exclusion. The
- * designed future source is a gitignore-style `.aiignore` in the project root:
- * its parsed patterns would feed [Companion.of], and no tool code changes.
+ * default rule set holds the `.env*.local` secret-file exclusion and the two
+ * rooted privilege boundaries of the `.ai` directory (`.ai/run.json`,
+ * `.ai/ddr-acp-agent.json`). The designed future source is a gitignore-style
+ * `.aiignore` in the project root: its parsed patterns would feed
+ * [Companion.of], and no tool code changes.
  */
 internal class FileAccessExclusions private constructor(private val rules: List<Rule>) {
 
@@ -65,16 +67,23 @@ internal class FileAccessExclusions private constructor(private val rules: List<
         val EMPTY: FileAccessExclusions = of(emptyList())
 
         /**
-         * The fixed default rule set. `.ai/run.json` is not a secret but a
-         * privilege boundary: the file's command strings are executed by the
-         * prompt-free `run` tool, so letting the generic file tools write it
-         * would bypass the permission prompt of the dedicated run-config write
-         * tools (a rejected `create_run_config` could simply be re-applied by
-         * an in-project `edit_file`, issue #70). The dedicated tools keep full
-         * access - they read and write the file directly, never through this
-         * policy - and the system prompt lists the configurations anyway.
+         * The fixed default rule set - two kinds of files:
+         *
+         * - `.env*.local` is a secret: its content must never enter the context.
+         * - The `.ai` entries are privilege boundaries. `.ai/run.json`'s command
+         *   strings are executed by the prompt-free `run` tool, so letting the
+         *   generic file tools write it would bypass the permission prompt of the
+         *   dedicated run-config write tools (a rejected `create_run_config` could
+         *   simply be re-applied by an in-project `edit_file`, issue #70).
+         *   `.ai/ddr-acp-agent.json` is the project permission overlay itself: a
+         *   grant file the model could rewrite is not a boundary (issue #85), and
+         *   the generic tools would otherwise let it re-apply a refused grant.
+         *
+         * The dedicated tools (run configurations) keep full access: they read and
+         * write their file directly, never through this policy, and the system
+         * prompt lists the configurations anyway.
          */
-        val DEFAULT: FileAccessExclusions = of(listOf(".env*.local", ".ai/run.json"))
+        val DEFAULT: FileAccessExclusions = of(listOf(".env*.local", ".ai/run.json", PROJECT_CONFIG_RELATIVE_PATH))
 
         fun of(globs: List<String>): FileAccessExclusions =
             FileAccessExclusions(

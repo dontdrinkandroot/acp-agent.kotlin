@@ -6,6 +6,7 @@ import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
 import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.config.PROJECT_CONFIG_DIR
 import java.nio.file.Path as NioPath
 
 private val logger = KotlinLogging.logger {}
@@ -15,8 +16,9 @@ private val runConfigJson = Json {
     prettyPrint = true
 }
 
-internal const val RUN_CONFIG_DIR = ".ai"
-internal const val RUN_CONFIG_FILE = "run.json"
+/** The project config directory, shared with the project permission overlay (issue #85). */
+internal const val RUN_CONFIG_DIR: String = PROJECT_CONFIG_DIR
+internal const val RUN_CONFIG_FILE: String = "run.json"
 
 /**
  * A single run configuration from `.ai/run.json` in the session working

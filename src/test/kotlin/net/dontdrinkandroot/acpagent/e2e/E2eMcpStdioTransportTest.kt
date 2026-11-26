@@ -199,7 +199,7 @@ class E2eMcpStdioTransportTest : E2eAgentTest() {
             val notesFile = projectDir.toPath().resolve("notes.txt")
             java.nio.file.Files.writeString(notesFile, "local content\n")
             val markerFile = projectDir.toPath().resolve("marker.txt")
-            val process = startAgent(llmMock.port, stateHome)
+            val process = startAgent(llmMock.port, stateHome, workingDir = projectDir)
             val stderrLines = drainStderr(process)
             val connection = connectProcess(process)
             try {
@@ -253,7 +253,7 @@ class E2eMcpStdioTransportTest : E2eAgentTest() {
     @Test
     fun `e2e unstartable stdio mcp server fails open`() = runBlocking {
         withE2eAgent("mcp-stdio-failopen", { MockOpenAiServer("unused", textOnly = true) }) {
-            val process = startAgent(llmMock.port, stateHome)
+            val process = startAgent(llmMock.port, stateHome, workingDir = projectDir)
             val stderrLines = drainStderr(process)
             val connection = connectProcess(process)
             try {

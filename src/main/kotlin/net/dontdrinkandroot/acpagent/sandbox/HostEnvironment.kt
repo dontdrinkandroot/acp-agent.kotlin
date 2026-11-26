@@ -4,6 +4,8 @@ import com.sun.security.auth.module.UnixSystem
 import net.dontdrinkandroot.acpagent.config.AgentArguments
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.ConfigFile
+import net.dontdrinkandroot.acpagent.config.mergePermissionTiers
+import net.dontdrinkandroot.acpagent.config.readConfigSources
 import net.dontdrinkandroot.acpagent.config.stateHome
 import java.nio.file.Path
 
@@ -85,11 +87,14 @@ private fun sandboxSettings(sandbox: ConfigFile.Sandbox?): SandboxSettings {
 }
 
 /**
- * Reads the supervisor's view of the config: the **same file** the agent reads, but only what
- * the mount composition needs. Deliberately not `Config.load` - the supervisor must not
- * require the API key. Fail loudly: an unreadable or invalid file prevents the sandbox from
- * starting instead of silently falling back to defaults, and a selected profile must exist on
- * both sides.
+ * Reads the supervisor's view of the config: the **same sources** the agent reads - the
+ * selected base file and the project overlay - but only what the mount composition needs.
+ * Deliberately not `Config.load` - the supervisor must not require the API key - but not a
+ * second derivation either: the source step and the permission merge are shared, so the
+ * mounts and the agent's decisions cannot drift apart (issue #85).
+ *
+ * Fail loudly: an unreadable or invalid file prevents the sandbox from starting instead of
+ * silently falling back to defaults, and a selected profile must exist on both sides.
  */
 fun loadSandboxSpec(
     env: Map<String, String>,
@@ -99,17 +104,17 @@ fun loadSandboxSpec(
     envLocalMaskFile: String?,
     agentArgs: List<String>,
 ): SandboxSpec {
-    val configDir = Config.configDir(env, home)
-    val file = try {
-        Config.readConfigFile(arguments.configFileName, configDir)
+    val sources = try {
+        readConfigSources(env, home, arguments.configFileName, cwd)
     } catch (e: IllegalArgumentException) {
         throw SandboxException(e.message ?: "config file cannot be read", e)
     }
+    val tiers = mergePermissionTiers(sources.base.permissions, sources.project?.permissions)
     return SandboxSpec(
         hostFacts = resolveHostFacts(env, home, cwd),
-        settings = sandboxSettings(file.sandbox),
-        readableDirectories = file.permissions?.readableDirectories.orEmpty(),
-        writableDirectories = file.permissions?.writableDirectories.orEmpty(),
+        settings = sandboxSettings(sources.base.sandbox),
+        readableDirectories = tiers.readableDirectories,
+        writableDirectories = tiers.writableDirectories,
         agentArgs = agentArgs,
         envLocalMaskFile = envLocalMaskFile,
     )

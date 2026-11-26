@@ -31,15 +31,28 @@ class SandboxSupervisorTest {
         val docker: FakeDocker,
         val log: Path,
         val configHome: Path,
-    )
+        /** The launch directory - also the session cwd, read for the project overlay. */
+        val project: Path,
+    ) {
+        val projectConfigFile: Path get() = project.resolve(".ai").resolve("ddr-acp-agent.json")
+    }
 
-    private fun fixture(prefix: String, configJson: String? = null): Fixture {
+    private fun fixture(
+        prefix: String,
+        configJson: String? = null,
+        projectFileJson: String? = null,
+    ): Fixture {
         val workspace = Files.createTempDirectory(Path.of("build").toAbsolutePath(), "sandbox-supervisor-$prefix-")
         val docker = FakeDocker.install(workspace.resolve("fixture-docker"))
         val configHome = workspace.resolve("config-home").also { Files.createDirectories(it) }
         val configDir = configHome.resolve("ddr-acp-agent").also { Files.createDirectories(it) }
         if (configJson != null) configDir.resolve("config.json").toFile().writeText(configJson)
-        return Fixture(workspace, docker, workspace.resolve("docker.log"), configHome)
+        val project = workspace.resolve("project").also { Files.createDirectories(it) }
+        if (projectFileJson != null) {
+            project.resolve(".ai").also { Files.createDirectories(it) }
+                .resolve("ddr-acp-agent.json").toFile().writeText(projectFileJson)
+        }
+        return Fixture(workspace, docker, workspace.resolve("docker.log"), configHome, project)
     }
 
     private class Run(val exitCode: Int, val stdout: String, val stderr: String)
@@ -51,7 +64,7 @@ class SandboxSupervisorTest {
         extraEnv: Map<String, String> = emptyMap(),
         timeoutSeconds: Long = 30,
     ): Run {
-        val project = fixture.workspace.resolve("project").also { Files.createDirectories(it) }
+        val project = fixture.project
         val process = ProcessBuilder(listOf(sandboxBinary) + args)
             .directory(project.toFile())
             .also { builder ->
@@ -312,6 +325,76 @@ class SandboxSupervisorTest {
             assertTrue(
                 run.stderr.contains("'/does/not/exist' does not exist on the host"),
                 "expected the plan's refusal naming the path, stderr: ${run.stderr}",
+            )
+            assertTrue(!Files.exists(fixture.log), "a refused startup must never compose a docker run")
+        } finally {
+            fixture.workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the project overlay is mounted like the base permission lists`() {
+        // Issue #85: both readers honour the same overlay - the agent decides prompt-free
+        // access from it, the supervisor composes the identical mount.
+        val readable = Files.createTempDirectory(Path.of("build").toAbsolutePath(), "overlay-readable-")
+        try {
+            val fixture = fixture(
+                "project-overlay",
+                projectFileJson = """{"permissions": {"readableDirectories": ["$readable"]}}""",
+            )
+            try {
+                val run = run(fixture)
+                assertEquals(0, run.exitCode, "stderr: ${run.stderr}")
+                val argv = FakeDocker.runInvocations(fixture.log).single()
+                assertTrue(
+                    argv.contains("type=bind,src=$readable,dst=$readable,ro"),
+                    "the overlay's directory must be mounted read-only: $argv",
+                )
+            } finally {
+                fixture.workspace.toFile().deleteRecursively()
+            }
+        } finally {
+            readable.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a broken project overlay refuses the sandbox before any docker run`() {
+        val fixture = fixture(
+            "project-overlay-broken",
+            projectFileJson = """{"tools": {"maxTurnRequests": 3}}""",
+        )
+        try {
+            val run = run(fixture)
+            assertEquals(1, run.exitCode)
+            assertTrue(
+                run.stderr.contains("project file '${fixture.projectConfigFile}'"),
+                "expected the refusal to name the overlay, stderr: ${run.stderr}",
+            )
+            assertTrue(
+                run.stderr.contains("'tools' cannot be set in a project file"),
+                "expected the refusal to name the key, stderr: ${run.stderr}",
+            )
+            assertTrue(!Files.exists(fixture.log), "a refused startup must never compose a docker run")
+        } finally {
+            fixture.workspace.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a project overlay naming a missing directory refuses the sandbox`() {
+        val missing = Files.createTempDirectory(Path.of("build").toAbsolutePath(), "overlay-missing-")
+            .resolve("gone")
+        val fixture = fixture(
+            "project-overlay-missing",
+            projectFileJson = """{"permissions": {"writableDirectories": ["$missing"]}}""",
+        )
+        try {
+            val run = run(fixture)
+            assertEquals(1, run.exitCode)
+            assertTrue(
+                run.stderr.contains("'$missing' does not exist or is not a directory"),
+                "expected the overlay's refusal naming the path, stderr: ${run.stderr}",
             )
             assertTrue(!Files.exists(fixture.log), "a refused startup must never compose a docker run")
         } finally {

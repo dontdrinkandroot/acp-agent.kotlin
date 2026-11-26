@@ -40,6 +40,17 @@ class FileAccessExclusionsTest {
     }
 
     @Test
+    fun `default policy guards the project permission overlay`() {
+        // Issue #85: a grant file the model could rewrite is not a boundary. The rule is
+        // rooted like the run-config one - only the checkout's own overlay is guarded.
+        val exclusions = FileAccessExclusions.DEFAULT
+        assertEquals(".ai/ddr-acp-agent.json", exclusions.matchingRule(".ai/ddr-acp-agent.json"))
+        assertNull(exclusions.matchingRule("sub/.ai/ddr-acp-agent.json"))
+        assertNull(exclusions.matchingRule(".ai/ddr-acp-agent.json.bak"))
+        assertNull(exclusions.matchingRule("ddr-acp-agent.json"))
+    }
+
+    @Test
     fun `empty policy matches nothing`() {
         assertNull(FileAccessExclusions.EMPTY.matchingRule(".env.local"))
         assertNull(FileAccessExclusions.EMPTY.matchingRule("anything/at/all"))

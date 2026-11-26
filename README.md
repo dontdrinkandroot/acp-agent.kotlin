@@ -16,7 +16,9 @@ edits your project, runs commands, and talks to LLMs via
   fair game; anything outside it (reads and writes alike) and shell commands ask you
   first. Permanent allow/deny decisions are remembered per session. Reads and greps in
   the agent's scratch directory (`/tmp/ddr-acp-agent`, the `scratchDir` config key)
-  never ask, in any mode.
+  never ask, in any mode. A repository can add its own directories in
+  `.ai/ddr-acp-agent.json` without widening the global configuration (see
+  [Project permission overlay](#project-permission-overlay)).
 - **Persistence** — every session survives restarts: list, resume, or fully reload (with replay) past conversations, per
   project directory.
 - **Client fs proxy** — when the IDE supports it, file reads and writes go through
@@ -184,11 +186,12 @@ Tips:
 
 ## Configuration
 
-The agent is configured **exclusively through `config.json`**: built-in defaults
-overridden by the selected file. No environment variable carries an agent
+The agent is configured **exclusively through files**: built-in defaults,
+overridden by the selected `config.json` and then by an optional project overlay
+(`<project>/.ai/ddr-acp-agent.json`). No environment variable carries an agent
 setting (a `DDR_ACP_AGENT_*` variable is deliberately inert and produces no
-warning). The file is read once at startup — change it, then restart/relaunch
-the agent.
+warning). The files are read once at startup — change them, then
+restart/relaunch the agent.
 
 ### Config file
 
@@ -251,8 +254,8 @@ Every key above is documented in the example — the most important ones:
 | `tools.bash.timeoutSeconds`           | `600`                          | Shell command timeout, 1-3600 seconds (whole process tree is killed).                                                   |
 | `tools.webFetch.allowPrivate`         | `false`                        | `true` lets `web_fetch` reach private/loopback/CGNAT/ULA hosts (non-public addresses are blocked by default to prevent SSRF). |
 | `mcp.trustAnnotations`                | `true`                         | `false` treats all MCP tools as untrusted: always ask, even when the server claims read-only.                           |
-| `permissions.readableDirectories`     | *(none)*                       | Absolute paths: the read-only path tools run there without a prompt. Under the docker sandbox this list **is** the read-only mount list. |
-| `permissions.writableDirectories`     | *(none)*                       | Absolute paths: the mutating path tools run there without a prompt (implies readable). Under the docker sandbox this list **is** the read-write mount list. |
+| `permissions.readableDirectories`     | *(none)*                       | Absolute paths (never `/`): the read-only path tools run there without a prompt. Under the docker sandbox this list **is** the read-only mount list. A project can add entries via `.ai/ddr-acp-agent.json`. |
+| `permissions.writableDirectories`     | *(none)*                       | Absolute paths (never `/`): the mutating path tools run there without a prompt (implies readable). Under the docker sandbox this list **is** the read-write mount list. A project can add entries via `.ai/ddr-acp-agent.json`. |
 | `permissions.unlistedPaths`           | `prompt`                       | `prompt` asks via `session/request_permission`; `deny` refuses outright, naming the config entry that would have covered the path. |
 | `scratchDir`                          | `/tmp/ddr-acp-agent`           | The agent's own scratch directory, read-trusted like a readable directory. Must be absolute and not `/`; created `0700` and verified at session start. Never cleaned up. |
 
@@ -263,7 +266,8 @@ IDE offers it in the command list and autocompletion — to print the
 configuration it actually resolved: agent version and build, the session's cwd,
 mode and model, the effective reasoning/provider selection, the behaviour
 switches, and the trusted paths including the API key **file** (never the key
-itself).
+itself) and the project overlay that was applied (`(none)` when the launch
+directory has none).
 
 The command is answered locally: it spends no tokens, does not call the model
 and does not become part of the conversation (not stored in the session record,
@@ -299,14 +303,56 @@ Paths outside the cwd and outside every list follow `unlistedPaths`: `prompt`
 
 **Docker sandbox:** the two lists *are* the mount list — a readable directory is
 mounted read-only, a writable one read-write, at the identical in-container path, so
-the agent trusts exactly what is mounted. The supervisor reads the same
-`config.json` and composes the mounts from `permissions.*`; a configured directory
-that does not exist aborts the sandbox (docker cannot mount it).
+the agent trusts exactly what is mounted. The supervisor reads the same files
+(`config.json` plus the project overlay) and composes the mounts from the merged
+`permissions.*`; a configured directory that does not exist aborts the sandbox
+(docker cannot mount it).
+
+### Project permission overlay
+
+A repository can add its own permission directories without touching the global
+lists: `<project>/.ai/ddr-acp-agent.json` next to the checkout, read from the
+directory the agent is launched in (the same directory `.ai/run.json` lives in).
+
+```json
+{
+  "permissions": {
+    "readableDirectories": ["/srv/data/shared-fixtures"],
+    "writableDirectories": ["/srv/build-cache"],
+    "unlistedPaths": "prompt"
+  }
+}
+```
+
+* **Only `permissions.*` may be set here** — `readableDirectories`,
+  `writableDirectories`, `unlistedPaths`. Every other key (tool settings, `mcp.*`,
+  `openRouter.*`, `scratchDir`, `sandbox`) belongs in `config.json` and is refused
+  with a message saying so. The file is parsed **strictly at every level**: unlike
+  `config.json`, an unknown key aborts startup instead of being ignored — a grant
+  file that silently grants nothing is worse than a failing one.
+* **Add-only merge:** the directory lists are unioned with the global lists (a
+  project can add entries, never remove one); `unlistedPaths` replaces the global
+  value in either direction.
+* **Absolute paths only, never `/`**, and every named directory must exist — a
+  missing directory fails startup naming the path. (The global lists only warn
+  about a missing directory, because they may name mounts of another machine; this
+  file is part of the checkout.)
+* **Merged entries look like global entries**: prompt-free access, the system
+  prompt's trusted-paths section and — under the docker sandbox — the mount list
+  all come from the same merged lists. `/info` names the project file when one was
+  applied.
+* **The file is off-limits to the file tools** (`read_file`, `edit_file`,
+  `write_file`, `delete_file` refuse it, `list_dir`/`glob`/`grep` hide it) exactly
+  like `.ai/run.json`: a grant file the agent could rewrite is not a boundary.
+* **Read once at startup from the launch directory.** A session opened on a
+  different directory than the agent was launched in runs under the launch
+  directory's overlay; that project's own overlay is not consulted.
 
 ### Sandbox settings (`sandbox` group)
 
 The sandbox supervisor reads the `sandbox` group of the same `config.json` (the
-agent ignores it). Every key is optional; absent means the default.
+agent ignores it; the project overlay cannot set it). Every key is optional;
+absent means the default.
 
 | Key                 | Default                         | Description                                                                                                                                                                                                                                                                                                                                                        |
 |---------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|

@@ -37,7 +37,7 @@ class E2eWireConformanceTest : E2eAgentTest() {
         val llmMock = MockOpenAiServer(targetFile.absolutePath, firstTurnStreamDeltas = true)
         llmMock.start()
         try {
-            val process = startAgent(llmMock.port)
+            val process = startAgent(llmMock.port, workingDir = tmpDir)
             val stderrLines = drainStderr(process)
             try {
                 runScenario(process, tmpDir, targetFile, llmMock)

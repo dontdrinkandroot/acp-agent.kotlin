@@ -28,6 +28,7 @@ import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.localTools
 import net.dontdrinkandroot.acpagent.tools.prepareScratchDirectory
 import net.dontdrinkandroot.acpagent.tools.sessionTools
+import java.nio.file.Path
 import java.time.LocalDate
 import kotlin.system.exitProcess
 
@@ -45,10 +46,30 @@ public fun main(args: Array<String>) {
     runAgent(arguments)
 }
 
+/**
+ * Resolves the configuration from the launch cwd and runs the agent until the transport
+ * closes. A broken config file (base or project overlay) is a startup input error: it is
+ * reported as one `acp-agent: <message>` line and exits with code 2, the same shape as an
+ * argument error - the file and JSON path must not be buried under a stack trace.
+ */
 public fun runAgent(arguments: AgentArguments = AgentArguments()) {
     val logger = KotlinLogging.logger {}
 
-    val config = Config.load(profile = arguments.profile, warnings = { logger.warn { it } })
+    val config = try {
+        Config.load(
+            profile = arguments.profile,
+            // The launch directory, which is also the session cwd by assumption (the
+            // sandbox binds the project at this identical path and pins it as --workdir).
+            cwd = Path.of("").toAbsolutePath(),
+            warnings = { logger.warn { it } },
+        )
+    } catch (e: IllegalArgumentException) {
+        // A broken config file (global or project overlay) is a startup input error, not a
+        // crash: report it in the same one-line shape as an argument error instead of
+        // burying the file and JSON path under a stack trace.
+        System.err.println("acp-agent: ${e.message}")
+        exitProcess(2)
+    }
     val sessionStore = SessionStore()
 
     val localRegistry = ToolRegistry().apply { registerAll(localTools()) }

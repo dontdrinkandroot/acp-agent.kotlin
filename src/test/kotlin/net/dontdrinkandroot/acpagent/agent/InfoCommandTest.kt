@@ -117,7 +117,18 @@ class InfoCommandTest {
             "- Writable: (none)",
             "- Unlisted paths: deny",
             "- Scratch: `/tmp/scratch`",
+            "- Project file: (none)",
         ).forEach { expected -> assertContains(rendered, expected) }
+    }
+
+    @Test
+    fun `the dump names the applied project overlay`() {
+        // Issue #85: the merged tiers cannot show provenance by design, so the dump names
+        // the overlay once - "why can this session read /opt/shared?" stays answerable.
+        val withOverlay = snapshot().copy(
+            config = config().copy(projectConfigFile = "/project/.ai/ddr-acp-agent.json"),
+        )
+        assertContains(renderInfo(withOverlay), "- Project file: `/project/.ai/ddr-acp-agent.json`")
     }
 
     @Test
