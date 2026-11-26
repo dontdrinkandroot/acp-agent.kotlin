@@ -1,0 +1,16 @@
+schema: spec-driven
+
+context: |
+  acp-agent (acp-agent.kotlin): a JVM/Kotlin coding agent that speaks ACP over stdio to
+  JetBrains IDEs. Read AGENTS.md before writing any artifact; the behavior lives in
+  openspec/specs/<capability>/spec.md (one capability per spec, listed in AGENTS.md's
+  "Behaviour map").
+
+  Specs describe observable behavior only - ACP wire messages and error codes, tool
+  semantics, configuration surface, permission and sandbox boundaries. Never internal
+  class or function names, library choices, or step-by-step implementation; those belong
+  in AGENTS.md and KDoc.
+
+  Each scenario should name the test that pins it (a unit test class, or an e2e scenario
+  in net.dontdrinkandroot.acpagent.e2e) where such a pin exists, so spec and suite cannot
+  drift apart.

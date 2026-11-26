@@ -266,6 +266,11 @@ class E2eWireConformanceTest : E2eAgentTest() {
             )
             println("[ok] tool_call update (write_file, title/kind/status/rawInput/locations correct)")
 
+            // The v1 update has no programmatic `name` member, so its absence can only be
+            // observed on the raw wire (the decoded model drops an unknown member silently).
+            assertToolCallCarriesNoNameMember(wireLines.toList())
+            println("[ok] tool_call updates carry no programmatic name member on the wire")
+
             assertTrue(
                 testOps.permissionRequests.isEmpty(),
                 "an in-project write must not ask for permission, got ${testOps.permissionRequests}",
@@ -436,6 +441,29 @@ class E2eWireConformanceTest : E2eAgentTest() {
             protocol.close()
             scope.cancel()
         }
+    }
+
+    /**
+     * Pins the v1 `tool_call` contract: the update carries no programmatic `name` member
+     * (issue #64). Checked on the raw stdout wire, because the SDK's v1 model has no such
+     * field - a decoded assertion would pass no matter what the agent emits.
+     */
+    private fun assertToolCallCarriesNoNameMember(lines: List<String>) {
+        val toolCallUpdates = lines.mapNotNull { line ->
+            val root = runCatching { Json.parseToJsonElement(line) }.getOrNull()?.jsonObject
+                ?: return@mapNotNull null
+            val update = root["params"]?.jsonObject?.get("update")?.jsonObject ?: return@mapNotNull null
+            update.takeIf { it["sessionUpdate"]?.jsonPrimitive?.content == "tool_call" }
+        }
+        assertTrue(
+            toolCallUpdates.isNotEmpty(),
+            "no raw tool_call update captured - the name-member check would be vacuous",
+        )
+        val offenders = toolCallUpdates.filter { "name" in it }
+        assertTrue(
+            offenders.isEmpty(),
+            "a tool_call update must not carry the programmatic name member, offenders: $offenders",
+        )
     }
 
     /**

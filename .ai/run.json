@@ -54,5 +54,29 @@
     "system_prompt": {
         "command": "timeout 120 ./gradlew -q printSystemPrompt",
         "description": "Print the assembled system prompt without AGENTS.md, rendered from invented example values so every section shows"
+    },
+    "spec_list": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 list [args]",
+        "description": "OpenSpec inventory (read-only). [args] examples: --specs --json (capabilities + requirement counts) | --json (open changes) | --all --json."
+    },
+    "spec_status": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 status --change [args] --json",
+        "description": "OpenSpec artifact checklist for one change (read-only). [args]: change name; the output's nextSteps names the next command."
+    },
+    "spec_instructions": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 instructions [args]",
+        "description": "OpenSpec instruction + template for the next artifact (read-only). [args]: <artifact> --change <name> --json, or apply --change <name> --json."
+    },
+    "spec_validate": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 validate [args]",
+        "description": "OpenSpec shape gate (read-only). [args]: --all --strict --json, or one change/spec name. Exit 1 = findings."
+    },
+    "spec_new_change": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 new change [args]",
+        "description": "MUTATING (creates openspec/changes/<name>/), build/bash only, never plan. [args]: <name> [--goal <text>]"
+    },
+    "spec_archive": {
+        "command": "DO_NOT_TRACK=1 timeout 120 npx --yes @fission-ai/openspec@2.2.0 archive [args] -y",
+        "description": "MUTATING (merges deltas into specs/, moves the folder to changes/archive/), build/bash only, never plan. [args]: change name. -y is baked; validation runs first and refuses invalid deltas."
     }
 }
