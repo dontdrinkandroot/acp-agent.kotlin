@@ -75,8 +75,8 @@ class E2eMcpStdioTransportTest : E2eAgentTest() {
                     "a stdio MCP server must run in the session cwd, not the agent's own directory",
                 )
                 assertTrue(
-                    "openrouter_api_key_file=absent" in probe,
-                    "an MCP server must not inherit the agent's configuration (API key location): $probe",
+                    "agent_env_sentinel=absent" in probe,
+                    "an MCP server must not inherit the agent's environment (harness sentinel): $probe",
                 )
                 assertTrue("path=present" in probe, "the child environment must keep PATH: $probe")
                 println("[ok] the stdio MCP server ran in the session cwd and saw no agent secret")

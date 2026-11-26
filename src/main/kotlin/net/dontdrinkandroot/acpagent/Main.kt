@@ -15,7 +15,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.agent.*
+import net.dontdrinkandroot.acpagent.config.AgentArguments
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.parseAgentArguments
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.mcp.McpServerConnection
 import net.dontdrinkandroot.acpagent.mcp.McpTool
@@ -27,17 +29,26 @@ import net.dontdrinkandroot.acpagent.tools.localTools
 import net.dontdrinkandroot.acpagent.tools.prepareScratchDirectory
 import net.dontdrinkandroot.acpagent.tools.sessionTools
 import java.time.LocalDate
+import kotlin.system.exitProcess
 
 public fun main(args: Array<String>) {
     System.setProperty("org.slf4j.simpleLogger.logFile", "System.err")
     KotlinLoggingConfiguration.logStartupMessage = false
-    runAgent()
+    val arguments = try {
+        parseAgentArguments(args.toList())
+    } catch (e: IllegalArgumentException) {
+        // A mistyped argument must not silently run on the default profile (and the
+        // removed launcher flags are not special-cased): fail loudly before any I/O.
+        System.err.println("acp-agent: ${e.message}")
+        exitProcess(2)
+    }
+    runAgent(arguments)
 }
 
-public fun runAgent() {
+public fun runAgent(arguments: AgentArguments = AgentArguments()) {
     val logger = KotlinLogging.logger {}
 
-    val config = Config.load(warnings = { logger.warn { it } })
+    val config = Config.load(profile = arguments.profile, warnings = { logger.warn { it } })
     val sessionStore = SessionStore()
 
     val localRegistry = ToolRegistry().apply { registerAll(localTools()) }

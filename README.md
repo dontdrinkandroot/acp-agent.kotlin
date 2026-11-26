@@ -1,4 +1,4 @@
-# acp-agent.kotlin
+# acp-agent
 
 A coding agent that plugs into AI-capable IDEs and editors over the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com) — JSON-RPC 2.0 over
@@ -15,8 +15,8 @@ edits your project, runs commands, and talks to LLMs via
 - **Path-aware permissions** — everything inside the project working directory is
   fair game; anything outside it (reads and writes alike) and shell commands ask you
   first. Permanent allow/deny decisions are remembered per session. Reads and greps in
-  the agent's scratch directory (`/tmp/ddr-acp-agent`, override with
-  `DDR_ACP_AGENT_SCRATCH_DIR`) never ask, in any mode.
+  the agent's scratch directory (`/tmp/ddr-acp-agent`, the `scratchDir` config key)
+  never ask, in any mode.
 - **Persistence** — every session survives restarts: list, resume, or fully reload (with replay) past conversations, per
   project directory.
 - **Client fs proxy** — when the IDE supports it, file reads and writes go through
@@ -28,7 +28,7 @@ edits your project, runs commands, and talks to LLMs via
   `read_file`. Binary payloads are refused loudly (download via `bash` instead),
   and non-public hosts (private ranges, loopback, CGNAT, IPv6 unique-local,
   multicast, ...) are blocked unless you opt in with
-  `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=true`.
+  `"tools": {"webFetch": {"allowPrivate": true}}`.
 - **Run configurations** — project-defined commands in `.ai/run.json` (also surfaced to the
   model as `run` tool configs) execute prompt-free in every mode; the model's `args` array is
   passed to the command as positional parameters at the `[args]` slot — one element is one
@@ -43,9 +43,15 @@ edits your project, runs commands, and talks to LLMs via
 
 ## Requirements
 
-- **Docker variant (recommended)**: Docker and an OpenRouter API key. Everything
-  else ships in the image.
-- **Direct variant**: Java 25 (JRE is enough) and an OpenRouter API key.
+- **Docker variant (recommended)**: Docker, a JDK 25 and an OpenRouter API key. The
+  image ships the agent runtime and its toolchain, but the sandbox entry point builds
+  the JVM distribution from this checkout and runs the supervisor locally - so the
+  host needs `git` and the Gradle wrapper's JDK 25, and the IDE's `PATH` must carry
+  `java` and `docker` (the wrapper and the supervisor both resolve them from `PATH`).
+  Run `./bin/acp-agent-sandbox` once from a shell so the first IDE launch does not
+  sit through a cold build.
+- **Direct variant**: JDK 25 (both entry points build the distribution via the Gradle
+  wrapper first, so a JRE is not enough) and an OpenRouter API key.
 
 ## Quick start
 
@@ -55,38 +61,47 @@ edits your project, runs commands, and talks to LLMs via
 mkdir -p ~/.config/ddr-acp-agent
 printf '%s\n' "sk-or-..." >~/.config/ddr-acp-agent/openrouter.key
 chmod 600 ~/.config/ddr-acp-agent/openrouter.key
-/path/to/acp-agent.kotlin/ddr-acp-agent-docker
+/path/to/acp-agent/bin/acp-agent-sandbox
 ```
 
 The key never travels through the environment. It lives in your config
-directory (default `~/.config/ddr-acp-agent`), which the launcher mounts
-read-only at the container's own config directory (same `XDG_CONFIG_HOME`) — so
-the same `config.json`/`openrouter.key` work for the direct and the docker
-variant. The launcher has no key logic at all: the old
-`OPENROUTER_API_KEY` / `OPENROUTER_API_KEY_FILE` variables are no longer read.
+directory (default `~/.config/ddr-acp-agent`), which the sandbox mounts
+read-only at the container's own `$XDG_CONFIG_HOME/ddr-acp-agent` — so
+the same `config.json`/`openrouter.key` work for the direct and the sandboxed
+variant. The supervisor has no key logic: the agent resolves the file, the
+supervisor only mounts the directory.
 
-On first use the launcher pulls `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`
-(when offline it falls back to an already-pulled copy). To build the image locally
-instead, run `./build-docker` and start with `--skip-pull`. The image runs
+The sandbox entry point builds the JVM distribution, then makes sure
+`ghcr.io/dontdrinkandroot/acp-agent:latest` exists: it runs `docker image inspect`
+and builds the image locally via `./build-docker` when it is missing (or when you
+pass `--rebuild`). It **never pulls** — update the upstream image with a manual
+`docker pull ghcr.io/dontdrinkandroot/acp-agent:latest` before starting; the
+inspect then succeeds and the build is skipped. A profile needs the image to be
+built from a release that reads `--profile` (one `--rebuild` after upgrading).
+The image runs
 hardened: no capabilities, read-only rootfs, tmpfs home, non-root user matching
 your host UID. The home and Gradle tmpfs mounts are exec-allowed because
 toolchains execute native binaries extracted into them (AAPT2 from Maven,
-Kotlin/Native). Your project directory is bind-mounted, and session state is
+Kotlin/Native). Your project directory — the directory the IDE launches the agent
+from, which it also passes as the session `cwd` (nothing enforces that identity,
+so launch the agent from the project root) — is bind-mounted at the identical
+path and used as the container's workdir, and session state is
 persisted on the host so conversations survive container restarts.
 
 Your host Android SDK is shared into the container automatically: when
 `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) is set it must be an existing absolute
-directory (anything else aborts the launcher), otherwise an existing
-`$HOME/Android/Sdk` is picked up. It is mounted read-write at
-`/home/dev/Android/Sdk` with both variables pinned to that path, so Gradle
-builds, `sdkmanager`, `adb` and similar tools work without further setup. Notes:
+directory (anything else aborts the supervisor) and is mounted read-write at the
+identical path with both variables pinned to it; otherwise an existing
+`$HOME/Android/Sdk` is picked up and mounted at
+`/home/dev/Android/Sdk`. Either way both variables point at the mounted path, so
+Gradle builds, `sdkmanager`, `adb` and similar tools work without further setup. Notes:
 
 - Android builds resolve the SDK location in this order: `local.properties`
   (`sdk.dir`) first, then the `ANDROID_HOME` / `ANDROID_SDK_ROOT` environment
   variables (per AGP's `SdkLocator`). A `local.properties` in the project
   pointing at a host-only path therefore overrides the container mount and
   breaks container runs — delete it (or point it at the container path). The
-  launcher always pins both variables to the same path, satisfying AGP's
+  supervisor always pins both variables to the same path, satisfying AGP's
   newer check that they must match when both are set.
 - No emulator/AVDs, KVM or USB devices: the container cannot run emulators;
   `connectedAndroidTest` and `adb devices` see no devices.
@@ -123,24 +138,25 @@ value}]}` SSE form.)
 mkdir -p ~/.config/ddr-acp-agent
 printf '%s\n' "sk-or-..." >~/.config/ddr-acp-agent/openrouter.key
 chmod 600 ~/.config/ddr-acp-agent/openrouter.key
-/path/to/acp-agent.kotlin/ddr-acp-agent
+/path/to/acp-agent/bin/acp-agent
 ```
 
-The launcher rebuilds via Gradle when sources are newer than the installed binary (first run downloads dependencies),
-then execs the agent.
+The entry point always runs `installDist` (the first run downloads dependencies),
+then execs the agent from `build/install/acp-agent/bin/acp-agent`.
 
 ## IDE setup
 
-Configure the agent as a custom ACP agent in your client. The command is the
-launcher above; the API key is read from a key file (see Configuration / API
-key), never from the environment.
+Configure the agent as a custom ACP agent in your client. The command is one of the
+two entry points above; the API key is read from a key file (see Configuration /
+API key), never from the environment. To use a profile, append
+`--profile <name>` (the sandbox entry point forwards it into the container).
 
 JetBrains IDEs (ACP plugin) and Zed are known to work. Example JetBrains custom
 agent configuration:
 
 ```json
 "DdrAcpAgent": {
-  "command": "/srv/git/github.com/dontdrinkandroot/acp-agent.kotlin/ddr-acp-agent-docker"
+  "command": "/srv/git/github.com/dontdrinkandroot/acp-agent.kotlin/bin/acp-agent-sandbox"
 }
 ```
 
@@ -149,8 +165,8 @@ Tips:
 - The editor fs proxy is on by default whenever the client offers it: reads and
   writes go through the editor (unsaved buffers are visible) and the client
   renders `write_file`/`edit_file` changes itself, so the agent skips its own
-  diff blocks for those two. `DDR_ACP_AGENT_TOOLS_FS_PROXY: "0"` disables the
-  proxy (e.g. when it misbehaves in your client); the agent then reads/writes
+  diff blocks for those two. `"tools": {"fsProxy": false}` in `config.json`
+  disables the proxy (e.g. when it misbehaves in your client); the agent then reads/writes
   files directly and emits whole-file diffs for every mutation — with the
   baseline read from disk, which can disagree with unsaved editor buffers.
   Move/delete change evidence is unaffected either way: those tools never go
@@ -168,17 +184,24 @@ Tips:
 
 ## Configuration
 
-Configuration is layered: **built-in defaults < `config.json` < environment**.
-The file is read once at startup (change it, then restart/relaunch the agent);
-environment variables always win.
+The agent is configured **exclusively through `config.json`**: built-in defaults
+overridden by the selected file. No environment variable carries an agent
+setting (a `DDR_ACP_AGENT_*` variable is deliberately inert and produces no
+warning). The file is read once at startup — change it, then restart/relaunch
+the agent.
 
 ### Config file
 
 `$XDG_CONFIG_HOME/ddr-acp-agent/config.json` (fallback `~/.config/ddr-acp-agent/config.json`).
-`DDR_ACP_AGENT_CONFIG_FILE` selects a **different file name in the same directory**
-(e.g. `work.json`) — a bare file name, no path, so the same value resolves
-identically on the host and inside the docker container. A selected file must
-exist, while a missing default file simply means "all defaults".
+
+**Profiles:** launch the agent with `--profile <name>` to select `<name>.json`
+in the same directory (e.g. `--profile work` reads `work.json`) — a bare profile
+name, no path, so it resolves identically on the host and inside the docker
+container. A `.json`-suffixed value is rejected (the suffix is added by the
+agent), a selected profile must exist, and a missing default file simply means
+"all defaults". The argument parser is strict: any other argument ends startup
+with an error naming it, so a mistyped `--profil work` can never silently run on
+the default profile.
 
 ```json
 {
@@ -215,31 +238,23 @@ ignored (a newer file still works with an older agent). A wrong type or an
 invalid value fails at startup with the JSON path, e.g.
 `config file '…/config.json': tools.bash.timeoutSeconds must be between 1 and 3600, got -5`.
 
-### Environment overrides
+### Behaviour switches
 
-Every key has a derived env variable: the path in UPPER_SNAKE, prefixed with
-`DDR_ACP_AGENT_`. An unset variable means "no override".
+Every key above is documented in the example — the most important ones:
 
-| Env variable                                        | Default                        | Description                                                                                                                                                                  |
-|-----------------------------------------------------|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`            | *(see API key)*                | File holding the API key.                                                                                                                                                    |
-| `DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL`           | `openrouter/auto`              | Initial model; switchable per session.                                                                                                                                       |
-| `DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL`                | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint (e.g. a proxy).                                                                                                                                   |
-| `DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING` | `true`                         | `false` disables automatic provider routing (throughput-sorted with a median price cap).                                                                                     |
-| `DDR_ACP_AGENT_TOOLS_FS_PROXY`                      | `true`                         | `false` forces local file access even when the client offers the fs proxy.                                                                                                   |
-| `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`             | `100`                          | Tool-calling LLM iterations per prompt before a final text-only summary (>= 1).                                                                                              |
-| `DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`          | `600`                          | Shell command timeout, 1-3600 seconds (whole process tree is killed).                                                                                                        |
-| `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE`       | `false`                        | `true` lets `web_fetch` reach private/loopback/CGNAT/ULA hosts (non-public addresses are blocked by default to prevent SSRF).                                                |
-| `DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS`               | `true`                         | `false` treats all MCP tools as untrusted: always ask, even when the server claims read-only.                                                                                |
-| `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`    | *(none)*                       | Comma-separated absolute paths: the read-only path tools run there without a prompt. Under the docker launcher this list **is** the read-only mount list.                    |
-| `DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES`    | *(none)*                       | Comma-separated absolute paths: the mutating path tools run there without a prompt (implies readable). Under the docker launcher this list **is** the read-write mount list. |
-| `DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS`          | `prompt`                       | `prompt` asks via `session/request_permission`; `deny` refuses outright, naming the config entry that would have covered the path.                                           |
-| `DDR_ACP_AGENT_SCRATCH_DIR`                         | `/tmp/ddr-acp-agent`           | The agent's own scratch directory, read-trusted like a readable directory. Must be absolute and not `/`; created `0700` and verified at session start. Never cleaned up.     |
-| `DDR_ACP_AGENT_CONFIG_FILE`                         | `config.json`                  | File name inside the config directory (a "profile"), e.g. `work.json`. Bare name only — no path.                                                                             |
-
-Booleans accept `1/true/yes/on` and `0/false/no/off` (case-insensitive);
-anything else is a startup error. Numbers are strict — an out-of-range value is
-an error, never silently clamped.
+| Key                                   | Default                        | Description                                                                                                             |
+|---------------------------------------|--------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `openRouter.defaultModel`             | `openrouter/auto`              | Initial model; switchable per session.                                                                                  |
+| `openRouter.baseUrl`                  | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint (e.g. a proxy).                                                                              |
+| `tools.maxTurnRequests`               | `100`                          | Tool-calling LLM iterations per prompt before a final text-only summary (>= 1).                                         |
+| `tools.fsProxy`                       | `true`                         | `false` forces local file access even when the client offers the fs proxy.                                              |
+| `tools.bash.timeoutSeconds`           | `600`                          | Shell command timeout, 1-3600 seconds (whole process tree is killed).                                                   |
+| `tools.webFetch.allowPrivate`         | `false`                        | `true` lets `web_fetch` reach private/loopback/CGNAT/ULA hosts (non-public addresses are blocked by default to prevent SSRF). |
+| `mcp.trustAnnotations`                | `true`                         | `false` treats all MCP tools as untrusted: always ask, even when the server claims read-only.                           |
+| `permissions.readableDirectories`     | *(none)*                       | Absolute paths: the read-only path tools run there without a prompt. Under the docker sandbox this list **is** the read-only mount list. |
+| `permissions.writableDirectories`     | *(none)*                       | Absolute paths: the mutating path tools run there without a prompt (implies readable). Under the docker sandbox this list **is** the read-write mount list. |
+| `permissions.unlistedPaths`           | `prompt`                       | `prompt` asks via `session/request_permission`; `deny` refuses outright, naming the config entry that would have covered the path. |
+| `scratchDir`                          | `/tmp/ddr-acp-agent`           | The agent's own scratch directory, read-trusted like a readable directory. Must be absolute and not `/`; created `0700` and verified at session start. Never cleaned up. |
 
 ### Inspecting the effective configuration (`/info`)
 
@@ -257,7 +272,7 @@ ignored and the reply says so; `/infofoo` is an ordinary prompt.
 
 Because the configuration is resolved once at startup (see above), `/info`
 shows the values from when the agent was launched — restart the agent after
-changing `config.json` or the environment.
+changing `config.json`.
 
 ### API key
 
@@ -265,9 +280,8 @@ The key is **only ever read from a file**, never from a variable holding the key
 itself (a key in the environment leaks into every child process, `env` dumps and
 `ps` output). Resolution order:
 
-1. `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`
-2. `openRouter.apiKeyFile` from `config.json`
-3. `<config dir>/openrouter.key`
+1. `openRouter.apiKeyFile` from `config.json`
+2. `<config dir>/openrouter.key`
 
 If none resolves, startup fails with the tried sources. **Every key file must be
 owner-only (`0600` or `0400`)** — a group- or world-readable file is refused with
@@ -283,34 +297,68 @@ Paths outside the cwd and outside every list follow `unlistedPaths`: `prompt`
 (ask) or `deny` (hard refusal, fix the config lists instead).
 `bash`, `run` and MCP tools keep their own permission rules.
 
-**Docker:** the two lists *are* the mount list — a readable directory is mounted
-read-only, a writable one read-write, at the identical in-container path. Set
-them as environment variables (`DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`,
-`…_WRITABLE_DIRECTORIES`), because only the launcher can mount host paths. The
-`permissions.*` entries in `config.json` are therefore a **direct-run** concern:
-the env layer overrides the file layer, so a host-only path is never trusted
-inside the container without being mounted.
+**Docker sandbox:** the two lists *are* the mount list — a readable directory is
+mounted read-only, a writable one read-write, at the identical in-container path, so
+the agent trusts exactly what is mounted. The supervisor reads the same
+`config.json` and composes the mounts from `permissions.*`; a configured directory
+that does not exist aborts the sandbox (docker cannot mount it).
 
-Docker launcher extras (host side, not forwarded into the container):
+### Sandbox settings (`sandbox` group)
 
-The launcher's own settings follow the same naming scheme as the agent config (`DDR_ACP_AGENT_DOCKER_*`) but are
-deliberately **not** forwarded into the
-container — they configure the `docker run` call, not the agent.
+The sandbox supervisor reads the `sandbox` group of the same `config.json` (the
+agent ignores it). Every key is optional; absent means the default.
 
-| Variable                            | Default                         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-|-------------------------------------|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DDR_ACP_AGENT_DOCKER_STATE_DIR`    | `$XDG_STATE_HOME/ddr-acp-agent` | Host directory for session state. Absolute paths only. Useful when your home is fscrypt-encrypted (see Troubleshooting).                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `DDR_ACP_AGENT_DOCKER_HOME_VOLUME`  | *(tmpfs)*                       | Named Docker volume for the container home instead of a tmpfs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES` | enabled                         | `0` disables sharing host tool caches (uv, cargo, …) into the container. Gradle is special: only the content-addressed cache leaves (`caches/modules-2`, `caches/jars-*`, `wrapper/dists`, `jdks`) are shared rw, never the whole `~/.gradle` — the daemon registry/logs and per-version state live in a container-private `.gradle` tmpfs so container and host Gradle daemons never interfere. The home and Gradle tmpfs mounts are exec-allowed (toolchains execute binaries extracted into them, e.g. AAPT2, Kotlin/Native).                              |
-| `DDR_ACP_AGENT_DOCKER_NETWORK`      | `host`                          | Docker network for the container. The default `host` shares the host network namespace: this is what makes Gradle's cross-process cache locking work (the lock handover is a loopback UDP ping that does not cross network namespaces, so a bridge-networked container fails with `Timeout waiting to lock` after ~60s), and it lets the container reach host loopback services. Set e.g. `development` to restore network isolation — compose service names (`postgres`) then resolve again through Docker's embedded DNS, at the cost of the lock timeouts. |
-| `DDR_ACP_AGENT_DOCKER_RW_ROOTFS`    | *(read-only)*                   | `1` leaves the container rootfs writable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `ANDROID_HOME`                      | *(auto)*                        | Host Android SDK directory shared into the container (`ANDROID_SDK_ROOT` is used when `ANDROID_HOME` is unset; first one set wins). An existing `$HOME/Android/Sdk` is picked up without either variable. Set but unusable values (relative path, `/`, missing directory) abort the launcher.                                                                                                                                                                                                                                                                 |
-| `ANDROID_SDK_ROOT`                  | *(auto)*                        | See `ANDROID_HOME`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `DDR_ACP_AGENT_DOCKER_CAP_ADD`      | *(none)*                        | Comma-separated Linux capabilities to add back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS`   | *(none)*                        | Extra `docker run` arguments (space-separated).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `DOCKER_BIN`                        | auto                            | Absolute path to the Docker CLI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Key                 | Default                         | Description                                                                                                                                                                                                                                                                                                                                                        |
+|---------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `network`           | `host`                          | Docker network. The default `host` shares the host network namespace: this is what makes Gradle's cross-process cache locking work (the lock handover is a loopback UDP ping that does not cross network namespaces, so a bridge-networked container fails with `Timeout waiting to lock` after ~60s), and it lets the container reach host loopback services. Set e.g. `development` to restore isolation — compose service names then resolve again through Docker's embedded DNS. |
+| `stateDir`          | `$XDG_STATE_HOME/ddr-acp-agent` | Host directory for session state (mounted at the container's `~/.local/state/ddr-acp-agent`). Absolute path. Useful when your home is fscrypt-encrypted (see Troubleshooting).                                                                                                                                                                                     |
+| `mountCaches`       | `true`                          | `false` disables sharing host tool caches (uv, cargo, …) into the container. Gradle is special: only its content-addressed cache leaves are shared rw - and only while this is `true` - never the whole `~/.gradle`; the daemon registry/logs and per-version state live in a container-private `.gradle` tmpfs so container and host Gradle daemons never interfere. |
+| `homeVolume`        | *(tmpfs)*                       | Named Docker volume for the container home instead of a tmpfs.                                                                                                                                                                                                                                                                                                      |
+| `extraArgs`         | `[]`                            | Additional `docker run` arguments (a JSON array of literal tokens, never word-split).                                                                                                                                                                                                                                                                                |
+| `capAdd`            | `[]`                            | Linux capabilities to add back (a JSON array, e.g. `["SYS_PTRACE"]`).                                                                                                                                                                                                                                                                                                |
+| `rwRootfs`          | `false`                         | `true` leaves the container rootfs writable.                                                                                                                                                                                                                                                                                                                        |
 
-The previous `ACP_DOCKER_*` spellings are **no longer read** — rename them.
+Host environment variables that are a *tool's* own configuration still apply and are
+shared into the container: `ANDROID_HOME`/`ANDROID_SDK_ROOT`, `UV_CACHE_DIR`,
+`PIP_CACHE_DIR`, `COMPOSER_CACHE_DIR`, `YARN_CACHE_FOLDER`, `HF_HOME`,
+`NPM_CONFIG_CACHE`, `CARGO_HOME`, `GOMODCACHE`, `NUGET_PACKAGES`, `PUB_CACHE`,
+`PNPM_CONFIG_STORE_DIR`/`PNPM_CONFIG_CACHE_DIR`/`PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE`,
+`KONAN_DATA_DIR`, `GRADLE_USER_HOME`, `UV_LINK_MODE`, plus `TZ` and the git identity.
+Docker itself comes from `PATH` (see Troubleshooting). `scratchDir` keeps its
+sandbox semantics: it is a *container* path, and the container's `/tmp` is a private
+tmpfs, so scratch content is per-container-session.
+
+### Migrating from `ddr-acp-agent-docker`
+
+The bash launcher is gone: `ddr-acp-agent` and `ddr-acp-agent-docker` no longer
+exist, and the agent's configuration is file-only — no `DDR_ACP_AGENT_*` variable
+is read any more (a leftover is silently inert, so do not rely on it), and the
+`--skip-pull` flag was removed outright (a strict argument parser now rejects it
+with exit code 2).
+
+| Old | New |
+|---|---|
+| `command: …/ddr-acp-agent-docker` | `command: …/bin/acp-agent-sandbox` |
+| `command: …/ddr-acp-agent` | `command: …/bin/acp-agent` |
+| `args: ["--skip-pull"]` | remove — the sandbox entry point checks `docker image inspect` and builds locally; it never pulls |
+| `DDR_ACP_AGENT_CONFIG_FILE=work.json` | `args: ["--profile", "work"]` (reads `work.json`; a `.json` suffix is rejected) |
+| `DDR_ACP_AGENT_DOCKER_*` (`STATE_DIR`, `HOME_VOLUME`, `MOUNT_CACHES`, `NETWORK`, `RW_ROOTFS`, `CAP_ADD`, `EXTRA_ARGS`) | the `sandbox` group above (`stateDir`, `homeVolume`, `mountCaches`, `network`, `rwRootfs`, `capAdd`, `extraArgs`) |
+| `DDR_ACP_AGENT_TOOLS_FS_PROXY` & friends | the matching `config.json` keys (`tools.fsProxy`, …) |
+| `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES` / `…_WRITABLE_DIRECTORIES` | `permissions.readableDirectories` / `writableDirectories` — one list drives the mounts and the agent's trust |
+| `DDR_ACP_AGENT_SCRATCH_DIR` | `scratchDir` |
+| `DOCKER_BIN` | remove — docker is resolved from `PATH` |
+| image `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest` | `ghcr.io/dontdrinkandroot/acp-agent:latest` (`docker pull` once) |
+| `ACP_DOCKER_*` (the older spellings) | dead, as before |
+
+`XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`TZ`/`HOME` stay environment variables — they
+are standard host facts, not agent config. The option values in `config.json` are
+**JSON types** now: `"fsProxy": false`, not `"0"` (a wrong type fails at startup
+with the JSON path). A trailing slash in a permission list entry is normalized
+away, so `/srv/git/` and `/srv/git` name the same mount.
+
+Under the sandbox the API key must sit in the mounted config directory
+(`<config dir>/openrouter.key`, `0600`): `openRouter.apiKeyFile` is resolved
+*inside* the container, so a host path there is unreadable.
 
 ## Sessions
 
@@ -336,31 +384,36 @@ sudo mkdir -p /srv/acp-agent-state && sudo chown "$USER" /srv/acp-agent-state
 ```
 
 ```json
-"env": { "DDR_ACP_AGENT_DOCKER_STATE_DIR": "/srv/acp-agent-state" }
+"sandbox": { "stateDir": "/srv/acp-agent-state" }
 ```
 
 **`No OpenRouter API key configured`** — no key resolved. The error lists the
-tried sources: `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`, `openRouter.apiKeyFile`
-in `config.json`, and the default `$XDG_CONFIG_HOME/ddr-acp-agent/openrouter.key`.
-Create that file with mode `0600`. Under the docker launcher the config directory
-is mounted read-only, so the key must live there; a key file outside it is not
-mounted and therefore unreadable inside the container.
+tried sources: `openRouter.apiKeyFile` in `config.json`, and the default
+`$XDG_CONFIG_HOME/ddr-acp-agent/openrouter.key`. Create that file with mode
+`0600`. Under the docker sandbox the config directory is mounted read-only, so
+the key must live there; a key file outside it is not mounted and therefore
+unreadable inside the container.
 
 **`API key file … must be owner-only`** — the key file is readable by group or
 others. Run `chmod 600 <file>`.
 
 **Agent produces no output / connection drops immediately.** The agent speaks
 NDJSON on stdout and logs to stderr; if a wrapper script or environment writes to
-stdout, the protocol breaks. Use the provided launchers as-is.
+stdout, the protocol breaks. Use the provided entry points as-is.
 
-**Docker: `docker pull` fails.** Offline? The launcher continues with an existing
-local image if there is one; otherwise build it locally with `./build-docker`.
+**Docker: image missing / stale.** The sandbox entry point never pulls: update with
+`docker pull ghcr.io/dontdrinkandroot/acp-agent:latest`, or build locally with
+`./build-docker` (or pass `--rebuild`).
+
+**`docker CLI not found on PATH`.** The wrappers, `build-docker` and the supervisor
+all resolve docker from `PATH` — launch the IDE from a session where docker is on
+`PATH` (or fix the IDE's environment).
 
 ## Building from source
 
 ```bash
 ./gradlew build       # compile + unit tests + black-box e2e suite
-./gradlew installDist # produces build/install/acp-agent.kotlin/bin/acp-agent.kotlin
+./gradlew installDist # produces build/install/acp-agent/bin/{acp-agent,acp-agent-sandbox}
 ./build-docker        # build the container image locally
 ```
 

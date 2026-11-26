@@ -1,0 +1,38 @@
+#!/bin/bash
+# Sandboxed entry point: build the JVM distribution, make sure the image exists (a manual
+# `docker pull` updates it; `--rebuild` forces a local build) and exec the supervisor, which
+# relays ACP over the container's stdio untouched. Image provisioning is deliberately
+# build-only - this wrapper never pulls.
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+image=ghcr.io/dontdrinkandroot/acp-agent:latest
+
+# Fail before the (slow) Gradle build when no docker CLI is reachable: the same named error
+# the supervisor would produce, just earlier.
+if ! command -v docker >/dev/null 2>&1; then
+    printf '%s\n' 'acp-agent-sandbox: docker CLI not found on PATH' >&2
+    exit 127
+fi
+
+rebuild=false
+agent_args=()
+for arg in "$@"; do
+    if [ "$arg" = --rebuild ]; then
+        rebuild=true
+    else
+        agent_args+=("$arg")
+    fi
+done
+
+printf '%s\n' 'Building agent (installDist)...' >&2
+(cd "$repo_root" && ./gradlew --no-daemon --quiet --console=plain installDist) >&2
+
+if [ "$rebuild" = true ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+    printf 'Building sandbox image %s...\n' "$image" >&2
+    "$repo_root/build-docker" >&2
+fi
+
+exec "$repo_root/build/install/acp-agent/bin/acp-agent-sandbox" \
+    ${agent_args[@]+"${agent_args[@]}"}

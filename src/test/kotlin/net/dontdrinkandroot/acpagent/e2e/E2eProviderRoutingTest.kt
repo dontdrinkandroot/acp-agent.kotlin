@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
  * Black-box auto provider routing: by default every chat request carries a
  * throughput sort with a median completion price cap (cached per model), an
  * endpoints failure omits the provider preferences (fail-open), and
- * `DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING=false` disables routing entirely.
+ * `"openRouter": {"autoThroughputSorting": false}` disables routing entirely.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eProviderRoutingTest : E2eAgentTest() {
@@ -74,7 +74,7 @@ class E2eProviderRoutingTest : E2eAgentTest() {
     fun `e2e auto provider routing disabled`() = runBlocking {
         withE2eAgent("routing-disabled", MockOpenAiServer("unused", textOnly = true)) {
             val connection = connect(
-                extraEnv = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING" to "0")
+                configJson = """{"openRouter": {"autoThroughputSorting": false}}"""
             )
             try {
                 connectTextOnly(connection)

@@ -17,15 +17,15 @@
     },
     "install_dist": {
         "command": "timeout 180 ./gradlew installDist",
-        "description": "Produce build/install/acp-agent.kotlin/bin/acp-agent.kotlin"
+        "description": "Produce build/install/acp-agent/bin/{acp-agent,acp-agent-sandbox}"
     },
     "dependency_updates": {
         "command": "timeout 180 ./gradlew dependencyUpdates",
         "description": "Dependency update audit: stable-only candidates, report-only (not wired into check)"
     },
     "lint_scripts": {
-        "command": "bash -n ddr-acp-agent ddr-acp-agent-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh && shellcheck ddr-acp-agent ddr-acp-agent-docker build-docker tests/bash/run-all tests/bash/common.sh tests/bash/harness.sh tests/bash/stubs/fake-docker tests/bash/test_*.bash .ai/scripts/gradle-unstick .ai/scripts/show-test-failures.sh",
-        "description": "Validate launcher, build, .ai helper and shell-test scripts"
+        "command": "bash -n bin/acp-agent bin/acp-agent-sandbox build-docker .ai/scripts/show-test-failures.sh && shellcheck bin/acp-agent bin/acp-agent-sandbox build-docker .ai/scripts/show-test-failures.sh",
+        "description": "Validate the wrapper, build and .ai helper scripts"
     },
     "show_failures": {
         "command": "bash .ai/scripts/show-test-failures.sh",
@@ -42,10 +42,6 @@
     "git": {
         "command": "git [args]",
         "description": "Run arbitrary git commands (read-only inspection: status, diff, log, show ...)"
-    },
-    "test_scripts": {
-        "command": "timeout 300 tests/bash/run-all",
-        "description": "Run the shell test suite (tests/bash) pinning the docker launcher composition"
     },
     "compile_test": {
         "command": "timeout 180 ./gradlew compileTestKotlin",

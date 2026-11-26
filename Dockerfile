@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.gradle,sharing=locked \
 # installDist copies Gradle-cache jars (root-owned, mode 600 in the builder)
 # verbatim; make them world-readable so the non-root runtime user can read them.
 
-RUN chmod -R a+rX /src/build/install/acp-agent.kotlin
+RUN chmod -R a+rX /src/build/install/acp-agent
 
 # Runtime base: the generic toolchain image from dontdrinkandroot/dev.docker
 # (user `dev`, home /home/dev, XDG env, /workspace, git defaults). It carries
@@ -37,9 +37,9 @@ USER root
 
 RUN printf '%s\n' '[user]' '	name = acp-agent' '	email = acp-agent@acp-agent.docker' >> /etc/gitconfig
 
-COPY --from=builder /src/build/install/acp-agent.kotlin /opt/acp-agent
+COPY --from=builder /src/build/install/acp-agent /opt/acp-agent
 
 USER dev
 
-ENTRYPOINT ["/opt/acp-agent/bin/acp-agent.kotlin"]
+ENTRYPOINT ["/opt/acp-agent/bin/acp-agent"]
 CMD []

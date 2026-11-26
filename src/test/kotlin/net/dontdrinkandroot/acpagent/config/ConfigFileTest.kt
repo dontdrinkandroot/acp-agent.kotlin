@@ -167,10 +167,116 @@ class ConfigFileTest {
     }
 
     @Test
+    fun `permission path entries are slash-normalized so spelling variants collapse`() {
+        // Mount paths are slash-normalized like sandbox.stateDir: "/srv/" and "/srv" name the
+        // same mount, and a duplicate --mount would be a launcher bug (the last one wins).
+        val file = ConfigFile.parse(
+            """{"permissions": {"readableDirectories": ["/srv/", "/srv", "/mnt//", "/"], "writableDirectories": ["/w/"]}}"""
+        )
+        assertEquals(listOf("/srv", "/mnt", "/"), file.permissions?.readableDirectories)
+        assertEquals(listOf("/w"), file.permissions?.writableDirectories)
+    }
+
+    @Test
     fun `unlisted paths parse case-insensitively`() {
         assertEquals(
             UnlistedPaths.DENY,
             ConfigFile.parse("""{"permissions": {"unlistedPaths": "DENY"}}""").permissions?.unlistedPaths,
         )
+    }
+
+    @Test
+    fun `the sandbox group parses into the typed model`() {
+        val file = ConfigFile.parse(
+            """
+            {
+              "sandbox": {
+                "network": "development",
+                "stateDir": "/srv/state/ddr-acp-agent",
+                "mountCaches": false,
+                "homeVolume": "acp-agent-home",
+                "extraArgs": ["--label", "probe=1"],
+                "capAdd": ["SYS_PTRACE"],
+                "rwRootfs": true
+              }
+            }
+            """.trimIndent()
+        )
+        assertEquals(
+            ConfigFile.Sandbox(
+                network = "development",
+                stateDir = "/srv/state/ddr-acp-agent",
+                mountCaches = false,
+                homeVolume = "acp-agent-home",
+                extraArgs = listOf("--label", "probe=1"),
+                capAdd = listOf("SYS_PTRACE"),
+                rwRootfs = true,
+            ),
+            file.sandbox,
+        )
+    }
+
+    @Test
+    fun `the sandbox group is validated for shape only`() {
+        assertEquals(
+            "sandbox must be an object",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": []}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.mountCaches must be a boolean",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"mountCaches": "no"}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.stateDir must be an absolute path, got 'state'",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"stateDir": "state"}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.stateDir must not be the filesystem root",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"stateDir": "/"}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.extraArgs[1] must be a string",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"extraArgs": ["--label", 1]}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.capAdd[0] must not be blank",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"capAdd": ["  "]}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.extraArgs[1] must not be blank",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"extraArgs": ["--label", " "]}}""")
+            }.message,
+        )
+        assertEquals(
+            "sandbox.network must not be blank",
+            assertFailsWith<IllegalArgumentException> {
+                ConfigFile.parse("""{"sandbox": {"network": " "}}""")
+            }.message,
+        )
+    }
+
+    @Test
+    fun `sandbox path values are normalized but never resolved against host facts`() {
+        // Trailing slashes are normalized (never rejected); the directory itself is not
+        // probed here - a host-fact check would fault the containerized agent, which parses
+        // the same mounted file.
+        val file = ConfigFile.parse(
+            """{"sandbox": {"stateDir": "/srv/state/ddr-acp-agent//", "homeVolume": " vol "}}"""
+        )
+        assertEquals("/srv/state/ddr-acp-agent", file.sandbox?.stateDir)
+        assertEquals("vol", file.sandbox?.homeVolume)
     }
 }

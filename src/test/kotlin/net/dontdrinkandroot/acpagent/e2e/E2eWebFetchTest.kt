@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  * Black-box web_fetch: available and prompt-free in plan mode (read-only, no
  * filesystem targets), fetches an HTTP page and returns it as numbered text,
  * with the SSRF guard blocking loopback unless the agent runs with
- * `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1` (the local mock server is the fixture here).
+ * `"tools": {"webFetch": {"allowPrivate": true}}` (the local mock server is the fixture).
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
 class E2eWebFetchTest : E2eAgentTest() {
@@ -57,7 +57,7 @@ class E2eWebFetchTest : E2eAgentTest() {
                 )
             }) {
                 val connection = connect(
-                    extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE" to "1")
+                    configJson = """{"tools": {"webFetch": {"allowPrivate": true}}}"""
                 )
                 try {
                     connection.client.initialize(testClientInfo())

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Direct entry point (no sandbox): build the JVM distribution from this checkout and exec the
+# agent. The embedded Gradle output goes to stderr - stdout is the ACP NDJSON stream.
+set -euo pipefail
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+
+printf '%s\n' 'Building agent (installDist)...' >&2
+(cd "$repo_root" && ./gradlew --no-daemon --quiet --console=plain installDist) >&2
+
+exec "$repo_root/build/install/acp-agent/bin/acp-agent" "$@"

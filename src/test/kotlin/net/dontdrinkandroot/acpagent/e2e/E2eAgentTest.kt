@@ -16,10 +16,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.config.APP_STATE_DIR
+import net.dontdrinkandroot.acpagent.config.Config
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,6 +26,14 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+
+/**
+ * The variable the harness plants in the agent's own environment to pin the MCP child env
+ * allowlist (issue #14): no agent variable carries a secret any more (the config is
+ * file-only), so a harness-owned sentinel is the thing that must not be inherited. Also read
+ * by [StdioMcpMockServer], which runs in a separate JVM.
+ */
+internal const val AGENT_ENV_SENTINEL: String = "ACP_E2E_AGENT_SENTINEL"
 
 /**
  * Shared harness for the black-box e2e scenarios: drives the linked installDist
@@ -77,10 +84,16 @@ abstract class E2eAgentTest {
         val llmMock: MockOpenAiServer,
     ) {
         val stateHome: File get() = stateDir.toFile()
-        val sessionsStoreDir: Path = stateDir.resolve("ddr-acp-agent").resolve("sessions")
+        val sessionsStoreDir: Path = stateDir.resolve(APP_STATE_DIR).resolve("sessions")
 
-        suspend fun connect(extraEnv: Map<String, String> = emptyMap(), workingDir: File? = null): AgentConnection =
-            startConnectedAgent(llmMock.port, stateHome, extraEnv, workingDir)
+        /**
+         * Starts an agent against this context. [configJson] is a JSON object *fragment*
+         * deep-merged over the harness base config (LLM endpoint + model), written into the
+         * isolated config directory - the agent is configured exclusively through that file
+         * (issue #84: no agent settings come from the environment any more).
+         */
+        suspend fun connect(configJson: String? = null, workingDir: File? = null): AgentConnection =
+            startConnectedAgent(llmMock.port, stateHome, configJson, workingDir)
     }
 
     /**
@@ -120,7 +133,12 @@ abstract class E2eAgentTest {
     internal fun startAgent(
         llmPort: Int,
         xdgStateHome: File? = null,
-        extraEnv: Map<String, String> = emptyMap(),
+        /**
+         * A JSON object fragment deep-merged over the harness base config, e.g.
+         * `{"tools": {"maxTurnRequests": 3}}`. The agent reads its settings from
+         * `config.json` only (issue #84).
+         */
+        configJson: String? = null,
         /**
          * The agent process's own working directory. Scenarios that pin a
          * session-scoped child process (stdio MCP servers, issue #74) must set
@@ -129,53 +147,87 @@ abstract class E2eAgentTest {
          */
         workingDir: File? = null,
     ): Process {
+        // An isolated config home: no host config.json, no host key may leak in. The agent
+        // resolves `$XDG_CONFIG_HOME/ddr-acp-agent`; the key sits at its default location
+        // there as a 0600 file (issue #50). One directory per launched agent, removed at JVM
+        // exit (a scenario restarts the agent, so each start gets its own).
+        val configHome = Files.createTempDirectory("acp-e2e-config").toFile()
+        val configDir = configHome.resolve(Config.APP_CONFIG_DIR).apply { mkdirs() }
+        val keyFile = configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME)
+        keyFile.writeText("sk-test-phase4\n")
+        Files.setPosixFilePermissions(
+            keyFile.toPath(),
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+        )
+        configDir.resolve(Config.CONFIG_FILE_NAME).writeText(
+            harnessConfig(llmPort, configJson?.let { Json.parseToJsonElement(it).jsonObject })
+        )
+        configHome.deleteOnExitRecursively()
         return ProcessBuilder(binaryPath)
             .apply {
                 workingDir?.let { directory(it) }
-                // The key is delivered the only way the agent accepts one: as a
-                // 0600 file (issue #50).
-                val keyFile = Files.createTempFile("acp-e2e-key", ".txt").toFile().apply { deleteOnExit() }
-                keyFile.writeText("sk-test-phase4\n")
-                Files.setPosixFilePermissions(
-                    keyFile.toPath(),
-                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
-                )
-                // An isolated config dir: no host config.json, no host key may leak in.
-                val configDir = Files.createTempDirectory("acp-e2e-config").toFile().apply { deleteOnExit() }
-                // The agent's whole config surface is the DDR_ACP_AGENT_* family (issue #50), so an
-                // ambient value (e.g. a docker launcher forwarding
-                // DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES, or a locally exported
-                // DDR_ACP_AGENT_TOOLS_FS_PROXY=0) would silently override what a scenario configures
-                // via XDG_CONFIG_HOME or expects to be the default. Strip the family, then apply the
-                // harness values; scenarios opt in via extraEnv, which wins below.
+                // The agent's settings are file-only; the family is stripped so a leaked
+                // ambient value cannot masquerade as configuration (it is inert anyway).
                 environment().keys.removeIf { it.startsWith("DDR_ACP_AGENT_") }
-                environment()["XDG_CONFIG_HOME"] = configDir.absolutePath
-                environment()["DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE"] = keyFile.absolutePath
-                environment()["DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL"] = "http://127.0.0.1:$llmPort"
-                environment()["DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL"] = "test-model"
+                environment()["XDG_CONFIG_HOME"] = configHome.absolutePath
                 if (xdgStateHome != null) environment()["XDG_STATE_HOME"] = xdgStateHome.absolutePath
+                environment()[AGENT_ENV_SENTINEL] = "secret-sentinel"
                 // A leaked key location would fail Config.load loudly at agent startup, hanging the
                 // client-side initialize.
                 environment().remove("OPENROUTER_API_KEY")
                 environment().remove("OPENROUTER_API_KEY_FILE")
                 environment().remove("OPENROUTER_BASE_URL")
                 environment().remove("OPENROUTER_MODEL")
-                // Any ambient legacy rename leftovers must not affect the new layering.
+                // Any ambient legacy rename leftovers must not affect the layering.
                 listOf(
                     "FS_PROXY_ENABLED", "MCP_TRUST_ANNOTATIONS", "ACP_BASH_TIMEOUT_SECONDS",
                     "ACP_MAX_TURN_REQUESTS", "ACP_WEB_FETCH_ALLOW_PRIVATE", "ACP_EXTRA_MOUNTS",
                 ).forEach { environment().remove(it) }
-                extraEnv.forEach { (key, value) -> environment()[key] = value }
             }
             .start()
     }
 
+    /**
+     * Registers this file/directory and every descendant for deletion at JVM exit. Children are
+     * registered after their parent, and the JVM deletes in reverse registration order, so the
+     * directory is removed after its content (a plain `deleteOnExit` on the directory would
+     * leave the tree behind).
+     */
+    private fun File.deleteOnExitRecursively() {
+        deleteOnExit()
+        listFiles()?.forEach { it.deleteOnExitRecursively() }
+    }
+
+    /** The harness base config, with [override] deep-merged over it. */
+    private fun harnessConfig(llmPort: Int, override: JsonObject?): String {
+        val base = buildJsonObject {
+            putJsonObject("openRouter") {
+                put("baseUrl", "http://127.0.0.1:$llmPort")
+                put("defaultModel", "test-model")
+            }
+        }
+        return Json.encodeToString(JsonObject.serializer(), deepMerge(base, override ?: JsonObject(emptyMap())))
+    }
+
+    private fun deepMerge(base: JsonObject, override: JsonObject): JsonObject =
+        buildJsonObject {
+            (base.keys + override.keys).forEach { key ->
+                val baseValue = base[key]
+                val overrideValue = override[key]
+                when {
+                    baseValue is JsonObject && overrideValue is JsonObject -> put(key, deepMerge(baseValue, overrideValue))
+                    overrideValue != null -> put(key, overrideValue)
+                    else -> put(key, baseValue!!)
+                }
+            }
+        }
+
     internal suspend fun startConnectedAgent(
         llmPort: Int,
         xdgStateHome: File,
-        extraEnv: Map<String, String> = emptyMap(),
+        configJson: String? = null,
         workingDir: File? = null,
-    ): AgentConnection = connectProcess(startAgent(llmPort, xdgStateHome, extraEnv, workingDir))
+    ): AgentConnection = connectProcess(startAgent(llmPort, xdgStateHome, configJson, workingDir))
 
     /**
      * Wraps an already started agent [process] in the real ACP client. Split out

@@ -142,7 +142,7 @@ class E2eWireConformanceTest : E2eAgentTest() {
             val agentInfo = client.initialize(testClientInfo())
             val agentImplementation = agentInfo.implementation
             assertNotNull(agentImplementation)
-            assertEquals("acp-agent.kotlin", agentImplementation.name)
+            assertEquals("acp-agent", agentImplementation.name)
             // Version negotiation (spec MUST): the client asked for v1, so the agent must
             // answer with that same version.
             assertEquals(1, agentInfo.protocolVersion, "the agent must echo the requested protocol version")

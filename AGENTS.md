@@ -4,13 +4,15 @@ Guidance for AI coding agents working in this repository.
 
 ## Project overview
 
-`acp-agent.kotlin` is a coding agent that talks to JetBrains IDEs (IntelliJ IDEA,
-PhpStorm, etc.) exclusively over the **Agent Client Protocol (ACP)** - a JSON-RPC 2.0 /
-NDJSON protocol over stdio. There is **no GUI/TUI**; the agent is launched by the IDE as a
+This repository (`acp-agent.kotlin`) holds `acp-agent`, a coding agent that talks to JetBrains
+IDEs (IntelliJ IDEA, PhpStorm, etc.) exclusively over the **Agent Client Protocol (ACP)** - a
+JSON-RPC 2.0 / NDJSON protocol over stdio. There is **no GUI/TUI**; the agent is launched by the IDE as a
 subprocess and driven via `stdin`/`stdout`.
 
 The agent acts strictly as an ACP **agent**: it only *consumes* ACP, never acts as a
 client/IDE, and never exposes an MCP server - it only *consumes* MCP servers.
+
+The target platform is Linux only.
 
 ## Tech stack
 
@@ -69,9 +71,13 @@ issue #75), so the LLM contract is ours (see the LLM provider bullet under Bound
 * `_meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
 * Secrets never come from env vars: the OpenRouter key is read from an **owner-only file**
   (`0600`/`0400`, issue #50) - resolution order and the redacting `Secret` holder are under
-  Configuration. Never commit or print a key; the docker launcher reads no key variable at
+  Configuration. Never commit or print a key; the sandbox supervisor reads no key variable at
   all, so a key value never reaches the agent env, a `set -x` trace, an `env` dump,
   `/proc/*/environ` or the docker CLI argv.
+* The agent's configuration is **file-only** (issue #84): every setting comes from the
+  selected `config.json`, `--profile <name>` is the only startup argument, and the
+  `DDR_ACP_AGENT_*` family is dead - not read, no warning. Do not reintroduce an env layer
+  ("docker convenience" included); the sandbox supervisor reads the same file on the host.
 * `build/` is generated output - never edit or commit it.
 * **Never commit without the user requesting it**: the agent must not run
   `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
@@ -93,17 +99,22 @@ prompt from `<cwd>/.ai/run.json` on every turn (name, command, description, re-r
 so `run` is the source of truth, and they are managed with `list_run_configs` /
 `create_run_config` / `update_run_config` / `delete_run_config` (mechanics under Features / Run
 configurations).
-Project wiring worth knowing: `test_scripts` runs `tests/bash/run-all` and is wired into Gradle
-`check` as the `testScripts` Exec task, `show_failures` is backed by
+Project wiring worth knowing: `show_failures` is backed by
 `.ai/scripts/show-test-failures.sh`, and `system_prompt` runs the `printSystemPrompt` JavaExec
 task (`agent/SystemPromptDump.kt`).
 
-The launchers take no configuration flags; configuration comes from `config.json` + the
-`DDR_ACP_AGENT_*` env layer (the docker launcher mounts the host config directory):
+The agent takes only `--profile <name>`; configuration comes from the selected
+`config.json` (the sandbox mounts the host config directory). Entry points (checked in, the
+only supported launch paths):
 
-- `./ddr-acp-agent` — direct (no docker); always runs `installDist` first, then execs the launcher
-- `./ddr-acp-agent-docker` — sandboxed Docker run (see Features / README); `--skip-pull` skips the
-  image pull, every other argument is forwarded to the agent
+- `bin/acp-agent` — direct (no sandbox); always runs `installDist` first, then execs the agent
+- `bin/acp-agent-sandbox` — builds `installDist`, ensures the image (`--rebuild` forces a local
+  build; a manual `docker pull` updates it - the wrapper never pulls) and execs the Kotlin
+  supervisor, which relays ACP over the container's stdio untouched. Every other argument is
+  forwarded to the agent (`--profile` is parsed on both sides).
+
+Docker is resolved from `PATH` everywhere (wrapper, `build-docker`, supervisor); an
+IDE-inherited `PATH` without docker is a hard failure, not a configurable case.
 
 **Library-source investigation**: the `sources` run config (`./gradlew unpackLibrarySources`
 backed by the `downloadLibrarySources` + `unpackLibrarySources` Sync tasks in
@@ -142,18 +153,27 @@ cancelled turn's own persist races the JVM exit, the flush does not; issue #17),
 
 ```
 src/main/kotlin/net/dontdrinkandroot/acpagent/
-    Main.kt                          # `main` (logging setup) + `runAgent`: registry, session
-                                     # factory (AgentSessionFactory: create/restore), store
-                                     # wiring, transport, isoDateToday
+    Main.kt                          # `main` (logging setup, strict argument parsing) +
+                                     # `runAgent`: registry, session factory
+                                     # (AgentSessionFactory: create/restore), store wiring,
+                                     # transport, isoDateToday
     BuildInfo.kt                     # build commit hash from git.properties (classpath) + the
                                      # agent version (announced in initialize and shown by /info)
-    config/Config.kt                 # resolved config: Config.load layering (env >
-                                     # config.json > defaults), EnvValues accessors,
-                                     # key-file resolution + owner-only check, the resolved
-                                     # key file path (Config.openRouterApiKeyFile, never the key)
-    config/ConfigFile.kt             # strict config.json parser (ConfigFile, UnlistedPaths,
-                                     # path/scratch validation shared with the env layer)
-    config/PlatformEnv.kt            # platformEnv(): System.getenv() env source for config
+    config/Config.kt                 # resolved config: Config.load (config.json > defaults),
+                                     # profile selection, key-file resolution + owner-only
+                                     # check, the resolved key file path
+                                     # (Config.openRouterApiKeyFile, never the key)
+    config/ConfigFile.kt             # strict config.json parser (ConfigFile incl. the
+                                     # shape-only `sandbox` group, UnlistedPaths,
+                                     # path/scratch/mount-path validation)
+    config/AgentArguments.kt         # the strict `--profile <name>` parser + profileFileName
+                                     # (the .json convention, single definition); the sandbox
+                                     # supervisor reuses both
+    config/PlatformEnv.kt            # platformEnv(): System.getenv() source - only XDG_CONFIG_HOME
+                                     # (and the state-home resolver's XDG_STATE_HOME) are read
+    config/StateHome.kt              # stateHome(env, home): the XDG state root, shared by the
+                                     # session store and the sandbox plan (one rule, two readers);
+                                     # APP_STATE_DIR is the `ddr-acp-agent` directory name
     config/Secret.kt                 # Secret value class: renders *** everywhere, .value is
                                      # the explicit accessor (issue #78 - Config stays loggable)
     llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
@@ -176,6 +196,23 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE;
                                      # stdio children get the session cwd + a built env
                                      # allowlist, never the agent env - issues #74, #14)
+    sandbox/SandboxPlan.kt           # sandbox models (issue #84): SandboxSettings (the
+                                     # `sandbox` config group, shape-only validated), HostFacts
+                                     # (uid/gid, cwd, XDG roots + the resolved config dir, git
+                                     # identity, tool env), SandboxSpec (the composer's input
+                                     # incl. the per-run mask file), the typed mount/env types,
+                                     # SandboxPlan and the container path constants;
+                                     # SANDBOX_IMAGE is the fixed tag
+    sandbox/SandboxPlanResolution.kt # resolveSandboxPlan: the only host-I/O site (probes,
+                                     # creation, skip warnings, fail-loudly config), typed plan
+    sandbox/DockerInvocation.kt      # composeDockerInvocation: the pure argv renderer (typed
+                                     # lists, no concatenation/word splitting)
+    sandbox/HostEnvironment.kt       # supervisor inputs: host facts (UnixSystem ids, shared
+                                     # stateHome/configDir resolvers, git identity, tool-env
+                                     # allowlist) + the config read without the API key
+    sandbox/SandboxMain.kt           # the `acp-agent-sandbox` entry point: resolve -> compose
+                                     # -> docker run, byte pumps, stdin half-close, signal
+                                     # forwarding, exit-code propagation, docker from PATH
     agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
                                      # model, reasoning, provider, toolOutcomes:
                                      # toolCallId -> completed|failed)
@@ -311,6 +348,27 @@ src/main/kotlin/net/dontdrinkandroot/acpagent/
     tools/DeleteDirectoryTool.kt     # delete_directory tool; symlink-safe recursive delete
                                      # (containsSymlink/deleteRecursively helpers)
 src/test/kotlin/                              # unit tests + black-box e2e harness
+    net/dontdrinkandroot/acpagent/sandbox/
+        FakeDocker.kt                # fixture docker CLI (resources sandbox/fake-docker)
+                                     # installed into a fixture PATH dir; records every argv
+                                     # losslessly (per-token lines, backslash/newline escaped)
+                                     # and echoes stdin for relay tests
+        SandboxPinSupport.kt         # the pin vocabulary: PinCase, token-level
+                                     # ArgvExpectations, fixture facts
+                                     # (uid=1001, /fixtures/...)
+        SandboxPinRows.kt            # `object SandboxPins` + the rows: ported rows + promoted
+                                     # rows, permission and config mounts, the --env allowlist
+                                     # closure, --profile; coverage invariant in the KDoc
+        FixtureProbes.kt             # HostProbes over a declared fixture tree, so the pin
+                                     # table resolves the plan without host I/O
+        SandboxCompositionPinTest.kt # drives every row through resolveSandboxPlan +
+                                     # composeDockerInvocation
+        SandboxPlanTest.kt           # typed plan level: skip warnings, tiers, ordering
+        SandboxFailLoudlyTest.kt     # every fail-loudly path, before any docker run
+        SandboxSupervisorTest.kt     # installed-supervisor process contract (relay,
+                                     # half-close, signals, exit code, 127, args, profile,
+                                     # uid/gid)
+        DockerfileBuildInputsTest.kt # Dockerfile COPY allowlist + ENTRYPOINT path pin
     net/dontdrinkandroot/acpagent/e2e/
         E2eAgentTest.kt              # abstract base: process/stdio transport harness, temp-dir
                                      # lifecycle (withE2eAgent), connect helpers (connectProcess
@@ -369,6 +427,9 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
         E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
                                      # (image data URI, inlined text resource, resource_link
                                      # markdown link)
+        E2eStartupArgumentsTest.kt   # process-level startup contract: strict argument
+                                     # parsing (--profil / --skip-pull -> exit 2) and
+                                     # --profile selecting the file that is read
         E2eInfoCommandTest.kt        # the /info slash command: advertisement on session
                                      # setup, one-chunk Markdown reply with the resolved
                                      # config, zero LLM calls, no record, the discarded-text
@@ -422,89 +483,91 @@ src/test/kotlin/                              # unit tests + black-box e2e harne
                                      # MockMcpSseServer: read-only prompt-free, unannotated
                                      # prompts + executes, McpServer.Sse.headers forwarded
         E2eWebFetchTest.kt           # web_fetch: prompt-free plan-mode fetch with
-                                     # DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1,
+                                     # tools.webFetch.allowPrivate=true in config.json,
                                      # loopback refusal without it
-README.md                               # user-facing readme (install, IDE setup, config, troubleshooting)
+README.md                               # user-facing readme (install, IDE setup, config,
+                                        # migration from the bash launcher, troubleshooting)
 Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
-ddr-acp-agent                           # direct launcher (no docker): always runs installDist
-                                        # first, then execs the binary; embedded Gradle stdout
-                                        # is redirected to stderr
-ddr-acp-agent-docker                    # docker launcher: sandboxed `docker run` for the agent
+bin/acp-agent                           # direct entry point (no sandbox): installDist, then
+                                        # execs the agent; Gradle stdout is redirected to stderr
+bin/acp-agent-sandbox                   # sandbox entry point: installDist, image provisioning
+                                        # (docker image inspect / --rebuild / build-docker),
+                                        # then execs the supervisor
 build-docker                            # local image build script (tags
-                                        # ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest)
-tests/bash/                             # shell test suite (launcher composition; run via
-                                        # `test_scripts` / Gradle `testScripts`): harness.sh
-                                        # (assert lib), common.sh (launcher invocation +
-                                        # sandbox under build/), stubs/fake-docker (DOCKER_BIN
-                                        # stub recording argv; pull/inspect exit switches),
-                                        # test_permission_mounts/test_config_mounts/
-                                        # test_launcher_args/test_error_paths/test_dockerfile/
-                                        # test_harness + run-all
+                                        # ghcr.io/dontdrinkandroot/acp-agent:latest)
 .github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
 .dockerignore                           # build context exclusions (.git, build/, .gradle/)
 .ai/run.json                            # run configurations (injected into the system prompt
                                         # each turn; mechanics: Features / Run configurations)
-.ai/scripts/gradle-unstick              # Gradle lock-timeout diagnosis/wipe (run configs
-                                        # `gradleUnstick` / `gradleUnstickWipe`)
 .ai/scripts/show-test-failures.sh       # failure messages from the latest JUnit XML
                                         # (run config `show_failures`)
 ```
 
-### Configuration (config.json + env overrides)
+### Configuration (config.json, file-only)
 
-Layered, resolved once at startup (`Config.load`, no live reload):
-**built-in defaults < `$XDG_CONFIG_HOME/ddr-acp-agent/config.json` < env**.
-`DDR_ACP_AGENT_CONFIG_FILE` selects another **file name inside that directory**
-(a "profile" such as `work.json`; bare name, no path — that keeps the value
-meaningful inside the docker container, whose `XDG_CONFIG_HOME` is pinned and
-whose config directory is a bind mount). A selected file must exist, a missing
-default file means "all defaults".
-`ConfigFile.parse` (`config/ConfigFile.kt`) is strict: typed values, ranges, no
-clamping, unknown keys ignored, errors name the JSON path (`tools.bash.timeoutSeconds
-must be between 1 and 3600, got -5`). Env names derive from the config path (`Config.envName`: camelCase -> UPPER_SNAKE
-per segment, prefix
-`DDR_ACP_AGENT_`), so `tools.bash.timeoutSeconds` ->
-`DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`, `scratchDir` ->
-`DDR_ACP_AGENT_SCRATCH_DIR` (unchanged). Legacy names (`OPENROUTER_*`,
-`FS_PROXY_ENABLED`, `ACP_*`) are **dead** - not read, no warning (issue #50); the
-launcher's own knobs follow the same scheme as `DDR_ACP_AGENT_DOCKER_*`, and their
-legacy `ACP_DOCKER_*` spellings are dead too (no warning, pinned inert by the shell
-suite) - they are carved out of the agent env prefix forwarding, so a knob never
-reaches the agent.
+Resolved once at startup (`Config.load`, no live reload): **built-in defaults <
+`$XDG_CONFIG_HOME/ddr-acp-agent/config.json`**. The configuration is **file-only** (issue
+#84) - no environment variable supplies, selects or overrides a setting; `--profile <name>`
+(`config/AgentArguments.kt`) is the only startup argument. A profile selects `<name>.json` in
+the config directory (`work` -> `work.json`; bare name, no path, `.json` suffix rejected -
+the convention is `profileFileName`, the single definition the sandbox supervisor reuses), so
+it resolves identically on the host and inside the docker container. A selected profile must
+exist, a missing default file means "all defaults". The parser is **strict**: an unknown
+argument (a mistyped `--profil`, the removed `--skip-pull`) exits with code 2 and names it,
+so a typo can never silently run on the default profile (`AgentArgumentsTest`,
+`E2eStartupArgumentsTest`). Everything else in the process
+environment is inert as agent config: `DDR_ACP_AGENT_*` (current and legacy spellings such as
+`OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_*`) is not read and produces no warning.
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `TZ`, `HOME` and the tool variables (`UV_CACHE_DIR`,
+`GRADLE_USER_HOME`, `ANDROID_HOME`, ...) remain - they are standard variables, host facts or
+the tools' own configuration, not agent config.
 
-| Config path                        | Env                                                 |
-|------------------------------------|-----------------------------------------------------|
-| `openRouter.apiKeyFile`            | `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`            |
-| `openRouter.defaultModel`          | `DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL`           |
-| `openRouter.baseUrl`               | `DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL`                |
-| `openRouter.autoThroughputSorting` | `DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING` |
-| `tools.maxTurnRequests`            | `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`             |
-| `tools.fsProxy`                    | `DDR_ACP_AGENT_TOOLS_FS_PROXY`                      |
-| `tools.bash.timeoutSeconds`        | `DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`          |
-| `tools.webFetch.allowPrivate`      | `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE`       |
-| `mcp.trustAnnotations`             | `DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS`               |
-| `permissions.readableDirectories`  | `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`    |
-| `permissions.writableDirectories`  | `DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES`    |
-| `permissions.unlistedPaths`        | `DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS`          |
-| `scratchDir`                       | `DDR_ACP_AGENT_SCRATCH_DIR`                         |
+`ConfigFile.parse` (`config/ConfigFile.kt`) is strict: typed values, ranges, no clamping,
+unknown keys ignored, errors name the JSON path (`tools.bash.timeoutSeconds must be between 1
+and 3600, got -5`). Value rules: booleans are JSON booleans in the file, numbers are strict
+with the documented ranges (never clamped), path lists are absolute-only (relative entries
+are an error) with trailing slashes normalized (so `/srv/` and `/srv` collapse to one entry),
+deduped, and a missing directory only warns.
 
-Value rules (both layers): booleans accept `1/true/yes/on` | `0/false/no/off`
-(case-insensitive, anything else is an error - a typo must not silently disable
-a safety feature), numbers are strict with the documented ranges (never clamped),
-path lists are absolute-only (relative entries are
-an error), comma-separated in env, deduped, and a missing directory only warns.
+| Config path                        | Default                        | Meaning                                                                                             |
+|------------------------------------|--------------------------------|-----------------------------------------------------------------------------------------------------|
+| `openRouter.apiKeyFile`            | *(see API key)*                | File holding the API key.                                                                           |
+| `openRouter.defaultModel`          | `openrouter/auto`              | Initial model; switchable per session.                                                              |
+| `openRouter.baseUrl`               | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint.                                                                         |
+| `openRouter.autoThroughputSorting` | `true`                         | `false` disables automatic provider routing.                                                        |
+| `tools.maxTurnRequests`            | `100`                          | Tool-calling LLM iterations per prompt (>= 1).                                                      |
+| `tools.fsProxy`                    | `true`                         | `false` forces the local file store.                                                                |
+| `tools.bash.timeoutSeconds`        | `600`                          | Shell command timeout, 1..3600.                                                                     |
+| `tools.webFetch.allowPrivate`      | `false`                        | Allow non-public HTTP targets.                                                                      |
+| `mcp.trustAnnotations`             | `true`                         | `false` treats all MCP tools as untrusted.                                                          |
+| `permissions.readableDirectories`  | *(none)*                       | Prompt-free read roots.                                                                             |
+| `permissions.writableDirectories`  | *(none)*                       | Prompt-free write roots (implies readable).                                                         |
+| `permissions.unlistedPaths`        | `prompt`                       | `prompt` or `deny` for uncovered paths.                                                             |
+| `scratchDir`                       | `/tmp/ddr-acp-agent`           | The agent's scratch directory (read-trusted, never cleaned).                                        |
+
+**`sandbox` group (shape only, no agent field).** `ConfigFile.Sandbox` holds the supervisor's
+settings - `network` (default `host`), `stateDir` (nullable: host-resolved default
+`$XDG_STATE_HOME/ddr-acp-agent`), `mountCaches`, `homeVolume`, `extraArgs`, `capAdd`,
+`rwRootfs`. It is validated for **shape only** in the shared parser - types, absolute-path
+form (`stateDir` never `/`, trailing slashes normalized), lists of strings, errors naming the
+JSON path - and the agent's `Config` deliberately carries no sandbox field. The rule: **no
+`sandbox` key is validated against a host fact in the shared parser**; everything needing a
+host fact (creating `stateDir`, probing caches, mount sources existing) belongs to the sandbox
+plan resolution on the host. That is what keeps the group invisible to the containerized
+agent: the host `config.json` is mounted read-only there, so its `sandbox` keys are parseable
+but can never fault the agent with a host path. Pinned by `ConfigFileTest` (shape errors) and
+`ConfigTest` (`sandbox keys parse but cannot fault the agent`).
 
 **API key: file only.** No variable ever holds the key itself. Resolution order
-`DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE` > `openRouter.apiKeyFile` >
-`<config dir>/openrouter.key` > fail listing the tried sources. Every key file
-must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
-refused with the path (`requireOwnerOnly` in `Config.kt`). The resolved value is
-held as a `Secret` (`config/Secret.kt`, issue #78): `Config` stays freely
-loggable - every implicit rendering (`toString`, string interpolation, a
-data-class dump) prints `***` - and only an explicit `.value` reaches the key (the single
-production site is the `LlmClient` hand-off in `Main.kt`). Under the docker launcher the
-host config directory is mounted read-only at the container's own config directory (see
-Docker sandbox), which is the agent's only key source there.
+`openRouter.apiKeyFile` > `<config dir>/openrouter.key` > fail listing the tried sources.
+Every key file must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
+refused with the path (`requireOwnerOnly` in `Config.kt`). The resolved value is held as a
+`Secret` (`config/Secret.kt`, issue #78): `Config` stays freely loggable - every implicit
+rendering (`toString`, string interpolation, a data-class dump) prints `***` - and only an
+explicit `.value` reaches the key (the single production site is the `LlmClient` hand-off in
+`Main.kt`). Under the docker sandbox the host config directory is mounted read-only at the
+container's own config directory (see Docker sandbox), which is the agent's only key source
+there.
 
 **Directory permission tiers** (`agent/PermissionPolicy.kt`, `permissionDecision`):
 the session cwd is implicitly read+write; `readableDirectories` covers the
@@ -512,17 +575,17 @@ read-only path tools, `writableDirectories` the mutating ones (writable implies
 readable); everything else follows `unlistedPaths` (`prompt` = the
 `session/request_permission` prompt, `deny` = hard refusal naming the config entry,
 `unlistedPathRefusal`). A partially covered call (one target in, one out) is
-unlisted. `bash`, `run` and MCP tools are unaffected. Under the docker launcher
+unlisted. `bash`, `run` and MCP tools are unaffected. Under the docker sandbox
 the two lists **are the mount list** (readable mounted `:ro`, writable rw, at
-the identical in-container path), so the env layer is the docker source and the
-`config.json` lists are direct-run only.
+the identical in-container path) - one config file, two readers (agent and
+supervisor), so the trust domain and the mounts cannot drift apart.
 
-- `DDR_ACP_AGENT_SCRATCH_DIR`: the agent's own scratch directory (default
+- `scratchDir`: the agent's own scratch directory (default
   `/tmp/ddr-acp-agent`), read-trusted like a readable directory but a separate config field -
   it is never part of `permissions.readableDirectories`. Must be absolute and must not be `/`.
-  Never cleaned up. The docker launcher forwards it verbatim and never mounts it - inside
-  the container the path lives on the ephemeral `/tmp` tmpfs, so scratch content is
-  per-container-session. Creation/verification at session assembly: see Features / Permissions.
+  Never cleaned up. The sandbox never mounts it - the agent reads the configured value from
+  the mounted `config.json`, and inside the container the path lives on the ephemeral `/tmp`
+  tmpfs, so scratch content is per-container-session. Creation/verification at session assembly: see Features / Permissions.
 
 ## Features
 
@@ -648,7 +711,7 @@ the identical in-container path), so the env layer is the docker source and the
 ### Modes & agent loop
 
 - **Agent loop**: up to `tools.maxTurnRequests` tool-calling LLM iterations per prompt (default 100,
-  `DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS`, rejected below 1); text streamed as `AgentMessageChunk`,
+  rejected below 1 when the file is parsed); text streamed as `AgentMessageChunk`,
   tool-call deltas merged, results appended to history; a turn stops on `END_TURN` (no tool call) or,
   when the iteration budget is exhausted while the model kept calling tools, streams one final
   text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
@@ -1082,7 +1145,7 @@ the identical in-container path), so the env layer is the docker source and the
   against the session cwd so a symlink escape still gates); writes/moves/deletes under it
   always prompt. **The agent's own scratch directory is
   read-trusted like a readable directory**
-  (`Config.scratchDir`, env `DDR_ACP_AGENT_SCRATCH_DIR`, default `/tmp/ddr-acp-agent`,
+  (`Config.scratchDir`, config key `scratchDir`, default `/tmp/ddr-acp-agent`,
   issue #10): `AgentSessionImpl` merges `config.readableDirectories + scratchDir` into one
   `permissionPolicy.readableDirectories` - the single merge point, consumed by
   `permissionDecision` and the
@@ -1097,7 +1160,8 @@ the identical in-container path), so the env layer is the docker source and the
   plan mode stays read-only. Preparation requires a POSIX filesystem (mode + ownership are
   POSIX concepts) and resolves the directory's real path, so a symlinked *parent* cannot
   smuggle the trust root elsewhere. Pinned by `ScratchDirectoryTest`, `ConfigTest` (default,
-  override, absolute/non-root validation, normalization, "not part of readableDirectories"),
+  profile selection, the inert `DDR_ACP_AGENT_*` family, absolute/non-root validation,
+  normalization, "not part of readableDirectories", sandbox keys cannot fault the agent),
   `PermissionAndFileStoreTest` (read/grep prompt-free, write still prompts, siblings not
   covered) and `E2eFileStoreTest` (plan-mode grep prompt-free, path surfaced in the prompt,
   a symlinked scratch directory refusing `session/new`).
@@ -1366,138 +1430,145 @@ the identical in-container path), so the env layer is the docker source and the
 ### Docker sandbox
 
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
-  `ghcr.io/dontdrinkandroot/acp-agent.kotlin:latest`; multi-stage Dockerfile (temurin-25
-  builder with BuildKit cache mount, installDist perms normalized -> toolchain base `dev`).
-  The builder stage copies an explicit build-input allowlist (wrapper scripts, wrapper
-  jars, `gradle/libs.versions.toml`, the build scripts, `gradle.properties`, `src/`), so a
-  new file the Gradle build reads must be added to that COPY list; the dockerfile
-  shell test (`tests/bash/test_dockerfile.bash`) pins the allowlist against the real
-  build inputs.
-  The `ddr-acp-agent-docker` launcher runs it hardened: `--cap-drop=ALL` +
-  `no-new-privileges`, read-only rootfs (`DDR_ACP_AGENT_DOCKER_RW_ROOTFS=1` relaxes), tmpfs `/tmp` and
-  **`--network host` by
-  default** (`DDR_ACP_AGENT_DOCKER_NETWORK` restores isolation) with
-  `--add-host=host.docker.internal:127.0.0.1` in host mode /
-  `:host-gateway` on an explicit network (plain Linux daemons do not resolve
+  `ghcr.io/dontdrinkandroot/acp-agent:latest` (the old `acp-agent.kotlin` package is
+  abandoned; the workflow's prune step follows the new name in both API paths); multi-stage
+  Dockerfile (temurin-25 builder with BuildKit cache mount, installDist perms normalized ->
+  toolchain base `dev`). The builder stage copies an explicit build-input allowlist (wrapper
+  scripts, wrapper jars, `gradle/libs.versions.toml`, the build scripts, `gradle.properties`,
+  `src/`), so a new file the Gradle build reads must be added to that COPY list;
+  `DockerfileBuildInputsTest` pins the allowlist against the real build inputs and the
+  `ENTRYPOINT` path. The image ships both entry points under `/opt/acp-agent` (one `lib/`).
+- **Entry points and image provisioning**: `bin/acp-agent` (direct) and
+  `bin/acp-agent-sandbox` (sandbox). The sandbox wrapper builds `installDist`, runs
+  `docker image inspect` and builds the image via `build-docker` when it is missing or when
+  `--rebuild` is given - **it never pulls**: updating the upstream image is a manual
+  `docker pull`, after which the inspect succeeds and the build is skipped (README states
+  "profiles need `--rebuild` once" next to it, since a pre-change image ignores argv). The
+  wrapper is deliberately untested (its remaining logic is a handful of lines and a bug
+  surfaces at first launch; tests would nest `installDist`).
+- **The supervisor** (`sandbox/SandboxMain.kt`, the `acp-agent-sandbox` entry point):
+  resolve -> compose -> spawn `docker run`; explicit pumps (child stdout to our stdout, child
+  stderr to our stderr - never merged), stdin pumped until EOF and then **half-closed**
+  (never kills the container, so the agent's shutdown flush can finish), a shutdown hook
+  forwards SIGTERM/SIGINT with a bounded wait, `--rm` reaps, the mask temp file is removed,
+  the child's exit code is propagated. It **never parses ACP** and every byte it produces
+  goes to stderr. Docker is resolved from `PATH`; an unresolvable CLI exits 127 with a named
+  message instead of a raw `IOException`. Strict arguments: the removed `--skip-pull` is not
+  special-cased (exit 2). `--profile <name>` is parsed by both sides (the supervisor needs the
+  same file to compose the mounts) and forwarded verbatim into the agent argv. **The launch cwd
+  is assumed to equal the session cwd** (nothing enforces it): the project bind and
+  `--workdir` are composed from it, and the later per-project config depends on it too.
+- **Composition is a pure function**: `resolveSandboxPlan` (`sandbox/SandboxPlanResolution.kt`,
+  the only place with host I/O: probes/creation via `HostProbes`) produces typed mounts, tmpfs
+  specs, env entries and typed warnings; `composeDockerInvocation`
+  (`sandbox/DockerInvocation.kt`) renders the argv - no string concatenation, no word
+  splitting (`extraArgs`/`capAdd` are typed lists). Pinned by the 49-row table (see Testing),
+  rows against fixture facts only.
+- **Hardening** (unchanged from the script): `--cap-drop=ALL` + `no-new-privileges`,
+  read-only rootfs (`sandbox.rwRootfs: true` relaxes), tmpfs `/tmp`, `--user host-uid:gid`
+  (the *real* ids via `UnixSystem`; `id -u`/`id -g` coincide for a normally launched JVM and
+  are pinned once by the process test). **`--network host` by default**
+  (`sandbox.network` restores isolation) with `--add-host=host.docker.internal:127.0.0.1` in
+  host mode / `:host-gateway` on an explicit network (plain Linux daemons do not resolve
   `host.docker.internal`; the mapping lets the container reach MCP servers running on the
   host, e.g. the PhpStorm MCP server at `http://host.docker.internal:<port>/sse`). Host
   networking is what makes Gradle's cross-process cache locking work across the host and
-  container daemons (loopback UDP lock handover, see the Gradle lock timeout pitfall) and
-  what lets the container reach host services bound to loopback. The trade-off: no network
-  isolation (ports bound in the container are host ports, host-loopback services are
-  reachable), and Docker's embedded DNS is unavailable (compose service names like
-  `postgres` only resolve on the compose network — with host networking a project's own
-  test config must target `127.0.0.1:<published-port>` instead, e.g. via a
-  `.env.test.local` the project gitignores),
-  tmpfs home (`DDR_ACP_AGENT_DOCKER_HOME_VOLUME` -> named volume) plus uid-mapped tmpfs mounts for
-  `~/.local`, `~/.local/share` and `~/.local/state`: the image has no `~/.local` and a
-  home tmpfs/named volume would shadow it anyway, so runc would create the deep
-  bind-mount mountpoints (session state at `~/.local/state/ddr-acp-agent`, pnpm store)
-  root-owned inside the container and the agent uid could not write anything else
-  under `~/.local`. The state/store binds land on top of these tmpfs mounts (moby
-  composes all mounts shallowest-first into the OCI spec and runc mounts in that
-  order, so CLI argv order is irrelevant - the launcher still emits them in argv
-  order), pinned by the shell suite; non-root user matching host UID/GID,
-  host tool caches shared in (`DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` disables the whole cache
-  composition - no mounts, no cache env, not even validation; issue #51). Two cases:
-  an explicitly configured cache (the tool's env var set, e.g. `UV_CACHE_DIR`) is **identity-bound at the identical
-  in-container path with the env value forwarded
-  verbatim** (the tool's own config already points there and host-created symlinks
-  into the cache keep resolving); set-but-unusable config - relative, `/`,
-  uncreatable - fails loudly before any `docker run`, and the env value is forwarded
-  even when the mount is skipped (inside the project dir, deduped dst).
-  `UV_LINK_MODE` is forwarded when set (hosts use `symlink` for cross-device cache
-  layouts). Without an env var, the first existing host default (e.g.
-  `$XDG_CACHE_HOME/uv`, never created) is mounted at the tool's in-container default
-  with the env var pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`,
-  `UV_CACHE_DIR` -> `~/.cache/uv`, ...) - relocation stays necessary there because
-  the container home differs from the host home. **pnpm** is a regular tool cache:
-  `PNPM_CONFIG_STORE_DIR`/`PNPM_CONFIG_CACHE_DIR` (pnpm reads `pnpm_config_*`/
-  `PNPM_CONFIG_*` env vars, pnpm.io/configuring) go through the same explicit/fallback
-  policy as the other tool caches,
-  and `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` is forwarded when set (it makes
-  `node_modules` symlink into the shared store, so host and container projects only
-  share one layout when it travels with the identity-bound store). `PNPM_HOME` is
-  deliberately **not** forwarded (it points at the host's standalone pnpm install,
-  which the container does not have). **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is
-  *not*
-  shared (one daemon registry + logs across the host and container PID namespaces would
-  let probing clients prune each other's daemons and `gradle --stop` kill both sides'
-  daemons). Instead the GUH root is a container-private uid-mapped `.gradle` tmpfs (holding `daemon/`, `.tmp`,
-  `kotlin/`, `native/`), and everything Gradle documents
-  as a *cache* (docs: `directory_layout`, "Shared caches" / "Version-specific caches")
-  is shared rw at its in-container path: `caches/modules-2`, `caches/jars-*`,
-  `caches/build-cache-*`, legacy `caches/transforms-*`, the version-bound
-  `caches/<ver>/transforms` + `caches/<ver>/generated-gradle-jars`, `wrapper/dists`
-  and `jdks` (dependencies, transform output and wrapper dists persist on the host and
-  are shared with host builds; fixes #67 - AGP transform output alone filled the 1 GB
-  caches tmpfs). Everything else stays on the private tmpfs: absolute-path-keyed
-  execution state (`journal-1`/`file-access.bin`, `caches/<ver>/fileHashes`, `jvms`),
-  JVM-sensitive compiled scripts (`kotlin-dsl`, `scripts`) and `caches/<ver>/cc-keystore`
-  - the configuration-cache **encryption key**, which must never leave the container (sharing it would let the sandbox
-    decrypt the host's configuration-cache entries).
-    Each version dir gets its own per-version uid tmpfs (so its private siblings stay
-    writable and private) with the two shared children bound on top; version names are
-    discovered from the digit-named `caches/<ver>` dirs **and** from the shared wrapper
-    dists (`gradle-<version>-<bin|all>`), so a version right after a wrapper upgrade is
-    shared from the first session instead of re-deriving `generated-gradle-jars` +
-    transforms into the tmpfs every time. The `caches/` and `wrapper/` intermediate depths get their own per-depth
-  uid tmpfs (same treatment as the `~/.local` depths): runc creates the missing parents
-  of the leaf bind-mountpoints root-owned inside the root tmpfs, which would otherwise
-  make the versioned `caches/<ver>/` metadata (incl. `jvms/`) and new wrapper state
-  unwritable (observed as `Could not open cache directory ... caches/<ver>/jvms`).
-    All home-side tmpfs mounts (`/home/dev` and the `.gradle` depths incl. the
-    per-version `caches/<ver>` tmpfs) are
-  **exec-allowed** (`exec` appended, overriding docker's `noexec` tmpfs default; moby
-  keeps the seeded `nosuid,nodev` when merging): toolchains execute native binaries
-    extracted into those caches - AGP's AAPT2 from Maven, the compiled Kotlin DSL
-    scripts under `caches/<ver>/kotlin-dsl` and Kotlin/Native under `~/.konan` (when the
-    konan cache is not mounted from the host) - which a bind-mounted home
-    does not restrict (noexec surfaces as
-  `AAPT2 ... Daemon startup failed`, issue #33). `~/.cache` and `~/.local` keep the
-  noexec default (nothing executes from there).
-  `GRADLE_USER_HOME` is always pinned to the private root (tmpfs), independent
-    of `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES`; the leaf binds are gated by it. The host Android SDK
-  follows the same split (issue #51): an explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT`
-  (first one set wins, `ANDROID_HOME` preferred) is identity-bound at the identical
-  in-container path and both variables carry the configured value (the companion
-  synthesized to the same path); a set-but-unusable var - relative, `/`, missing dir -
-  fails loudly before any `docker run`; inside the project dir the mount is skipped
-  and the variables keep the host path. The default candidate (an existing
-  `$HOME/Android/Sdk`, never created) keeps the relocation to the in-container
-  default `$HOME/Android/Sdk` with both variables pinned to it; inside the project
-  dir the candidate is skipped entirely (unchanged)),
-    host session state always shared rw (`DDR_ACP_AGENT_DOCKER_STATE_DIR` overrides the
-  host-side dir - absolute paths only, falls back to `$XDG_STATE_HOME/ddr-acp-agent`),
-    the host config directory (`~/.config/ddr-acp-agent`) mounted **read-only** at the
-    identical in-container path when it exists (with a `~/.config` uid tmpfs underneath,
-    same reason as `~/.local`) - that mount is the agent's only key source inside the
-    container, since the launcher reads no key variable at all,
-    the whole `DDR_ACP_AGENT_*` family (forwarded by prefix; combined with the read-only
-    config-directory mount that is what makes the agent's own config work unchanged), **minus the launcher's own
-    `DDR_ACP_AGENT_DOCKER_*` knobs** (host-side decisions -
-    network, state dir, cache sharing, ... - that mean nothing inside the container and
-    must not look like agent config)/
-    `TZ` forwarded (`TZ` keeps the
-    container's wall clock on the host zone, since the read-only rootfs has no
-    `/etc/localtime` and the agent renders local-offset timestamps - issue #22),
-    host `.env.local` masked, git identity forwarded. The **permission directory
-    lists are the mount list** (issues #50): `DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES`
-    mounts each path `:ro`, `…_WRITABLE_DIRECTORIES` mounts it rw (a path in both is
-    mounted rw once), at the identical in-container path (src == dst like the CWD).
-    Absolute only, `/` is rejected, host existence is required only for paths
-    actually mounted - paths under the covered roots (project dir/container
-    home/`tmpfs`) are shadowed by the covering mount at the identical path, so they
-    are skipped with a warning regardless of host existence. The lists are also
-    forwarded verbatim, so the agent trusts exactly what is mounted; `config.json`'s
-    `permissions.*` are therefore direct-run only. Mounts are emitted before every
-    built-in mount and sorted shallowest-first, so built-ins and later, deeper
-    mounts shadow shallower ones (mounting a CWD parent ro works; the project dir
-    itself stays rw). Extras:
-    `DDR_ACP_AGENT_DOCKER_NETWORK`, `DDR_ACP_AGENT_DOCKER_CAP_ADD`,
-    `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS`, `DOCKER_BIN`;
-  local builds via `./build-docker`. Launcher output is stderr-only - ACP travels over the container
-  stdin/stdout.
+  container daemons (loopback UDP lock handover, see the Gradle lock timeout pitfall) and what
+  lets the container reach host services bound to loopback. The trade-off: no network
+  isolation, and Docker's embedded DNS is unavailable (compose service names like `postgres`
+  only resolve on the compose network - with host networking a project's own test config must
+  target `127.0.0.1:<published-port>` instead, e.g. via a `.env.test.local` the project
+  gitignores).
+- **Home layout**: tmpfs home (`sandbox.homeVolume` -> named volume) plus uid-mapped tmpfs
+  mounts for `~/.local`, `~/.local/share`, `~/.local/state` and (when a config dir is mounted)
+  `~/.config`: the image has no `~/.local` and a home tmpfs/named volume would shadow it
+  anyway, so runc would create the deep bind-mount mountpoints (session state at
+  `~/.local/state/ddr-acp-agent`, pnpm store) root-owned inside the container and the agent
+  uid could not write anything else under it. The state/store/config binds land on top of
+  these tmpfs mounts (moby composes all mounts shallowest-first into the OCI spec and runc
+  mounts in that order, so CLI argv order is irrelevant - the composer still emits them in
+  argv order).
+- **Host tool caches** (`sandbox.mountCaches: false` disables the whole cache composition - no
+  mounts, no cache env, not even validation; issue #51). Two cases: an explicitly configured
+  cache (the tool's env var set, e.g. `UV_CACHE_DIR`) is **identity-bound at the identical
+  in-container path with the env value forwarded verbatim** (the tool's own config already
+  points there and host-created symlinks into the cache keep resolving); set-but-unusable
+  config - relative, `/`, uncreatable - fails loudly before any `docker run`, and the env
+  value is forwarded even when the mount is skipped (inside the project dir, deduped dst).
+  `UV_LINK_MODE` is forwarded when set. Without an env var, the first existing host default
+  (e.g. `$XDG_CACHE_HOME/uv`, never created) is mounted at the tool's in-container default
+  with the env var pinned to the mount (`KONAN_DATA_DIR` -> `~/.konan`, `UV_CACHE_DIR` ->
+  `~/.cache/uv`, ...) - relocation stays necessary there because the container home differs
+  from the host home. **pnpm** is a regular tool cache
+  (`PNPM_CONFIG_STORE_DIR`/`PNPM_CONFIG_CACHE_DIR`, pnpm.io/configuring, plus
+  `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` forwarding); `PNPM_HOME` is deliberately **not**
+  forwarded (it points at the host's standalone pnpm install).
+- **Gradle is the deliberate exception**: the whole `GRADLE_USER_HOME` is *not* shared (one
+  daemon registry + logs across the host and container PID namespaces would let probing
+  clients prune each other's daemons and `gradle --stop` kill both sides' daemons). The GUH
+  root is a container-private uid-mapped `.gradle` tmpfs (holding `daemon/`, `.tmp`,
+  `kotlin/`, `native/`), and everything Gradle documents as a *cache* (`directory_layout`,
+  "Shared caches" / "Version-specific caches") is shared rw at its in-container path:
+  `caches/modules-2`, `caches/jars-*`, `caches/build-cache-*`, legacy `caches/transforms-*`,
+  the version-bound `caches/<ver>/transforms` + `caches/<ver>/generated-gradle-jars`,
+  `wrapper/dists` and `jdks` (fixes #67 - AGP transform output alone filled the 1 GB caches
+  tmpfs). Everything else stays on the private tmpfs: absolute-path-keyed execution state
+  (`journal-1`/`file-access.bin`, `caches/<ver>/fileHashes`, `jvms`), JVM-sensitive compiled
+  scripts (`kotlin-dsl`, `scripts`) and `caches/<ver>/cc-keystore` - the configuration-cache
+  **encryption key**, which must never leave the container. Each version dir gets its own
+  per-version uid tmpfs with the two shared children bound on top; version names come from
+  the digit-named `caches/<ver>` dirs **and** the shared wrapper dists
+  (`gradle-<version>-<bin|all>`), so a wrapper upgrade is shared from the first session. The
+  `caches/` and `wrapper/` intermediate depths get their own per-depth uid tmpfs (runc creates
+  missing mountpoint parents root-owned; observed as `Could not open cache directory ...
+  caches/<ver>/jvms`). All home-side tmpfs mounts (`/home/dev` and the `.gradle` depths incl.
+  the per-version ones) are **exec-allowed** (`exec` appended, overriding docker's `noexec`
+  default): toolchains execute native binaries extracted into those caches - AGP's AAPT2, the
+  compiled Kotlin DSL scripts, Kotlin/Native under `~/.konan` - which surfaces as
+  `AAPT2 ... Daemon startup failed` under noexec (issue #33). `~/.cache` and `~/.local` keep
+  the noexec default. `GRADLE_USER_HOME` is always pinned to the private root, independent of
+  `sandbox.mountCaches`; the leaf binds are gated by it. A relative or `/` `GRADLE_USER_HOME`
+  is ignored in favour of `$HOME/.gradle` (Gradle's own resolution has no such value; unlike
+  the tool caches it does not abort the launch).
+- **Android SDK**: explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT` (first one set wins) is
+  identity-bound and both variables carry the configured value; a set-but-unusable var -
+  relative, `/`, missing dir - fails loudly before any `docker run`; inside the project dir
+  the mount is skipped and the variables keep the host path. The default candidate (existing
+  `$HOME/Android/Sdk`, never created) keeps the relocation to the in-container default with
+  both variables pinned; inside the project dir it is skipped entirely.
+- **Session state and config**: host session state is shared rw
+  (`sandbox.stateDir` overrides the host-side dir; default `$XDG_STATE_HOME/ddr-acp-agent`,
+  resolved by the shared `stateHome` so host and agent agree). The host config directory
+  (`~/.config/ddr-acp-agent`, resolved by the agent's own `Config.configDir`, so the mounted and
+  the read directory cannot diverge) is mounted **read-only** at the identical in-container path
+  when it exists (with a `~/.config` uid tmpfs underneath) - that mount is the agent's only key
+  source inside the container, since no key variable exists at all. A state or config directory
+  *inside the project directory* is skipped with a typed warning: the project bind only exposes
+  the host path, while the agent writes/reads the container's XDG paths, so a silent skip would
+  lose the sessions (or leave the agent without its config).
+- **Permission lists are the mount list** (issue #50, one config file, two readers):
+  `permissions.readableDirectories` mounts each path `:ro`, `…writableDirectories` mounts it
+  rw (a path in both is mounted rw once), at the identical in-container path (src == dst like
+  the CWD). Absolute only, `/` is rejected, host existence is required only for paths actually
+  mounted - paths under the covered roots (project dir/container home/`tmpfs`) are skipped
+  with a typed warning regardless of host existence. A configured directory that is missing is
+  a warning in a direct run (`Config.directoryWarnings`) but **fatal in sandbox mode** (docker
+  cannot bind-mount a missing source). Mounts are emitted before every built-in mount and
+  sorted shallowest-first, so built-ins and later, deeper mounts shadow shallower ones
+  (mounting a CWD parent ro works; the project dir itself stays rw). `scratchDir` is never
+  mounted (a container path; the container's `/tmp` is a private tmpfs, so scratch content is
+  per-container-session).
+- **Also forwarded**: `TZ` (the container wall clock follows the host zone; the read-only
+  rootfs has no `/etc/localtime` and the agent renders local-offset timestamps - issue #22),
+  the host git identity (`GIT_AUTHOR_*`/`GIT_COMMITTER_*` when `git config user.name` and
+  `user.email` are both set), `HOME`/`TERM`/`XDG_*` container pins, and host `.env.local`
+  masked with an empty read-only file (temp file created by the supervisor, deleted on exit).
+  **No agent-config environment is forwarded at all** - `DDR_ACP_AGENT_*` is dead (issue #84),
+  and the `--env` allowlist pin is the negative closure.
+- Local builds via `./build-docker`; supervisor input is typed config (no env knobs), read
+  from the **same `config.json`** the agent reads (strict parser, no API key required). A
+  profile selected with `--profile` must exist on both sides. Supervisor output is stderr-only
+  - ACP travels over the container stdin/stdout.
 
 ## Testing
 
@@ -1507,21 +1578,32 @@ target, `show_failures` for the failure messages of the last run.
 
 The suite is unit tests plus a **black-box e2e harness** (feature-area scenario
 classes in `net/dontdrinkandroot/acpagent/e2e` sharing the `E2eAgentTest` base).
-The e2e scenarios run the linked `installDist` launcher as a separate OS process
+The e2e scenarios run the linked `installDist` agent as a separate OS process
 with the **real ACP SDK client** and a local mock OpenRouter server, and pin the
 agent's **wire contract**:
 
+The harness configures the agent **exclusively through `config.json`** (issue #84): each
+launched agent gets an isolated `$XDG_CONFIG_HOME/ddr-acp-agent` with the 0600
+`openrouter.key` at the agent's default location and a `config.json` built from the harness
+base (LLM endpoint + model) with the scenario's JSON fragment deep-merged over it
+(`connect(configJson = """{"tools": {"maxTurnRequests": 3}}""")`). There is no env-shaped
+scenario input; a harness-owned sentinel (`ACP_E2E_AGENT_SENTINEL`) is planted in the agent
+env to pin the MCP child-env allowlist (`StdioMcpMockServer` probe, `McpConnectorTest`).
+`E2eStartupArgumentsTest` pins the process-level argument contract (unknown argument ->
+exit 2, the removed `--skip-pull` not special-cased, a selected profile really is the file
+read).
+
 Two system properties wire the harness (`tasks.test` in `build.gradle.kts`):
-`acp.agent.binary` (the installDist launcher) and `acp.test.classpath` (the **test runtime classpath**). The second
+`acp.agent.binary` (the installDist agent script) and `acp.test.classpath` (the **test runtime classpath**). The second
 exists because a Gradle test worker's
 `java.class.path` is *not* the test classpath (the worker loads it through its
 own classloader), and the stdio MCP mock must be launched as a separate JVM
 (`java -cp <testClasspath> ...StdioMcpMockServer`). It is injected through a
 `CommandLineArgumentProvider` with a `@get:Classpath` property, so the classpath
-stays a task input instead of a stale constant. The harness also strips a leaked
-`DDR_ACP_AGENT_TOOLS_FS_PROXY=0` from the spawned agent's environment (unless a scenario
-explicitly sets it), so the full `test` suite covers the fs-proxy scenarios regardless of the
-host environment (`E2eAgentTest`).
+stays a task input instead of a stale constant. The harness strips the whole
+`DDR_ACP_AGENT_*` family from the spawned agent's environment (it is inert since issue #84,
+and a leaked value must not look like configuration), so scenarios are fully determined by
+their `config.json` (`E2eAgentTest`).
 
 - **Wire flow** — initialize/session/config-option/prompt/tool-call/permission,
   model/reasoning switches, the chat request's `reasoning` effort, `usage_update`,
@@ -1544,7 +1626,7 @@ host environment (`E2eAgentTest`).
 - **Security & permissions** — path-aware permissions + client fs proxy (in-project
   prompt-free, out-of-project read prompts, the `allow_always` session grant prompting once for
   two prompts' out-of-project reads (issue #65 pin of the tool-name-keyed semantics)),
-  `DDR_ACP_AGENT_TOOLS_FS_PROXY=0` and the **fs-capability negative** (issue #61: with the
+  `tools.fsProxy=false` in `config.json` and the **fs-capability negative** (issue #61: with the
   default `ClientCapabilities()` - `fs` absent - `read_file` + `write_file` run through the
   local store and never call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT
   attempt to call the corresponding filesystem method" local-store fallback), the **permission
@@ -1649,7 +1731,7 @@ host environment (`E2eAgentTest`).
   literal, and the IPv4-mapped literal as a regression pin) are pinned against
   a ktor MockEngine in `WebFetcherTest` (no DNS/sockets; public IP literals);
   black-box e2e in `E2eWebFetchTest` (prompt-free plan-mode fetch with
-  `DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE=1`, loopback refusal without it).
+  `tools.webFetch.allowPrivate: true`, loopback refusal without it).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
 timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` upper bound at
@@ -1712,6 +1794,38 @@ pin in the same change. The schema builder itself is pinned at the raw-string le
 `ToolSchemaWireTest` (`ToolSchemaWireTest.kt` - the file name freed the `ToolSchemaTest`
 class name for the guard test).
 
+**Sandbox launcher pin table (issue #84)**: the `docker run` composition is a pure function
+(`sandbox/DockerInvocation.kt`) over a resolved plan (`sandbox/SandboxPlanResolution.kt`), so
+the whole argv is pinned by `SandboxCompositionPinTest`: rows assert composed argv **tokens**
+against fixture facts (`uid=1001`, `/fixtures/...`), never host-derived values - the plan is
+resolved with `FixtureProbes` (a declared fixture tree), so the test performs no host I/O.
+Every `sandbox.*` key, every shared flag (`--profile`) and every forwarded host fact (TZ, tool
+caches, git identity) has a named row, and the `--env` allowlist row is the negative closure
+of the environment retirement. The table encodes parity with the bash launcher the supervisor
+replaced: its expected argv is the launcher's, minus the deliberately retired
+`DDR_ACP_AGENT_*` and `DDR_ACP_AGENT_DOCKER_*` forwardings - keep that parity when touching
+the composition (a deliberate argv change is a feature, not a test fix).
+
+**Sandbox test suite** (`src/test/kotlin/.../sandbox/`): the composition, the plan level and
+the exec surface.
+
+- `SandboxCompositionPinTest` + `SandboxPinSupport.kt`/`SandboxPinRows.kt`: the pinned argv rows.
+- `SandboxPlanTest`: typed plan level - covered paths skipped with typed warnings, writable
+  winning over readable, shallowest-first order, a missing configured directory refusing the
+  sandbox (the direct-run warning stays in `ConfigTest`).
+- `SandboxFailLoudlyTest`: every fail-loudly path (relative/`/`/missing permission and cache
+  paths, `ANDROID_*` variants, uncreatable state dir), all before any `docker run`.
+- `SandboxSupervisorTest`: the process-level contract against the **installed**
+  `acp-agent-sandbox` with the fixture docker on `PATH` - byte-transparent relay,
+  stdout/stderr separation, stdin-EOF half-close (the child must finish), signal forwarding,
+  exit-code propagation, mask-file cleanup, docker-from-`PATH` (127), strict arguments,
+  fail-loudly config, `--profile` forwarding, uid/gid against `id -u`/`id -g`.
+- `DockerfileBuildInputsTest`: the builder-stage COPY allowlist against the real build inputs
+  and the `ENTRYPOINT` path pin.
+- `FakeDocker`: the fixture docker CLI (`src/test/resources/sandbox/fake-docker`, installed on
+  a fixture `PATH` dir; records every argv losslessly per token, echoes stdin, and offers the
+  run-exit / after-EOF / TERM-marker switches).
+
 **e2e change policy**: e2e scenarios pin the agent's **wire contract** — protocol
 message flow, security boundaries (permission routing, mode restrictions,
 containment caps) and session/replay semantics — not internal orchestration (LLM
@@ -1732,72 +1846,15 @@ them): `tool_call.name` is never emitted and no SDK release up to 0.34.0 can exp
 batches at `batchSize = 10` - the capability is marked UNSTABLE upstream and the paging is
 SDK-supplied).
 
-**Shell test suite** (`tests/bash/run-all`, run config `test_scripts`, Gradle task
-`testScripts` wired into `check`): black-box tests for the **launcher composition** —
-the JVM suites cannot see which argv/env the `ddr-acp-agent-docker` launcher composes.
-
-- `tests/bash/stubs/fake-docker` is plugged in via the launcher's own `DOCKER_BIN` seam (record mode: every invocation
-  appended to `$FAKE_DOCKER_LOG`,
-  `FAKE_DOCKER_PULL_EXIT`/`FAKE_DOCKER_INSPECT_EXIT` drive the pull-fallback paths).
-- `tests/bash/harness.sh` is a zero-dependency assert lib: each test runs in its own
-  subshell and the first failing assert aborts it via `_fail`'s `exit` (bash ignores
-  `set -e` in the runner's capture context, see the Pitfalls).
-- `tests/bash/common.sh` provides the launcher invocation (`run_docker_launcher <dir> [KEY=VALUE ...] [--skip-pull]`;
-  env assignments must precede
-  flags) and clears the launcher-visible host config (`ANDROID_HOME`/`ANDROID_SDK_ROOT`/`TZ`,
-  the tool-cache env vars - `UV_CACHE_DIR` & friends, `UV_LINK_MODE`, the `PNPM_CONFIG_*`
-  cache vars - and the whole `DDR_ACP_AGENT_*` family).
-- `test_permission_mounts.bash`: the permission lists as the mount list (ro/rw per tier, a
-  path in both tiers mounted rw once, covered paths skipped, lists forwarded once and unchanged).
-- `test_config_mounts.bash`: the agent config directory mount (host dir read-only at the
-  container's own config directory on a uid-mapped `~/.config` tmpfs, bind landing on top of
-  the tmpfs, a missing host dir mounting nothing, a config dir inside the project dir skipped).
-- `test_launcher_args.bash`: sandbox flags; env forwarding; the no-key-handling contract (legacy `OPENROUTER_API_KEY`/
-  `OPENROUTER_API_KEY_FILE` are inert - no key mount, no key env,
-  host file untouched); `.env.local` masking; git identity; pull fallback;
-  `DDR_ACP_AGENT_SCRATCH_DIR` forwarded verbatim without a mount;
-  `DDR_ACP_AGENT_CONFIG_FILE` forwarded as a bare file name; `--network host` as the default +
-  `--add-host=host.docker.internal:(127.0.0.1|host-gateway)` depending on the network mode (always present); `--network`
-  honoring `DDR_ACP_AGENT_DOCKER_NETWORK`;
-  `DDR_ACP_AGENT_DOCKER_EXTRA_ARGS` appending; the launcher's own `DDR_ACP_AGENT_DOCKER_*`
-  knobs carved out of the forwarded agent config (a knob must never reach the agent env), the
-  legacy `ACP_DOCKER_*` spellings inert; Gradle GUH sharing (content-addressed leaves incl.
-  `build-cache-*`/`transforms-*`, version-bound `transforms`/`generated-gradle-jars` incl.
-  wrapper-dist-derived versions, per-version tmpfs, #67); cache sharing (issue #51) - explicit
-  cache dir identity-mounted + env forwarded verbatim, forwarded without a mount when inside
-  the project dir, `UV_LINK_MODE` forwarding, `TZ` forwarding (the agent's rendered timestamps
-  follow the host zone - issue #22), pnpm cache vars (`PNPM_CONFIG_STORE_DIR`/
-  `PNPM_CONFIG_CACHE_DIR` identity + forwarding, default candidates mounted at the container
-  defaults + env-pinned, `PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE` forwarding),
-  `DDR_ACP_AGENT_DOCKER_MOUNT_CACHES=0` as total opt-out (explicit config ignored and not even
-  validated), Android SDK sharing (explicit `ANDROID_HOME`/`ANDROID_SDK_ROOT` identity + both
-  vars carrying the configured value, lone `ANDROID_SDK_ROOT` synthesizes `ANDROID_HOME`,
-  `ANDROID_HOME` wins on conflict, default-dir pickup relocated + pinned, absent -> nothing,
-  in-project SDK keeps the host path).
-- `test_error_paths.bash`: fail-loudly exits before any `docker run`, incl. the
-  set-but-unusable `ANDROID_HOME`/`ANDROID_SDK_ROOT` and cache-env (`UV_CACHE_DIR`: relative,
-  `/`, uncreatable; `PNPM_CONFIG_STORE_DIR`: relative) refusals.
-- `test_dockerfile.bash`: the Dockerfile builder stage's build-input COPY allowlist against the
-  real build inputs (a new file the Gradle build reads must be added to that list).
-- `test_harness.bash`: harness self-test - the #52 regression pin: a failing assert must abort
-  the test inside `run_tests`' capture context and later code must never run; each test there
-  ends in ONE decisive all-properties assertion kept last, so it also fails under a
-  non-aborting `_fail`.
-
-Fixtures live under `build/` (never `/tmp`: the launcher skips permission paths inside the
-container tmpfs; never `/home/dev` either - container-only and unwritable on a host, see the
-env-independence pitfall); no test needs a key value at all (the launcher never reads one).
-
 Manual validation (the run configurations cannot do this):
-- Docker: validate `bash -n ddr-acp-agent-docker` + `shellcheck ddr-acp-agent-docker build-docker`;
+- Docker: validate `bash -n bin/acp-agent bin/acp-agent-sandbox` +
+  `shellcheck bin/acp-agent bin/acp-agent-sandbox build-docker` (run config `lint_scripts`);
   build with `./build-docker` and smoke-test by piping an `initialize` request into
-  `./ddr-acp-agent-docker --skip-pull` with a `~/.config/ddr-acp-agent/openrouter.key`
-  in place (expects a JSON-RPC
-  response on stdout). What the shell suite cannot pin without a real daemon: the
-  image itself (entrypoint, tool availability) and real bind mounts.
-- Direct: validate `bash -n ddr-acp-agent` + `shellcheck ddr-acp-agent`; smoke-test the
-  same way via `./ddr-acp-agent` (keep stdin open briefly after the request — closing
-  it immediately races the transport teardown and swallows the response).
+  `./bin/acp-agent-sandbox` with a `~/.config/ddr-acp-agent/openrouter.key` in place
+  (expects a JSON-RPC response on stdout). What the process tests cannot pin without a real
+  daemon: the image itself (entrypoint, tool availability) and real bind mounts.
+- Direct: smoke-test the same way via `./bin/acp-agent` (keep stdin open briefly after the
+  request — closing it immediately races the transport teardown and swallows the response).
 - Client UI: the e2e harness sees the wire but not the IDE, so anything rendered
   client-side is verified by hand in the JetBrains client (session setup, type `/` and
   look for the agent's advertised command). `/info` was confirmed this way (2026-11:
@@ -1929,33 +1986,19 @@ communicate that with the user so we can review them.
   `explicitNulls = false`, `encodeDefaults = true`. Do not create a second `Json` for LLM
   wire-shaped data with different settings; `LlmResponseGoldensTest` pins the request shape
   and the session store reuses the same instance for persisted history.
-- **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed launcher, and `test`
+- **Stale e2e binary**: the e2e harness (`net.dontdrinkandroot.acpagent.e2e`) drives the installed agent, and `test`
   depends on `installDist`. Running a single test from the IDE against an old
   install validates stale sources - re-link (`installDist`) first.
-- **Shell tests can pass for the wrong reason** (issue #52): `run_tests` captures each
-  test via `out=$(...) || status=$?`, where bash ignores `set -e` - asserts must abort
-  via `_fail`'s `exit`, not `return`. When adding a shell test, verify it
-  fails when the behavior under test is removed, and remember the first FAIL line is
-  the real one. The harness self-test (`test_harness.bash`, the #52 regression pin) is
-  itself vulnerable to the same pitfall: each of its tests ends in ONE decisive
-  all-properties assertion kept last, so it also fails under a non-aborting `_fail`
-  (the earlier granular asserts only improve failure messages, the last one alone
-  decides the status).
-- **The shell suite must be env-independent (host vs container)**: it runs inside
-  the agent container *and* on a bare host (`./gradlew build`, Gradle `check` wires
-  `testScripts`), whose environments differ. Two traps: (a) the container env sets
-  `XDG_STATE_HOME` (state bind lands
-  outside any fixture `HOME`), a host usually does not - the state bind then derives
-  from the test's overridden `HOME` and a bare `assert_not_contains ... "gradle"`
-  matched the *fixture name* (`gradle-home/.local/state/...`), not a GUH bind; assert
-  mount *shapes* (`/.gradle`, `dst=...`), never bare substrings a fixture path can
-  collide with. (b) `/home/dev` exists and is writable only inside the container -
-  never `mkdir` fixtures there; the extra-mount skip checks run *before* existence
-  validation precisely so a deliberately nonexistent `/home/dev/...` covered entry is
-  portable (see the extra-mount semantics under Features). And per #52, `set -e` is
-  inert in the capture context for every command, not just asserts - wrap fixture
-  setup in `mkdir ... || _fail`, or the test continues past a missing fixture and
-  dies with a confusing downstream cascade.
+- **A test reading a checkout file at runtime is not rerun when that file changes.** The
+  `test` task's inputs are the compiled classes/classpath, not files the Java code opens at
+  runtime - a test that launches a checkout script keeps the old file under an UP-TO-DATE /
+  cached run. Rerun with `--rerun-tasks` (run config `test_fresh`) after editing such a file,
+  or declare it as a task input.
+- **Sandbox test fixtures live under `build/`** (never `/tmp` or `/home/dev`): `/tmp` and the
+  container home are the covered roots the permission-mount skip policy prunes, and `/home/dev`
+  exists only inside the container. `SandboxSupervisorTest`'s fixtures follow the same rule;
+  the pin table itself is marker-free (`FixtureProbes` answers from a declared tree).
+
 - **Gradle build cache can report a false green**: outputs are cacheable, so a
   `test`/`build` run that *just changed test sources or the classpath* may come
   back `FROM-CACHE`/`UP-TO-DATE` and hide failing tests (an earlier run's
@@ -2005,28 +2048,19 @@ communicate that with the user so we can review them.
   so a container on a bridge/named network (a different netns than the host) waits out the
   ~60s lock timeout and fails instead of queuing - even though the kernels' flocks would
   serialize correctly. Gradle declares this unsupported and will not change the protocol (gradle/gradle#851, #8375; the
-  timeout is deliberately not configurable). **The launcher
+  timeout is deliberately not configurable). **The supervisor
   therefore runs the container in the host network namespace by default** (`--network host`,
-  `DDR_ACP_AGENT_DOCKER_NETWORK` for an opt-out), which puts host and container Gradle processes on
+  `sandbox.network` for an opt-out), which puts host and container Gradle processes on
   one loopback and restores the handover. The shared
   cache leaves still form one lock domain across the host and all agent containers, so a
   `Timeout waiting to lock` now only appears in the opt-out (bridge/named-network) mode or
   for a genuinely hung owner; a retry is safe, and the work share is the reason the cache is
-  shared at all. First aid is
-  `.ai/scripts/gradle-unstick [status|wipe]` (run configs `gradleUnstick` /
-  `gradleUnstickWipe`, safe to run any time): `status` stops container-local daemons (`./gradlew --stop`), then
-  classifies every `*.lock`/`*.lck` under
-  `$GRADLE_USER_HOME/{caches,daemon,wrapper,jdks,native}` and the project `.gradle/` by
-  flock contention + visible holders and ends with one parseable verdict:
-  `VERDICT: RETRY-OK` (nothing flocked - just retry), `VERDICT: BUSY` (flocked by visible
-  process (es), listed - wait or stop them), `VERDICT: INVISIBLE-HOLDER` (flocked but no
-  visible holder = a build on the shared **host** `GRADLE_USER_HOME` - escalate to the
-  user, never delete such locks). `wipe` deletes lock records ONLY when every one is
-  flock-proven uncontended AND no Gradle process is visible (`VERDICT: WIPED`, refused as
-  `VERDICT: REFUSED` otherwise) - for the rare stale-record case where Gradle times out
-  although nothing holds the lock; lock records are recreated on demand and nothing else
-  in the caches is ever touched. Exit code 2 = action required. Never hand-delete lock
-  files or kill processes the script has not classified; wait-and-retry is the gentler
+  shared at all. First aid: `./gradlew --stop` (container-local daemons only), then classify
+  the lock file (`flock -n <lock> true` proves contention; `fuser`/`lsof` show a visible
+  holder): nothing flocked means "just retry", a visible holder means wait or stop it, and a
+  flock without a visible process means a build on the shared **host** `GRADLE_USER_HOME` -
+  escalate to the user. Never hand-delete a lock file that is still flocked (a waiter would
+  recreate it and two owners would share the cache); wait-and-retry is the gentler
   alternative when the owning build is expected to finish soon.
 
 ## Recipes

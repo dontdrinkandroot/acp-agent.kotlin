@@ -6,10 +6,11 @@ import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
 
 /**
- * The agent's resolved configuration (issue #50): built-in defaults, overridden
- * by `config.json`, overridden by the `DDR_ACP_AGENT_*` environment variables.
- * The value is immutable and resolved once at startup ([load]); there is no
- * live reload.
+ * The agent's resolved configuration (issue #50): built-in defaults overridden
+ * by the selected `config.json`. The configuration is **file-only** - no
+ * environment variable selects a value or the file (issue #84); `--profile
+ * <name>` is the only startup input. The value is immutable and resolved once at
+ * startup ([load]); there is no live reload.
  *
  * The instance is safe to log: [openRouterApiKey] is a [Secret], so the
  * generated `toString()` (and every other implicit rendering) prints `***`
@@ -78,21 +79,19 @@ public data class Config(
 
         public const val DEFAULT_API_KEY_FILE_NAME: String = "openrouter.key"
 
-        /** Env variable that moves `config.json` itself (it cannot live inside the file). */
-        public const val CONFIG_FILE_ENV: String = "DDR_ACP_AGENT_CONFIG_FILE"
-
-        private const val ENV_PREFIX = "DDR_ACP_AGENT_"
-
         /**
-         * Resolves the configuration: built-in defaults, overridden by
-         * `config.json` (when present), overridden by the environment.
+         * Resolves the configuration: built-in defaults overridden by the selected
+         * `config.json`.
          *
          * The config file is `$XDG_CONFIG_HOME/ddr-acp-agent/config.json`
-         * (fallback `~/.config`). [CONFIG_FILE_ENV] selects a different *file
-         * name inside that directory* (a "profile"), so the name resolves the
-         * same way on the host and inside the docker container. A missing file
-         * with no explicit selection means "all defaults"; a missing explicitly
-         * selected file is a configuration error.
+         * (fallback `~/.config`). [profile] selects `<profile>.json` *inside that
+         * directory* (see [profileFileName]), so the name resolves the same way on
+         * the host and inside the docker container. An absent default file means
+         * "all defaults"; a selected profile must exist.
+         *
+         * Only `XDG_CONFIG_HOME` is read from [env] - the agent's settings are
+         * file-only, and a `DDR_ACP_AGENT_*` variable is deliberately inert
+         * (issue #84).
          *
          * [warnings] receives non-fatal findings (a configured directory that
          * does not exist); they never fail the startup.
@@ -100,41 +99,27 @@ public data class Config(
         public fun load(
             env: Map<String, String> = platformEnv(),
             home: Path = Path.of(System.getProperty("user.home")),
+            profile: String? = null,
             warnings: (String) -> Unit = {},
         ): Config {
             val configDir = configDir(env, home)
-            val file = readConfigFile(env[CONFIG_FILE_ENV], configDir)
-            val envValues = EnvValues(env)
-            val apiKey = resolveApiKey(envValues, file.openRouter?.apiKeyFile, configDir)
+            val file = readConfigFile(profile?.let { profileFileName(it) }, configDir)
+            val apiKey = resolveApiKey(file.openRouter?.apiKeyFile, configDir)
 
             return Config(
                 openRouterApiKey = apiKey.secret,
-                openRouterModel = envValues.string("openRouter.defaultModel")
-                    ?: file.openRouter?.defaultModel ?: DEFAULT_MODEL,
-                openRouterBaseUrl = envValues.string("openRouter.baseUrl")
-                    ?: file.openRouter?.baseUrl ?: DEFAULT_BASE_URL,
-                autoThroughputSortingEnabled = envValues.boolean("openRouter.autoThroughputSorting")
-                    ?: file.openRouter?.autoThroughputSorting ?: true,
-                fsProxyEnabled = envValues.boolean("tools.fsProxy") ?: file.tools?.fsProxy ?: true,
-                mcpTrustAnnotations = envValues.boolean("mcp.trustAnnotations")
-                    ?: file.mcp?.trustAnnotations ?: true,
-                bashTimeoutSeconds = envValues.int("tools.bash.timeoutSeconds", ConfigFile.BASH_TIMEOUT_RANGE)
-                    ?: file.tools?.bash?.timeoutSeconds ?: DEFAULT_BASH_TIMEOUT_SECONDS,
-                maxTurnRequests = envValues.int("tools.maxTurnRequests", ConfigFile.MAX_TURN_REQUESTS_RANGE)
-                    ?: file.tools?.maxTurnRequests ?: DEFAULT_MAX_TURN_REQUESTS,
-                webFetchAllowPrivate = envValues.boolean("tools.webFetch.allowPrivate")
-                    ?: file.tools?.webFetch?.allowPrivate ?: false,
-                readableDirectories = envValues.pathList("permissions.readableDirectories")
-                    ?: file.permissions?.readableDirectories.orEmpty(),
-                writableDirectories = envValues.pathList("permissions.writableDirectories")
-                    ?: file.permissions?.writableDirectories.orEmpty(),
-                unlistedPaths = envValues.string("permissions.unlistedPaths")
-                    ?.let { parseUnlistedPaths(EnvValues.name("permissions.unlistedPaths"), it) }
-                    ?: file.permissions?.unlistedPaths
-                    ?: UnlistedPaths.PROMPT,
-                scratchDir = envValues.string("scratchDir")?.let { requireScratchDir(it, EnvValues.name("scratchDir")) }
-                    ?: file.scratchDir
-                    ?: DEFAULT_SCRATCH_DIR,
+                openRouterModel = file.openRouter?.defaultModel ?: DEFAULT_MODEL,
+                openRouterBaseUrl = file.openRouter?.baseUrl ?: DEFAULT_BASE_URL,
+                autoThroughputSortingEnabled = file.openRouter?.autoThroughputSorting ?: true,
+                fsProxyEnabled = file.tools?.fsProxy ?: true,
+                mcpTrustAnnotations = file.mcp?.trustAnnotations ?: true,
+                bashTimeoutSeconds = file.tools?.bash?.timeoutSeconds ?: DEFAULT_BASH_TIMEOUT_SECONDS,
+                maxTurnRequests = file.tools?.maxTurnRequests ?: DEFAULT_MAX_TURN_REQUESTS,
+                webFetchAllowPrivate = file.tools?.webFetch?.allowPrivate ?: false,
+                readableDirectories = file.permissions?.readableDirectories.orEmpty(),
+                writableDirectories = file.permissions?.writableDirectories.orEmpty(),
+                unlistedPaths = file.permissions?.unlistedPaths ?: UnlistedPaths.PROMPT,
+                scratchDir = file.scratchDir ?: DEFAULT_SCRATCH_DIR,
                 openRouterApiKeyFile = apiKey.path.toString(),
             ).also { config -> config.directoryWarnings().forEach(warnings) }
         }
@@ -157,12 +142,12 @@ public data class Config(
         }
 
         /**
-         * Reads and parses the config file. [configuredName] (from
-         * [CONFIG_FILE_ENV]) selects a *file name inside the config directory*,
-         * so the same name resolves to the same file wherever that directory
-         * lives (a host path would be meaningless inside the docker container).
-         * An explicitly selected file must exist; the default one may be absent.
-         * Parse and validation errors name the file and the JSON path.
+         * Reads and parses the config file. [configuredName] is a *file name inside
+         * the config directory* (already resolved from a profile), so the same name
+         * resolves to the same file wherever that directory lives (a host path would
+         * be meaningless inside the docker container). A selected file must exist;
+         * the default one may be absent. Parse and validation errors name the file
+         * and the JSON path.
          */
         internal fun readConfigFile(configuredName: String?, configDir: Path): ConfigFile {
             val name = configuredName?.trim()?.takeUnless { it.isEmpty() }
@@ -192,11 +177,10 @@ public data class Config(
          */
         private fun requireConfigFileName(name: String) {
             require(!name.contains('/')) {
-                "$CONFIG_FILE_ENV must be a file name inside the config directory, " +
-                        "not a path, got '$name'"
+                "a config file name must be a bare name inside the config directory, not a path, got '$name'"
             }
             require(name != "." && name != "..") {
-                "$CONFIG_FILE_ENV must be a file name inside the config directory, got '$name'"
+                "a config file name must be a bare name inside the config directory, got '$name'"
             }
         }
 
@@ -205,23 +189,16 @@ public data class Config(
          * never from an environment variable holding the key itself, which every
          * child process and `ps` output would inherit. Order:
          *
-         * 1. `DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE`,
-         * 2. `openRouter.apiKeyFile` from the config file,
-         * 3. `<config dir>/openrouter.key`, when it exists.
+         * 1. `openRouter.apiKeyFile` from the config file,
+         * 2. `<config dir>/openrouter.key`, when it exists.
          *
          * Every file is validated (regular file, owner-only `0600`/`0400`,
          * non-empty); a failure names the path. When nothing resolves, the error
          * lists the tried sources.
          */
-        internal fun resolveApiKey(envValues: EnvValues, fileKeyFile: String?, configDir: Path): ResolvedApiKey {
-            val keyFileEnv = EnvValues.name("openRouter.apiKeyFile")
+        internal fun resolveApiKey(fileKeyFile: String?, configDir: Path): ResolvedApiKey {
             val defaultKeyFile = configDir.resolve(DEFAULT_API_KEY_FILE_NAME)
             val candidates: List<Pair<String, Path>> = buildList {
-                envValues.string("openRouter.apiKeyFile")?.let {
-                    val path = Path.of(it)
-                    require(path.isAbsolute) { "$keyFileEnv must be an absolute path, got '$it'" }
-                    add("$keyFileEnv '$it'" to path)
-                }
                 fileKeyFile?.let {
                     val path = Path.of(it)
                     require(path.isAbsolute) {
@@ -233,7 +210,7 @@ public data class Config(
             }
             if (candidates.isEmpty()) {
                 throw IllegalArgumentException(
-                    "No OpenRouter API key configured. Set $keyFileEnv, openRouter.apiKeyFile in " +
+                    "No OpenRouter API key configured. Set openRouter.apiKeyFile in " +
                             "$CONFIG_FILE_NAME, or create '$defaultKeyFile'."
                 )
             }
@@ -277,21 +254,6 @@ public data class Config(
             PosixFilePermission.OTHERS_EXECUTE,
         )
 
-        /** `tools.bash.timeoutSeconds` -> `DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS`. */
-        internal fun envName(configPath: String): String =
-            ENV_PREFIX + configPath.replace('.', '_')
-                .split('_')
-                .joinToString("_") { camelToUpperSnake(it) }
-
-        /** `timeoutSeconds` -> `TIMEOUT_SECONDS`, `webFetch` -> `WEB_FETCH`, `fs` -> `FS`. */
-        internal fun camelToUpperSnake(name: String): String = buildString {
-            name.forEachIndexed { index, c ->
-                if (c.isUpperCase() && index > 0 && (name[index - 1].isLowerCase() || name[index - 1].isDigit())) {
-                    append('_')
-                }
-                append(c.uppercaseChar())
-            }
-        }
     }
 }
 
@@ -303,58 +265,3 @@ public data class Config(
  * re-running the resolution order.
  */
 internal data class ResolvedApiKey(val secret: Secret, val path: Path)
-
-/**
- * The environment layer: typed, strict accessors over the `DDR_ACP_AGENT_*`
- * variables derived from the config paths. An unset (or blank) variable means
- * "no override"; a set but invalid value fails loudly.
- */
-internal class EnvValues(private val env: Map<String, String>) {
-
-    /** The trimmed value of the variable for [configPath], or null when unset/blank. */
-    fun string(configPath: String): String? =
-        env[name(configPath)]?.trim()?.takeIf { it.isNotEmpty() }
-
-    /**
-     * Strict booleans: `1/true/yes/on` and `0/false/no/off` (case-insensitive).
-     * Anything else is an error - a typo must not silently disable a safety
-     * feature.
-     */
-    fun boolean(configPath: String): Boolean? {
-        val name = name(configPath)
-        val raw = env[name] ?: return null
-        return when (val value = raw.trim().lowercase()) {
-            in TRUE_VALUES -> true
-            in FALSE_VALUES -> false
-            else -> throw IllegalArgumentException("$name must be one of 1/true/yes/on or 0/false/no/off, got '$value'")
-        }
-    }
-
-    /** A strict integer within [range]: no clamping, an out-of-range value is an error. */
-    fun int(configPath: String, range: IntRange): Int? {
-        val name = name(configPath)
-        val raw = env[name] ?: return null
-        val value = raw.trim().toIntOrNull() ?: throw IllegalArgumentException("$name must be an integer, got '$raw'")
-        if (value !in range) {
-            throw IllegalArgumentException("$name must be ${rangeText(range)}, got $value")
-        }
-        return value
-    }
-
-    /** A comma-separated list of absolute paths: trimmed, blanks dropped, deduped. */
-    fun pathList(configPath: String): List<String>? {
-        val value = string(configPath) ?: return null
-        val name = name(configPath)
-        return value.split(',')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .map { requireAbsolutePath(name, it) }
-            .distinct()
-    }
-
-    companion object {
-        fun name(configPath: String): String = Config.envName(configPath)
-        private val TRUE_VALUES = setOf("1", "true", "yes", "on")
-        private val FALSE_VALUES = setOf("0", "false", "no", "off")
-    }
-}

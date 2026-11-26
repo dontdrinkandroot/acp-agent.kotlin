@@ -20,6 +20,7 @@ public data class ConfigFile(
     val mcp: Mcp? = null,
     val permissions: Permissions? = null,
     val scratchDir: String? = null,
+    val sandbox: Sandbox? = null,
 ) {
     public data class OpenRouter(
         val apiKeyFile: String? = null,
@@ -47,12 +48,30 @@ public data class ConfigFile(
         val unlistedPaths: UnlistedPaths? = null,
     )
 
+    /**
+     * The `sandbox` group, read by the sandbox supervisor only (the agent's [Config] carries
+     * no sandbox field). Validated for **shape only** - types, absolute-path *form*, list
+     * values. Every check that needs a host fact (creating `stateDir`, probing cache dirs,
+     * mount sources existing) belongs to the sandbox plan resolution on the host: the host
+     * `config.json` is mounted read-only into the container, so a host path such as
+     * `stateDir` must never be able to fault the agent there.
+     */
+    public data class Sandbox(
+        val network: String? = null,
+        val stateDir: String? = null,
+        val mountCaches: Boolean? = null,
+        val homeVolume: String? = null,
+        val extraArgs: List<String>? = null,
+        val capAdd: List<String>? = null,
+        val rwRootfs: Boolean? = null,
+    )
+
     public companion object {
 
-        /** Range for `tools.bash.timeoutSeconds`, shared with the env layer. */
+        /** Range for `tools.bash.timeoutSeconds`. */
         internal val BASH_TIMEOUT_RANGE = 1..3600
 
-        /** Range for `tools.maxTurnRequests`, shared with the env layer. */
+        /** Range for `tools.maxTurnRequests`. */
         internal val MAX_TURN_REQUESTS_RANGE = 1..Int.MAX_VALUE
 
         public fun parse(text: String): ConfigFile {
@@ -99,6 +118,18 @@ public data class ConfigFile(
                 },
                 scratchDir = rootObject.stringValue("", "scratchDir")
                     ?.let { requireScratchDir(it, "scratchDir") },
+                sandbox = rootObject.group("sandbox")?.let {
+                    Sandbox(
+                        network = it.nonBlankStringValue("sandbox", "network"),
+                        stateDir = it.stringValue("sandbox", "stateDir")
+                            ?.let { value -> requireAbsoluteMountPath("sandbox.stateDir", value) },
+                        mountCaches = it.booleanValue("sandbox", "mountCaches"),
+                        homeVolume = it.nonBlankStringValue("sandbox", "homeVolume"),
+                        extraArgs = it.stringListValue("sandbox", "extraArgs", allowBlank = false),
+                        capAdd = it.stringListValue("sandbox", "capAdd", allowBlank = false),
+                        rwRootfs = it.booleanValue("sandbox", "rwRootfs"),
+                    )
+                },
             )
         }
 
@@ -113,6 +144,28 @@ public data class ConfigFile(
             primitive(path, key)?.also {
                 if (!it.isString) throw IllegalArgumentException("${qualified(path, key)} must be a string")
             }?.content
+
+        private fun JsonObject.nonBlankStringValue(path: String, key: String): String? =
+            stringValue(path, key)?.also {
+                if (it.isBlank()) throw IllegalArgumentException("${qualified(path, key)} must not be blank")
+            }?.trim()
+
+        /** An array of strings, trimmed; [allowBlank] entries are kept only when true. */
+        private fun JsonObject.stringListValue(path: String, key: String, allowBlank: Boolean = true): List<String>? {
+            val value = this[key] ?: return null
+            if (value is JsonNull) return null
+            val array = value as? JsonArray
+                ?: throw IllegalArgumentException("${qualified(path, key)} must be an array of strings")
+            return array.mapIndexed { index, item ->
+                val text = (item as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    ?: throw IllegalArgumentException("${qualified(path, key)}[$index] must be a string")
+                val trimmed = text.trim()
+                if (!allowBlank && trimmed.isEmpty()) {
+                    throw IllegalArgumentException("${qualified(path, key)}[$index] must not be blank")
+                }
+                trimmed
+            }
+        }
 
         private fun JsonObject.booleanValue(path: String, key: String): Boolean? =
             primitive(path, key)?.let {
@@ -159,8 +212,7 @@ public data class ConfigFile(
 
 /**
  * Renders an accepted numeric range for an error message (`between 1 and 3600`,
- * `at least 1`), shared by the config-file and the env layer so both layers
- * report the same bounds.
+ * `at least 1`).
  */
 internal fun rangeText(range: IntRange): String =
     if (range.last == Int.MAX_VALUE) "at least ${range.first}" else "between ${range.first} and ${range.last}"
@@ -178,16 +230,31 @@ internal fun parseUnlistedPaths(label: String, value: String): UnlistedPaths =
     UnlistedPaths.entries.firstOrNull { it.name.equals(value.trim(), ignoreCase = true) }
         ?: throw IllegalArgumentException("$label must be 'prompt' or 'deny', got '$value'")
 
+/**
+ * A mount path (`sandbox.stateDir`): absolute, never the filesystem root, trailing slashes
+ * normalized. Only the *form* is checked - the directory's existence is a host fact and
+ * belongs to the sandbox plan.
+ */
+internal fun requireAbsoluteMountPath(label: String, value: String): String {
+    require(value.startsWith("/")) { "$label must be an absolute path, got '$value'" }
+    val stripped = value.trimEnd('/')
+    require(stripped.isNotEmpty()) { "$label must not be the filesystem root" }
+    return stripped
+}
+
 internal fun requireAbsolutePath(label: String, value: String): String {
     require(value.startsWith("/")) { "$label entries must be absolute paths, got '$value'" }
-    return value
+    // Slash-normalized like sandbox.stateDir: "/srv/" and "/srv" name the same directory, and a
+    // duplicate mount entry would be a launcher bug (docker applies the last one). The root
+    // stays "/", so the plan resolution still refuses it by name.
+    return value.trimEnd('/').ifEmpty { "/" }
 }
 
 /**
- * `scratchDir` shape validation, shared by both layers: absolute and not the
- * filesystem root (normalized first, so a "/tmp/.." spelling cannot turn the
- * whole filesystem into a trust root). The trust check against the directory's
- * actual type/owner happens when it is prepared.
+ * `scratchDir` shape validation: absolute and not the filesystem root (normalized
+ * first, so a "/tmp/.." spelling cannot turn the whole filesystem into a trust root).
+ * The trust check against the directory's actual type/owner happens when it is
+ * prepared.
  */
 internal fun requireScratchDir(value: String, label: String): String {
     require(value.startsWith("/")) { "$label must be an absolute path, got '$value'" }

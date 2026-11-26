@@ -2,6 +2,8 @@ package net.dontdrinkandroot.acpagent.agent
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.SerializationException
+import net.dontdrinkandroot.acpagent.config.APP_STATE_DIR
+import net.dontdrinkandroot.acpagent.config.stateHome
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import net.dontdrinkandroot.acpagent.tools.STALE_TEMP_AGE_MILLIS
 import net.dontdrinkandroot.acpagent.tools.TEMP_SUFFIX
@@ -14,8 +16,6 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal const val SESSION_ID_PREFIX = "sess_"
 internal const val SESSION_ID_LENGTH = SESSION_ID_PREFIX.length + 16
-private const val STATE_DIR_NAME = "state"
-private const val APP_STATE_DIR = "ddr-acp-agent"
 private const val SESSIONS_DIR = "sessions"
 private const val SESSION_TEMP_PREFIX = "session-"
 
@@ -126,12 +126,7 @@ internal class SessionStore(
     }
 }
 
-private fun resolveSessionsDir(): Path {
-    val xdgStateHome = System.getenv("XDG_STATE_HOME")
-    val root = if (xdgStateHome.isNullOrBlank()) {
-        Path.of(System.getProperty("user.home"), ".local", STATE_DIR_NAME)
-    } else {
-        Path.of(xdgStateHome)
-    }
-    return root.resolve(APP_STATE_DIR).resolve(SESSIONS_DIR)
-}
+private fun resolveSessionsDir(): Path =
+    stateHome(System.getenv(), Path.of(System.getProperty("user.home")))
+        .resolve(APP_STATE_DIR)
+        .resolve(SESSIONS_DIR)

@@ -12,9 +12,9 @@ class McpConnectorTest {
         "LANG" to "C.UTF-8",
         "TERM" to "xterm-256color",
         "TZ" to "Europe/Berlin",
-        "DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to "/home/dev/.config/ddr-acp-agent/openrouter.key",
-        "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "/srv/data",
-        "DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/ddr-acp-agent",
+        // The agent's own config is file-only since issue #84, so the sentinel stands in
+        // for "any agent-owned variable a child must never inherit".
+        "ACP_E2E_AGENT_SENTINEL" to "secret-sentinel",
         "GITHUB_TOKEN" to "ghp_secret",
         "SSH_AUTH_SOCK" to "/run/user/1000/ssh-agent.sock",
         "AWS_SECRET_ACCESS_KEY" to "aws-secret",
@@ -33,13 +33,11 @@ class McpConnectorTest {
     }
 
     @Test
-    fun `secrets and agent configuration never reach a server`() {
+    fun `secrets and agent-owned variables never reach a server`() {
         val env = mcpChildEnvironment(agentEnv, emptyList())
 
         for (leaked in listOf(
-            "DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE",
-            "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES",
-            "DDR_ACP_AGENT_SCRATCH_DIR",
+            "ACP_E2E_AGENT_SENTINEL",
             "GITHUB_TOKEN",
             "SSH_AUTH_SOCK",
             "AWS_SECRET_ACCESS_KEY",

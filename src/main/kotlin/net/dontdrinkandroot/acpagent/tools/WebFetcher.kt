@@ -45,7 +45,7 @@ internal object WebFetcher {
     private const val MAX_REDIRECTS = 5
     private const val MAX_BODY_BYTES: Long = 20L * 1024 * 1024
     private const val SOCKET_TIMEOUT_MILLIS = 60_000L
-    private const val USER_AGENT = "acp-agent.kotlin web_fetch"
+    private const val USER_AGENT = "acp-agent web_fetch"
 
     /**
      * Builds the HTTP client used for a fetch. Seam for tests (the redirect /

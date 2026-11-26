@@ -15,7 +15,7 @@ permissions:
     packages: write
 
 env:
-    IMAGE: ghcr.io/dontdrinkandroot/acp-agent.kotlin
+    IMAGE: ghcr.io/dontdrinkandroot/acp-agent
 
 jobs:
     build:
@@ -63,7 +63,7 @@ jobs:
                 env:
                     GH_TOKEN: ${{ github.token }}
                 run: |
-                    versions="$(gh api "users/${{ github.repository_owner }}/packages/container/acp-agent.kotlin/versions" \
+                    versions="$(gh api "users/${{ github.repository_owner }}/packages/container/acp-agent/versions" \
                       --paginate \
                       -q '.[] | select(.metadata.container.tags | index("latest") | not) | select(.created_at) | [.id, .created_at] | @tsv' \
                       2>/dev/null || true)"
@@ -73,5 +73,5 @@ jobs:
                     fi
                     echo "$versions" | sort -k2 -r | tail -n +6 | while IFS=$'\t' read -r id _; do
                       echo "Deleting package version $id"
-                      gh api -X DELETE "users/${{ github.repository_owner }}/packages/container/acp-agent.kotlin/versions/$id" >/dev/null || true
+                      gh api -X DELETE "users/${{ github.repository_owner }}/packages/container/acp-agent/versions/$id" >/dev/null || true
                     done

@@ -1,0 +1,71 @@
+#!/bin/bash
+# Fixture docker CLI for the sandbox tests (record mode).
+#
+# Records every invocation into $FAKE_DOCKER_LOG as one record per call:
+#
+#   ARGV <n>
+#   <escaped token 1>
+#   ...
+#   <escaped token n>
+#
+# Token escaping keeps the record line-based while argv round-trips losslessly:
+# a backslash becomes \\ and a newline becomes \n (the log was previously
+# space-joined argv, which could not represent a value with a space).
+# `docker run` consumes stdin and echoes it to stdout, so a relay test can
+# observe the bytes; it never touches the network.
+#
+# Switches (environment):
+#   FAKE_DOCKER_LOG          log file (required)
+#   FAKE_DOCKER_INSPECT_EXIT exit code for `docker image inspect` (default 0)
+#   FAKE_DOCKER_RUN_EXIT     exit code for `docker run` (default 0)
+#   FAKE_DOCKER_RUN_AFTER_EOF_SLEEP  seconds `docker run` sleeps after stdin EOF before it
+#                                 echoes "after-eof" (pins the supervisor's half-close: it
+#                                 must wait for the child instead of killing it)
+#   FAKE_DOCKER_TERM_MARKER   file `docker run` appends "ready" to once its SIGTERM trap is
+#                                 installed and "term" when the signal arrives (pins signal
+#                                 forwarding; the ready line removes the test's start-up race)
+set -euo pipefail
+
+FAKE_DOCKER_LOG=${FAKE_DOCKER_LOG:?FAKE_DOCKER_LOG must be set}
+
+escape_token() {
+    local s=${1//\\/\\\\}
+    s=${s//$'\n'/\\n}
+    printf '%s' "$s"
+}
+
+{
+    printf 'ARGV %d\n' $#
+    for token in "$@"; do
+        printf '%s\n' "$(escape_token "$token")"
+    done
+} >>"$FAKE_DOCKER_LOG"
+
+case "${1:-}" in
+    image)
+        # `docker image inspect <ref>`: second word after `image`.
+        [ "${2:-}" = inspect ] && exit "${FAKE_DOCKER_INSPECT_EXIT:-0}"
+        exit 0
+        ;;
+    run)
+        if [ -n "${FAKE_DOCKER_TERM_MARKER:-}" ]; then
+            # `read` is a builtin, so the trap fires while the fixture waits (a foreground
+            # `cat` would defer it until the child exits).
+            trap 'printf "term\n" >> "$FAKE_DOCKER_TERM_MARKER"; exit 143' TERM
+            printf 'ready\n' >>"$FAKE_DOCKER_TERM_MARKER"
+            while IFS= read -r line; do
+                printf '%s\n' "$line"
+            done
+            # stdin EOF must not end this pin early: stay alive until the signal arrives
+            # (the supervisor's half-close deliberately does not kill the child).
+            while :; do sleep 0.05; done
+        fi
+        cat
+        if [ -n "${FAKE_DOCKER_RUN_AFTER_EOF_SLEEP:-}" ]; then
+            sleep "$FAKE_DOCKER_RUN_AFTER_EOF_SLEEP"
+            printf 'after-eof\n'
+        fi
+        exit "${FAKE_DOCKER_RUN_EXIT:-0}"
+        ;;
+    *) exit 0 ;;
+esac

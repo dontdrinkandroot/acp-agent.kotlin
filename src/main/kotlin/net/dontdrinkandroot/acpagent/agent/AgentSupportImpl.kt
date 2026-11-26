@@ -85,7 +85,7 @@ internal class AgentSupportImpl(
                 mcpCapabilities = McpCapabilities(http = true, sse = true),
             ),
             implementation = Implementation(
-                name = "acp-agent.kotlin",
+                name = "acp-agent",
                 version = BuildInfo.version,
                 title = "ACP Agent (Kotlin)"
             )

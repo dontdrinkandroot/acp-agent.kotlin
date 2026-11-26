@@ -1,1 +1,1 @@
-rootProject.name = "acp-agent.kotlin"
+rootProject.name = "acp-agent"

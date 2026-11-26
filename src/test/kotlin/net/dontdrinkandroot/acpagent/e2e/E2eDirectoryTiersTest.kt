@@ -22,19 +22,11 @@ import kotlin.test.assertTrue
  * - `permissions.unlistedPaths = "deny"` refuses an unlisted target without a
  *   prompt, with a refusal naming the missing config entry.
  *
- * The config file is placed at the *implicit* location
- * (`$XDG_CONFIG_HOME/ddr-acp-agent/config.json`), so the default path is pinned
- * black-box; the explicit file-name override is unit-pinned in `ConfigTest`.
+ * The config file is the harness's isolated
+ * `$XDG_CONFIG_HOME/ddr-acp-agent/config.json` (the agent's only configuration
+ * surface since issue #84); the tier rendering in the system prompt is pinned too.
  */
 class E2eDirectoryTiersTest : E2eAgentTest() {
-
-    /** A config directory holding `config.json`, ready to be used as `XDG_CONFIG_HOME`. */
-    private fun configHome(json: String): File =
-        Files.createTempDirectory("acp-e2e-config-home").toFile().apply {
-            deleteOnExit()
-            resolve("ddr-acp-agent").mkdirs()
-            resolve("ddr-acp-agent").resolve("config.json").writeText(json)
-        }
 
     private fun directoryConfig(readable: File, writable: File): String =
         """
@@ -81,11 +73,7 @@ class E2eDirectoryTiersTest : E2eAgentTest() {
                     ),
                 ),
             ) {
-                val connection = connect(
-                    extraEnv = mapOf(
-                        "XDG_CONFIG_HOME" to configHome(directoryConfig(readableDir, writableDir)).absolutePath,
-                    )
-                )
+                val connection = connect(configJson = directoryConfig(readableDir, writableDir))
                 try {
                     connection.client.initialize(testClientInfo())
                     val permissive = TestClientOperations(permissionOptionId = "reject_once")
@@ -128,21 +116,7 @@ class E2eDirectoryTiersTest : E2eAgentTest() {
                 "tiers-deny",
                 MockOpenAiServer("unused", toolCall = MockToolCall("read_file", readFileArgs(target.absolutePath))),
             ) {
-                val connection = connect(
-                    extraEnv = mapOf(
-                        "XDG_CONFIG_HOME" to configHome(
-                            """
-                            {
-                              "permissions": {
-                                "readableDirectories": [],
-                                "writableDirectories": [],
-                                "unlistedPaths": "deny"
-                              }
-                            }
-                            """.trimIndent()
-                        ).absolutePath,
-                    )
-                )
+                val connection = connect(configJson = """{"permissions": {"unlistedPaths": "deny"}}""")
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()

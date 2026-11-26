@@ -19,7 +19,7 @@ import java.nio.file.attribute.UserPrincipal
 internal class ScratchDirectoryException(message: String) : Exception(message)
 
 /**
- * Prepares the agent's scratch directory (`DDR_ACP_AGENT_SCRATCH_DIR`,
+ * Prepares the agent's scratch directory (`scratchDir` in `config.json`,
  * default `/tmp/ddr-acp-agent`) for the session and returns its
  * symlink-resolved path.
  *

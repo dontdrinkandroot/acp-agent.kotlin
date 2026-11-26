@@ -16,7 +16,7 @@ import kotlin.test.*
 /**
  * Black-box path-aware permissions and the client fs proxy: in-project
  * reads/writes run without a prompt and route through the client fs when it is
- * advertised (unless disabled via `DDR_ACP_AGENT_TOOLS_FS_PROXY=0`), while out-of-project
+ * advertised (unless disabled via `"tools": {"fsProxy": false}`), while out-of-project
  * reads ask the user for permission.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
@@ -30,7 +30,7 @@ class E2eFileStoreTest : E2eAgentTest() {
             val link = fixtureDir.resolve("scratch")
             Files.createSymbolicLink(link.toPath(), target.toPath())
             withE2eAgent("scratch-refused", MockOpenAiServer("unused")) {
-                val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to link.absolutePath))
+                val connection = connect(configJson = """{"scratchDir": "${link.absolutePath}"}""")
                 try {
                     connection.client.initialize(testClientInfo())
                     // Issue #10: the scratch directory is a read-trust root, so an
@@ -72,7 +72,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                     ),
                 ),
             ) {
-                val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to scratchDir.absolutePath))
+                val connection = connect(configJson = """{"scratchDir": "${scratchDir.absolutePath}"}""")
                 try {
                     connection.client.initialize(testClientInfo())
                     val ops = TestClientOperations()
@@ -153,7 +153,7 @@ class E2eFileStoreTest : E2eAgentTest() {
             targetFile = file
             MockOpenAiServer("unused", toolCall = MockToolCall("read_file", readFileArgs(file.absolutePath)))
         }) {
-            val connection = connect(extraEnv = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to "0"))
+            val connection = connect(configJson = """{"tools": {"fsProxy": false}}""")
             try {
                 connection.client.initialize(
                     testClientInfo(
@@ -364,7 +364,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                 ),
             ) {
                 val connection = connect(
-                    extraEnv = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to trustedDir.absolutePath)
+                    configJson = """{"permissions": {"readableDirectories": ["${trustedDir.absolutePath}"]}}"""
                 )
                 try {
                     connection.client.initialize(testClientInfo())
@@ -419,7 +419,7 @@ class E2eFileStoreTest : E2eAgentTest() {
                 ),
             ) {
                 val connection = connect(
-                    extraEnv = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to trustedDir.absolutePath)
+                    configJson = """{"permissions": {"readableDirectories": ["${trustedDir.absolutePath}"]}}"""
                 )
                 try {
                     connection.client.initialize(testClientInfo())

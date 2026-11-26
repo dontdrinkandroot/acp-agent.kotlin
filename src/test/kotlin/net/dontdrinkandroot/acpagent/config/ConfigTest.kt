@@ -15,13 +15,23 @@ class ConfigTest {
     private fun load(
         env: Map<String, String> = emptyMap(),
         configJson: String? = null,
+        profile: String? = null,
         warnings: MutableList<String> = mutableListOf(),
     ): Config {
         val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
         configDir.createDirectories()
-        if (configJson != null) configDir.resolve(Config.CONFIG_FILE_NAME).writeText(configJson)
+        if (configJson != null) {
+            configDir.resolve(profile?.let { profileFileName(it) } ?: Config.CONFIG_FILE_NAME).writeText(configJson)
+        }
         writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-default")
-        return Config.load(env = env, home = home, warnings = { warnings += it })
+        return Config.load(env = env, home = home, profile = profile, warnings = { warnings += it })
+    }
+
+    /** Writes a profile file next to the default config file. */
+    private fun writeProfile(profile: String, json: String) {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        configDir.resolve(profileFileName(profile)).writeText(json)
     }
 
     private fun writeKeyFile(path: Path, content: String) {
@@ -35,8 +45,8 @@ class ConfigTest {
         configDir.createDirectories()
         val e = assertFailsWith<IllegalArgumentException> { Config.load(env = emptyMap(), home = home) }
         assertEquals(
-            "No OpenRouter API key configured. Set DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE, " +
-                    "openRouter.apiKeyFile in config.json, or create '${configDir.resolve("openrouter.key")}'.",
+            "No OpenRouter API key configured. Set openRouter.apiKeyFile in config.json, " +
+                    "or create '${configDir.resolve("openrouter.key")}'.",
             e.message,
         )
     }
@@ -92,14 +102,18 @@ class ConfigTest {
     }
 
     @Test
-    fun `the env key file wins over the file key file`() {
+    fun `the env key file is inert`() {
         val envKey = Files.createTempFile("acp-env-key", ".txt")
         writeKeyFile(envKey, "sk-env")
-        val config = load(
-            env = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to envKey.toString()),
-            configJson = """{"openRouter": {"apiKeyFile": "/does/not/matter"}}""",
+        // The retired variable must neither supply the key nor fail the startup;
+        // the default location in the config directory wins.
+        val config = load(env = mapOf("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE" to envKey.toString()))
+        assertEquals("sk-default", config.openRouterApiKey.value)
+        assertEquals(
+            home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+                .resolve(Config.DEFAULT_API_KEY_FILE_NAME).toString(),
+            config.openRouterApiKeyFile,
         )
-        assertEquals("sk-env", config.openRouterApiKey.value)
     }
 
     @Test
@@ -162,161 +176,100 @@ class ConfigTest {
     }
 
     @Test
-    fun `the env layer wins over the config file`() {
+    fun `a profile selects its own file next to the default one`() {
+        writeProfile("work", """{"tools": {"maxTurnRequests": 5}}""")
+        // The default file is a sibling, not a merge base: only the selected file applies.
+        assertEquals(7, load(configJson = """{"tools": {"maxTurnRequests": 7}}""").maxTurnRequests)
+        assertEquals(5, load(profile = "work").maxTurnRequests)
+    }
+
+    @Test
+    fun `a selected profile must exist and a broken one names the file`() {
+        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
+        configDir.createDirectories()
+        writeKeyFile(configDir.resolve(Config.DEFAULT_API_KEY_FILE_NAME), "sk-default")
+        assertEquals(
+            "config file '${configDir.resolve("work.json")}' is not a regular file",
+            assertFailsWith<IllegalArgumentException> {
+                Config.load(env = emptyMap(), home = home, profile = "work")
+            }.message,
+        )
+
+        writeProfile("work", """{"tools": {"maxTurnRequests": 0}}""")
+        assertEquals(
+            "config file '${configDir.resolve("work.json")}': tools.maxTurnRequests must be at least 1, got 0",
+            assertFailsWith<IllegalArgumentException> {
+                Config.load(env = emptyMap(), home = home, profile = "work")
+            }.message,
+        )
+    }
+
+    @Test
+    fun `the retired agent environment family is inert`() {
+        // Issue #84: no DDR_ACP_AGENT_* variable is read - not the current names, not the
+        // even older legacy spellings. Nothing is applied and nothing warns.
+        val warnings = mutableListOf<String>()
         val config = load(
-            configJson = """
-                {
-                  "openRouter": {"defaultModel": "file-model", "baseUrl": "http://file/v1", "autoThroughputSorting": false},
-                  "tools": {"maxTurnRequests": 7, "fsProxy": false, "bash": {"timeoutSeconds": 42}},
-                  "mcp": {"trustAnnotations": false},
-                  "permissions": {"unlistedPaths": "deny"},
-                  "scratchDir": "/var/scratch"
-                }
-            """.trimIndent(),
             env = mapOf(
                 "DDR_ACP_AGENT_OPEN_ROUTER_DEFAULT_MODEL" to "env-model",
                 "DDR_ACP_AGENT_OPEN_ROUTER_BASE_URL" to "http://env/v1",
-                "DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING" to "yes",
+                "DDR_ACP_AGENT_OPEN_ROUTER_AUTO_THROUGHPUT_SORTING" to "off",
                 "DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "9",
-                "DDR_ACP_AGENT_TOOLS_FS_PROXY" to "on",
+                "DDR_ACP_AGENT_TOOLS_FS_PROXY" to "off",
                 "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "99",
-                "DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE" to "true",
-                "DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS" to "1",
-                "DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS" to "prompt",
+                "DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE" to "1",
+                "DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS" to "0",
+                "DDR_ACP_AGENT_PERMISSIONS_UNLISTED_PATHS" to "deny",
+                "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "/srv/env",
                 "DDR_ACP_AGENT_SCRATCH_DIR" to "/env/scratch",
-            ),
-        )
-        assertEquals("env-model", config.openRouterModel)
-        assertEquals("http://env/v1", config.openRouterBaseUrl)
-        assertTrue(config.autoThroughputSortingEnabled)
-        assertEquals(9, config.maxTurnRequests)
-        assertTrue(config.fsProxyEnabled)
-        assertEquals(99, config.bashTimeoutSeconds)
-        assertTrue(config.webFetchAllowPrivate)
-        assertTrue(config.mcpTrustAnnotations)
-        assertEquals(UnlistedPaths.PROMPT, config.unlistedPaths)
-        assertEquals("/env/scratch", config.scratchDir)
-    }
-
-    @Test
-    fun `env names are derived from the config paths`() {
-        assertEquals("DDR_ACP_AGENT_OPEN_ROUTER_API_KEY_FILE", EnvValues.name("openRouter.apiKeyFile"))
-        assertEquals("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS", EnvValues.name("tools.bash.timeoutSeconds"))
-        assertEquals("DDR_ACP_AGENT_TOOLS_FS_PROXY", EnvValues.name("tools.fsProxy"))
-        assertEquals("DDR_ACP_AGENT_TOOLS_WEB_FETCH_ALLOW_PRIVATE", EnvValues.name("tools.webFetch.allowPrivate"))
-        assertEquals("DDR_ACP_AGENT_MCP_TRUST_ANNOTATIONS", EnvValues.name("mcp.trustAnnotations"))
-        assertEquals("DDR_ACP_AGENT_SCRATCH_DIR", EnvValues.name("scratchDir"))
-    }
-
-    @Test
-    fun `legacy env names are not read`() {
-        val config = load(
-            env = mapOf(
+                "DDR_ACP_AGENT_CONFIG_FILE" to "work.json",
                 "OPENROUTER_MODEL" to "legacy",
                 "FS_PROXY_ENABLED" to "0",
-                "MCP_TRUST_ANNOTATIONS" to "0",
-                "ACP_BASH_TIMEOUT_SECONDS" to "5",
                 "ACP_MAX_TURN_REQUESTS" to "5",
-                "ACP_WEB_FETCH_ALLOW_PRIVATE" to "1",
-                "ACP_EXTRA_MOUNTS" to "/srv/legacy",
-            )
+            ),
+            warnings = warnings,
         )
         assertEquals("openrouter/auto", config.openRouterModel)
+        assertEquals("https://openrouter.ai/api/v1", config.openRouterBaseUrl)
+        assertTrue(config.autoThroughputSortingEnabled)
         assertTrue(config.fsProxyEnabled)
         assertTrue(config.mcpTrustAnnotations)
         assertEquals(600, config.bashTimeoutSeconds)
         assertEquals(100, config.maxTurnRequests)
         assertFalse(config.webFetchAllowPrivate)
+        assertEquals(UnlistedPaths.PROMPT, config.unlistedPaths)
         assertEquals(emptyList(), config.readableDirectories)
+        assertEquals("/tmp/ddr-acp-agent", config.scratchDir)
+        assertEquals(emptyList(), warnings)
     }
 
     @Test
-    fun `strict booleans accept the documented spellings and reject typos`() {
-        for (value in listOf("1", "true", "TRUE", "yes", "On")) {
-            assertTrue(
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to value)).fsProxyEnabled,
-                "'$value' must enable the option",
-            )
-        }
-        for (value in listOf("0", "false", "No", "OFF")) {
-            assertFalse(
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to value)).fsProxyEnabled,
-                "'$value' must disable the option",
-            )
-        }
-        assertEquals(
-            "DDR_ACP_AGENT_TOOLS_FS_PROXY must be one of 1/true/yes/on or 0/false/no/off, got 'garbage'",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_FS_PROXY" to "garbage"))
-            }.message,
+    fun `path lists and scratch directory come from the file`() {
+        val config = load(
+            configJson = """
+                {
+                  "permissions": {"readableDirectories": ["/srv/data"], "writableDirectories": ["/srv/w"]},
+                  "scratchDir": "/var/scratch"
+                }
+            """.trimIndent()
         )
-    }
-
-    @Test
-    fun `strict numbers reject out-of-range and non-numeric values`() {
-        assertEquals(
-            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be between 1 and 3600, got 3601",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "3601"))
-            }.message,
-        )
-        assertEquals(
-            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be between 1 and 3600, got 0",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "0"))
-            }.message,
-        )
-        assertEquals(
-            "DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS must be an integer, got 'garbage'",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_BASH_TIMEOUT_SECONDS" to "garbage"))
-            }.message,
-        )
-        assertEquals(
-            "DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS must be at least 1, got 0",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_TOOLS_MAX_TURN_REQUESTS" to "0"))
-            }.message,
-        )
-    }
-
-    @Test
-    fun `path lists come from the file and the env overrides them comma separated`() {
-        val fromFile = load(
-            configJson = """{"permissions": {"readableDirectories": ["/srv/data"], "writableDirectories": ["/srv/w"]}}"""
-        )
-        assertEquals(listOf("/srv/data"), fromFile.readableDirectories)
-        assertEquals(listOf("/srv/w"), fromFile.writableDirectories)
-
-        val fromEnv = load(
-            configJson = """{"permissions": {"readableDirectories": ["/srv/data"]}}""",
-            env = mapOf(
-                "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to " /mnt/a ,, /mnt/b , /mnt/a ",
-                "DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES" to "/mnt/w",
-            ),
-        )
-        assertEquals(listOf("/mnt/a", "/mnt/b"), fromEnv.readableDirectories)
-        assertEquals(listOf("/mnt/w"), fromEnv.writableDirectories)
-    }
-
-    @Test
-    fun `non-absolute path list entries are rejected`() {
-        assertEquals(
-            "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES entries must be absolute paths, got 'srv/data'",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "srv/data"))
-            }.message,
-        )
+        assertEquals(listOf("/srv/data"), config.readableDirectories)
+        assertEquals(listOf("/srv/w"), config.writableDirectories)
+        assertEquals("/var/scratch", config.scratchDir)
     }
 
     @Test
     fun `configured directories that do not exist warn but do not fail`() {
         val warnings = mutableListOf<String>()
         val config = load(
-            env = mapOf(
-                "DDR_ACP_AGENT_PERMISSIONS_READABLE_DIRECTORIES" to "/does/not/exist",
-                "DDR_ACP_AGENT_PERMISSIONS_WRITABLE_DIRECTORIES" to home.toString(),
-            ),
+            configJson = """
+                {
+                  "permissions": {
+                    "readableDirectories": ["/does/not/exist"],
+                    "writableDirectories": ["$home"]
+                  }
+                }
+            """.trimIndent(),
             warnings = warnings,
         )
         assertEquals(listOf("/does/not/exist"), config.readableDirectories)
@@ -324,20 +277,24 @@ class ConfigTest {
     }
 
     @Test
-    fun `scratch directory keeps its env name and is validated`() {
-        assertEquals("/var/scratch", load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "/var/scratch/")).scratchDir)
-        assertEquals("/tmp/y", load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "/tmp/x/../y")).scratchDir)
-        assertEquals(
-            "DDR_ACP_AGENT_SCRATCH_DIR must be an absolute path, got 'scratch'",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to "scratch"))
-            }.message,
+    fun `sandbox keys parse but cannot fault the agent`() {
+        // The host config.json is mounted read-only into the sandbox, so its `sandbox`
+        // group must be parseable inside the container and must never require a host fact
+        // (the stateDir below does not exist anywhere): the agent simply has no sandbox
+        // field and starts on its defaults.
+        val config = load(
+            configJson = """
+                {
+                  "sandbox": {
+                    "network": "development",
+                    "stateDir": "/nonexistent/state",
+                    "mountCaches": false,
+                    "capAdd": ["SYS_PTRACE"]
+                  }
+                }
+            """.trimIndent()
         )
-        for (root in listOf("/", "/tmp/..", "//")) {
-            assertFailsWith<IllegalArgumentException>("expected '$root' to be refused") {
-                load(env = mapOf("DDR_ACP_AGENT_SCRATCH_DIR" to root))
-            }
-        }
+        assertEquals("openrouter/auto", config.openRouterModel)
     }
 
     @Test
@@ -346,60 +303,6 @@ class ConfigTest {
             "config file openRouter.apiKeyFile must be an absolute path, got 'openrouter.key'",
             assertFailsWith<IllegalArgumentException> {
                 load(configJson = """{"openRouter": {"apiKeyFile": "openrouter.key"}}""")
-            }.message,
-        )
-    }
-
-    @Test
-    fun `an explicit config file name must not be a path`() {
-        assertEquals(
-            "DDR_ACP_AGENT_CONFIG_FILE must be a file name inside the config directory, not a path, " +
-                    "got '/etc/config.json'",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "/etc/config.json"))
-            }.message,
-        )
-        for (name in listOf(".", "..")) {
-            assertFailsWith<IllegalArgumentException>("expected '$name' to be refused") {
-                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to name))
-            }
-        }
-    }
-
-    @Test
-    fun `an explicitly selected config file must exist in the config directory`() {
-        assertEquals(
-            "config file '${home.resolve(".config").resolve(Config.APP_CONFIG_DIR).resolve("work.json")}' " +
-                    "is not a regular file",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json"))
-            }.message,
-        )
-    }
-
-    @Test
-    fun `a blank config file selection falls back to the default name`() {
-        // The env layer trims everywhere else: a blank value must not count as
-        // an "explicit selection" (a missing profile is fatal, the default is not).
-        assertEquals("sk-default", load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "  ")).openRouterApiKey.value)
-    }
-
-    @Test
-    fun `an explicit config file name selects a profile and a broken one names the file`() {
-        val configDir = home.resolve(".config").resolve(Config.APP_CONFIG_DIR)
-        configDir.createDirectories()
-        val profile = configDir.resolve("work.json")
-        profile.writeText("""{"tools": {"maxTurnRequests": 5}}""")
-        assertEquals(
-            5,
-            load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json")).maxTurnRequests,
-        )
-
-        profile.writeText("""{"tools": {"maxTurnRequests": 0}}""")
-        assertEquals(
-            "config file '$profile': tools.maxTurnRequests must be at least 1, got 0",
-            assertFailsWith<IllegalArgumentException> {
-                load(env = mapOf("DDR_ACP_AGENT_CONFIG_FILE" to "work.json"))
             }.message,
         )
     }

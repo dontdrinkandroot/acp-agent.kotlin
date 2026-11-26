@@ -112,10 +112,26 @@ dependencies {
 
 application {
     mainClass.set("net.dontdrinkandroot.acpagent.MainKt")
+    applicationName = "acp-agent"
+}
+
+// The sandbox supervisor is a second entry point shipping in the same distribution (one
+// lib/): `acp-agent` runs the agent, `acp-agent-sandbox` relays ACP into the docker sandbox.
+// The distribution is Linux only: the `.bat` variants are excluded below, not generated away
+// (StartScripts always renders both).
+val sandboxStartScripts = tasks.register<CreateStartScripts>("sandboxStartScripts") {
+    mainClass.set("net.dontdrinkandroot.acpagent.sandbox.SandboxMainKt")
+    applicationName = "acp-agent-sandbox"
+    outputDir = layout.buildDirectory.dir("scripts-sandbox").get().asFile
+    classpath = tasks.named<CreateStartScripts>("startScripts").get().classpath
 }
 
 tasks.named<Sync>("installDist") {
-    val destination = layout.buildDirectory.file("install/acp-agent.kotlin").get().asFile
+    val destination = layout.buildDirectory.file("install/acp-agent").get().asFile
+    from(sandboxStartScripts.map { it.outputDir }) {
+        into("bin")
+    }
+    exclude("**/*.bat")
     doLast {
         destination.walkTopDown().forEach { it.setReadable(true, false) }
     }
@@ -125,7 +141,12 @@ tasks.test {
     dependsOn("installDist")
     systemProperty(
         "acp.agent.binary",
-        layout.buildDirectory.file("install/acp-agent.kotlin/bin/acp-agent.kotlin").get().asFile.absolutePath,
+        layout.buildDirectory.file("install/acp-agent/bin/acp-agent").get().asFile.absolutePath,
+    )
+    // The installed supervisor entry point, used by the sandbox process tests.
+    systemProperty(
+        "acp.agent.sandbox",
+        layout.buildDirectory.file("install/acp-agent/bin/acp-agent-sandbox").get().asFile.absolutePath,
     )
     // The black-box e2e harness launches the stdio MCP mock as a separate JVM
     // (StdioMcpMockServer), which needs this project's test runtime classpath.
@@ -140,22 +161,9 @@ tasks.test {
             override fun asArguments(): Iterable<String> = listOf("-Dacp.test.classpath=" + classpath.asPath)
         }
     )
-}
-
-// Black-box shell suite pinning the docker launcher composition (tests/bash);
-// always runs, so the "build green" definition of done includes it.
-val testScripts = tasks.register<Exec>("testScripts") {
-    group = "verification"
-    description = "Runs the shell test suite (tests/bash/run-all) pinning the docker launcher composition"
-    commandLine("tests/bash/run-all")
-    inputs.dir("tests/bash")
-    inputs.file("ddr-acp-agent-docker")
-    inputs.file("ddr-acp-agent")
-    outputs.upToDateWhen { false }
-}
-
-tasks.named("check") {
-    dependsOn(testScripts)
+    // DockerfileBuildInputsTest reads the Dockerfile from the checkout at runtime; without
+    // this input a Dockerfile edit would leave the test UP-TO-DATE (stale pin).
+    inputs.file("Dockerfile")
 }
 
 // Dependency updates: informational report only (run config dependency_updates),
