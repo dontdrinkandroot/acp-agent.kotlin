@@ -38,9 +38,34 @@ what actually resolves).
 | Logging          | kotlin-logging via slf4j-simple                                                         | 8.0.4 / 2.0.20               |
 
 kotlin-logging 8.0.4 is declared explicitly because ktor/ACP pull 7.0.0 and 8.0.01
-transitives; pinning 8.0.4 pins the banner-suppressing API. There is no LLM framework:
-the wire types are owned in `llm/models/ResponsesWireModels.kt` (Responses API dialect,
-issue #75), so the LLM contract is ours (see the LLM provider bullet under Boundaries).
+transitives; pinning 8.0.4 pins the banner-suppressing API.
+
+## Boundaries (do not silently change)
+
+If a boundary looks contra-productive, overcomplicated or blocking, say so instead of working
+around it.
+
+- **stdout carries the protocol.** Every byte must be an ACP JSON-RPC line; all logging goes to
+  stderr. A stray `println`, a chatty dependency or a startup banner corrupts the stream (the
+  actionable half is under Pitfalls).
+- **`terminal/*` is not implemented on purpose.** The agent runs its own processes (`ProcessBuilder`) instead of
+  delegating to the client's terminal and keeps ignoring the
+  `terminal` capability. A design decision, not a deferred feature.
+- **Permissions are decided by path, never by trust.** A path-scoped or mutating tool runs only
+  when `permissionDecision` returns ALLOW: inside the cwd, inside the matching directory tier or
+  - for reads - the scratch dir. `unlistedPaths = deny` refuses instead of prompting.
+- **One LLM provider:** OpenRouter's Responses API. `llm/models/ResponsesWireModels.kt` is the
+  internal LLM contract - no domain/anti-corruption wrapper, `LlmClient` is transport only.
+- **Wire items stay raw.** History items are `JsonObject`s, re-typed only when the typed value
+  re-encodes to the identical object: a restored session replays byte-for-byte, and a new wire
+  member can never be dropped by a parser branch. Consumers read an item's meaning, not its
+  variant.
+- **Reasoning is live-only.** Within a turn it is replayed; every exit path clears it (cancellation included, where no
+  terminal branch runs) and it never reaches the record.
+- **The request shape is a negative contract:** no `temperature`, `max_output_tokens`, `store`,
+  `previous_response_id`, `include`, `reasoning.context` (pinned by `LlmResponseGoldensTest`).
+- **No session-record migration.** A record from another dialect still decodes but fails at its
+  first turn; do not add a compat shim.
 
 ## Conventions
 
@@ -69,16 +94,6 @@ issue #75), so the LLM contract is ours (see the LLM provider bullet under Bound
 * Use Kotlin sugar to make the code more readable.
 * When fixing bugs add regression tests if reasonably possible.
 * `_meta: JsonElement?` is threaded through every ACP model type exactly as the SDK does.
-* Secrets never come from env vars: the OpenRouter key is read from an **owner-only file**
-  (`0600`/`0400`, issue #50) - resolution order and the redacting `Secret` holder are under
-  Configuration. Never commit or print a key; the sandbox supervisor reads no key variable at
-  all, so a key value never reaches the agent env, a `set -x` trace, an `env` dump,
-  `/proc/*/environ` or the docker CLI argv.
-* The agent's configuration is **file-only** (issue #84): every setting comes from the
-  selected `config.json`, `--profile <name>` is the only startup argument, and the
-  `DDR_ACP_AGENT_*` family is dead - not read, no warning. Do not reintroduce an env layer
-  ("docker convenience" included); the sandbox supervisor reads the same file on the host.
-* `build/` is generated output - never edit or commit it.
 * **Never commit without the user requesting it**: the agent must not run
   `git commit` (or otherwise write to git history, e.g. `git push`, `git tag`)
   unless the user explicitly asks. The `git` run config is for read-only
@@ -90,49 +105,33 @@ issue #75), so the LLM contract is ours (see the LLM provider bullet under Bound
 
 ## Building / running
 
-The standard dev loop is `./gradlew compileKotlin` / `compileTestKotlin` (fast loop) -> `test`
-(unit + black-box e2e) -> `build` (the definition of done). The `run` tool's configurations wrap
-these and the auxiliary scripts in `timeout` (180s for the fast loop and single test classes, 300s
-for `build`/`test` incl. a cold daemon), so a hung daemon surfaces as a timeout instead of
-stalling the agent. The configurations are **not listed here**: they are rendered into the system
-prompt from `<cwd>/.ai/run.json` on every turn (name, command, description, re-read per iteration),
-so `run` is the source of truth, and they are managed with `list_run_configs` /
-`create_run_config` / `update_run_config` / `delete_run_config` (mechanics under Features / Run
-configurations).
-Project wiring worth knowing: `show_failures` is backed by
-`.ai/scripts/show-test-failures.sh`, and `system_prompt` runs the `printSystemPrompt` JavaExec
-task (`agent/SystemPromptDump.kt`).
+Dev loop: `./gradlew compileKotlin` / `compileTestKotlin` -> `test` (unit + black-box e2e) ->
+`build` (the definition of done). Drive it through the `run` configurations: they wrap these and
+`.ai/scripts/show-test-failures.sh` in `timeout` (180s for the fast loop and single test classes,
+300s for `build`/`test` incl. a cold daemon), so a hung daemon surfaces as a timeout. The
+configurations are **not listed here** - they are rendered into the system prompt from
+`<cwd>/.ai/run.json` per turn, so `run` is the source of truth; manage them with
+`list_run_configs` / `create_run_config` / `update_run_config` / `delete_run_config`.
+`system_prompt` runs `printSystemPrompt` (`agent/SystemPromptDump.kt`).
 
-The agent takes only `--profile <name>`; configuration comes from the selected
-`config.json` (the sandbox mounts the host config directory). Entry points (checked in, the
-only supported launch paths):
+Launch paths (checked in, the only supported ones; the only argument is `--profile <name>`,
+everything else comes from the selected `config.json`):
 
-- `bin/acp-agent` — direct (no sandbox); always runs `installDist` first, then execs the agent
-- `bin/acp-agent-sandbox` — builds `installDist`, ensures the image (`--rebuild` forces a local
-  build; a manual `docker pull` updates it - the wrapper never pulls) and execs the Kotlin
-  supervisor, which relays ACP over the container's stdio untouched. Every other argument is
-  forwarded to the agent (`--profile` is parsed on both sides).
+- `bin/acp-agent` — direct (no sandbox): `installDist`, then execs the agent
+- `bin/acp-agent-sandbox` — `installDist`, ensures the image (`--rebuild` forces a local build; a
+  manual `docker pull` updates it, the wrapper never pulls), then execs the Kotlin supervisor (byte relay over the
+  container's stdio; `--profile` is parsed on both sides)
 
-Docker is resolved from `PATH` everywhere (wrapper, `build-docker`, supervisor); an
-IDE-inherited `PATH` without docker is a hard failure, not a configurable case.
+Docker is resolved from `PATH` everywhere; an IDE-inherited `PATH` without docker is a hard
+failure. The `sources` configuration (`./gradlew unpackLibrarySources`) unpacks the `-sources`
+jars of the runtime + test classpath into `build/library-sources-unpacked/` - the first stop for
+"how does library X behave" questions, before web research (`Sync` tasks, so stale versions are
+wiped on bumps).
 
-**Library-source investigation**: the `sources` run config (`./gradlew unpackLibrarySources`
-backed by the `downloadLibrarySources` + `unpackLibrarySources` Sync tasks in
-`build.gradle.kts`) resolves + unpacks the `-sources` jars of `runtimeClasspath` +
-`testRuntimeClasspath` into `build/library-sources-unpacked/<artifact>/` for browsing/grep'ing
-library code at the exact resolved versions — first stop for "how does library X actually
-behave" questions, before web research. Both tasks are `Sync`, so stale artifacts of old
-versions are wiped automatically on version bumps. Built on the current
-`ArtifactView.withVariantReselection()` API; the often-copied
-`createArtifactResolutionQuery` recipe is legacy Gradle (maintenance mode, removal targeted
-at 9.x — gradle/gradle#26365) and is deliberately not used.
-
-**Shutdown**: `runAgent` loops until `transport.state.value == Transport.State.CLOSED`
-(small delay), then runs the exit sequence: `protocol.cancelPendingIncomingRequests(...)` (a
-client that closes stdin never sends `session/cancel`, so the in-flight prompt turn would
-otherwise keep running), `agentSupport.persistAllSessions()` (flush every live session - the
-cancelled turn's own persist races the JVM exit, the flush does not; issue #17), then
-`protocol.close()`. It is deliberately **not** driven from the transport's `onClose`.
+**Shutdown**: `runAgent` waits for `Transport.State.CLOSED`, then cancels pending incoming
+requests (a client closing stdin never sends `session/cancel`), flushes live sessions (`persistAllSessions`; the
+cancelled turn's own persist races the JVM exit), then closes the
+protocol. Deliberately not driven from the transport's `onClose`.
 
 ## Tool Usage
 
@@ -151,510 +150,39 @@ cancelled turn's own persist races the JVM exit, the flush does not; issue #17),
 
 ## Layout
 
-```
-src/main/kotlin/net/dontdrinkandroot/acpagent/
-    Main.kt                          # `main` (logging setup, strict argument parsing) +
-                                     # `runAgent`: registry, session factory
-                                     # (AgentSessionFactory: create/restore), store wiring,
-                                     # transport, isoDateToday
-    BuildInfo.kt                     # build commit hash from git.properties (classpath) + the
-                                     # agent version (announced in initialize and shown by /info)
-    config/Config.kt                 # resolved config: Config.load (config.json >
-                                     # project overlay > defaults), profile selection,
-                                     # key-file resolution + owner-only check, the resolved
-                                     # key file path (Config.openRouterApiKeyFile, never the
-                                     # key), ConfigSources/readConfigSources (the shared,
-                                     # key-free source step both entry points use),
-                                     # PermissionTiers/mergePermissionTiers (the pure merge)
-    config/ConfigFile.kt             # strict config.json parser (ConfigFile incl. the
-                                     # shape-only `sandbox` group, UnlistedPaths,
-                                     # path/scratch/mount-path validation) + the JSON value
-                                     # helpers shared with the overlay parser
-    config/ProjectConfig.kt          # the project permission overlay (issue #85):
-                                     # <cwd>/.ai/ddr-acp-agent.json, strict at every level,
-                                     # parseProjectPermissions + readProjectConfig
-                                     # (directory-existence check)
-    config/AgentArguments.kt         # the strict `--profile <name>` parser + profileFileName
-                                     # (the .json convention, single definition); the sandbox
-                                     # supervisor reuses both
-    config/PlatformEnv.kt            # platformEnv(): System.getenv() source - only XDG_CONFIG_HOME
-                                     # (and the state-home resolver's XDG_STATE_HOME) are read
-    config/StateHome.kt              # stateHome(env, home): the XDG state root, shared by the
-                                     # session store and the sandbox plan (one rule, two readers);
-                                     # APP_STATE_DIR is the `ddr-acp-agent` directory name
-    config/Secret.kt                 # Secret value class: renders *** everywhere, .value is
-                                     # the explicit accessor (issue #78 - Config stays loggable)
-    llm/LlmClient.kt                 # LLM transport only (HTTP/SSE/JSON); implements ChatCompleter
-    llm/ChatCompleter.kt             # the Responses-API seam (LlmClient implements it) so the prompt
-                                     # runner is testable with a fake event stream
-    llm/LlmWire.kt                   # the single shared `llmWireJson` (snake-case etc.) for all
-                                     # wire-shaped LLM data (chat traffic + persisted history)
-    llm/LlmModels.kt                 # `GET /models` wire types (models feed, reasoning capability,
-                                     # provider endpoints feed: tag/provider_name/pricing)
-    llm/models/ResponsesWireModels.kt # owned Responses API wire types (input/output items as raw
-                                     # JsonObjects, content parts, flat FunctionTool, response
-                                     # envelope, usage) - the internal LLM contract, pinned by
-                                     # LlmResponseGoldensTest
-    llm/ModelLookup.kt               # List<OpenRouterModel>.forModel(id) - the single model lookup
-    providerrouting/ProviderRouting.kt  # provider routing: auto (throughput sort + median
-                                     # completion cap) + the manual `provider` option's
-                                     # per-model endpoints cache (slug + display name)
-    mcp/McpBridge.kt                 # MCP ServerConnection, McpTool (annotation-derived
-                                     # mutating/kind/title), JsonObject->Any map
-    mcp/McpConnector.kt              # stdio/HTTP/SSE connect helpers (JVM; HTTP installs SSE;
-                                     # stdio children get the session cwd + a built env
-                                     # allowlist, never the agent env - issues #74, #14)
-    sandbox/SandboxPlan.kt           # sandbox models (issue #84): SandboxSettings (the
-                                     # `sandbox` config group, shape-only validated), HostFacts
-                                     # (uid/gid, cwd, XDG roots + the resolved config dir, git
-                                     # identity, tool env), SandboxSpec (the composer's input
-                                     # incl. the per-run mask file), the typed mount/env types,
-                                     # SandboxPlan and the container path constants;
-                                     # SANDBOX_IMAGE is the fixed tag
-    sandbox/SandboxPlanResolution.kt # resolveSandboxPlan: the only host-I/O site (probes,
-                                     # creation, skip warnings, fail-loudly config), typed plan
-    sandbox/DockerInvocation.kt      # composeDockerInvocation: the pure argv renderer (typed
-                                     # lists, no concatenation/word splitting)
-    sandbox/HostEnvironment.kt       # supervisor inputs: host facts (UnixSystem ids, shared
-                                     # stateHome/configDir resolvers, git identity, tool-env
-                                     # allowlist) + the config read without the API key: the
-                                     # shared readConfigSources step and the merged tiers, so the
-                                     # mounts match what the agent trusts (issue #85)
-    sandbox/SandboxMain.kt           # the `acp-agent-sandbox` entry point: resolve -> compose
-                                     # -> docker run, byte pumps, stdin half-close, signal
-                                     # forwarding, exit-code propagation, docker from PATH
-    agent/SessionRecord.kt           # durable per-session state (history, mode, title, updatedAt,
-                                     # model, reasoning, provider, toolOutcomes:
-                                     # toolCallId -> completed|failed)
-    agent/SessionCwd.kt              # sessionCwdProblem: the cwd gate (absolute + existing
-                                     # directory, else -32602 at new/load/resume) - issue #74
-    agent/SessionCoroutines.kt       # clientOrNull(): the enclosing session's client, or null
-    agent/SessionStore.kt            # atomic save/load/list/delete + isValidSessionId path guard
-    agent/HistoryItem.kt             # the history item model in the Responses dialect: typed items the
-                                     # agent constructs (UserMessage/SystemMessage/ToolOutput) +
-                                     # `Captured` raw objects replayed byte-verbatim (reasoning,
-                                     # assistant messages, calls) - issue #75; also the wire item
-                                     # builders (assistantMessageItem/userMessageItem/functionCallItem),
-                                     # StreamToolCall and the raw-item field readers (stringField/
-                                     # intField/jsonObjectOrNull)
-    agent/SessionState.kt            # mutable session state (history, plan, title, model/reasoning,
-                                     # permanent permissions, toolOutcomes) + record lifecycle
-                                     # (buildRecord/persist/delete) + title announcement
-                                     # (takeTitleAnnouncement, once per title - issue #73) +
-                                     # the mode trail/status-text bridge (indicateCurrentMode)
-    agent/ModeState.kt               # the mode machine (issue #83): current/pending/indicated
-                                     # mode + prompt-active deferral, history-free; SessionState
-                                     # owns the `Mode:` trail and the status text
-    agent/AgentSessionImpl.kt        # thin SDK facade: wires the components below, implements the
-                                     # AgentSession interface (config options, prompt plumbing);
-                                     # postInitialize advertises the /info slash command, prompt
-                                     # answers it before any state is touched;
-                                     # one-shot onSessionReleased hook (close/delete/failed replay);
-                                     # persist-on-interrupt (prompt finally + close) - issue #17
-    agent/PromptContent.kt           # contentBlocksToInputParts: prompt content blocks ->
-                                     # Responses input parts (multimodal conversion; pure, pinned
-                                     # by AgentSessionPromptContentTest)
-    agent/ReplayUpdates.kt           # buildReplayUpdates: persisted state snapshot -> load-replay
-                                     # updates (pure, pinned by ReplayHistoryTest)
-    agent/ToolCallPairing.kt         # repairToolCallPairing: dangling tool calls -> synthetic
-                                     # FAILED result (pure; issue #38, pinned by
-                                     # ToolCallPairingRepairTest)
-    agent/PermissionPolicy.kt        # the path-access tiers + permissionDecision (cwd/readable/
-                                     # writable/unlistedPaths) + unlistedPathRefusal (issue #50)
-    agent/SystemPrompt.kt            # SystemPromptBuilder: pure system-prompt assembly (cwd, date,
-                                     # build hash, mode description, run configurations,
-                                     # AGENTS.md instructions)
-    agent/SessionConfigOptions.kt    # config surface (mode/model/reasoning/provider): option listing,
-                                     # validation/assignment, effective reasoning effort,
-                                     # effective provider slug
-    agent/ToolCallExecutor.kt        # one tool-call lifecycle: mode gate, unknown-tool, repeat guard,
-                                     # permission (tiered policy + permanent), execution, updates + history
-    agent/PromptRunner.kt            # the agent loop: LLM iteration cap, streamed deltas relayed,
-                                     # tool calls executed sequentially, wind-down synthesis pass
-    agent/AgentsMd.kt                # AGENTS.md loader + instructions section for the system prompt
-    agent/InfoCommand.kt             # the `/info` slash command: the advertised command entry
-                                     # (shared with the detector, so name and matching cannot
-                                     # drift), strict invocation detection (one text block,
-                                     # `/info` + word boundary) + the pure Markdown dump
-                                     # (InfoSnapshot/renderInfo) of the resolved config and the
-                                     # live session selections
-    agent/SystemPromptDump.kt        # reviewSystemPrompt + `main`: renders the prompt without
-                                     # AGENTS.md from invented example values (run config
-                                     # system_prompt / Gradle task printSystemPrompt)
-    agent/AgentSupportImpl.kt        # AgentSupport impl (initialize, create/load/resume/list/delete
-                                     # sessions, AgentSessionFactory interface, randomSessionId,
-                                     # formatSessionUpdatedAt: session/list updatedAt as RFC 3339
-                                     # with a numeric local offset, never `Z` - issue #22);
-                                     # self-cleaning live-session map + the `_meta` open marker
-                                     # (ACTIVE_SESSION_META) in session/list - issue #27;
-                                     # persistAllSessions(): the shutdown flush - issue #17
-    tools/Tool.kt                    # AgentTool, ToolContext (incl. fileExclusions), ToolResult
-    tools/FileAccessExclusions.kt    # file-access exclusion policy: glob rules, matching, refusal
-                                     # text; DEFAULT = .env*.local + .ai/run.json +
-                                     # .ai/ddr-acp-agent.json; future source: .aiignore
-    tools/ScratchDirectory.kt        # prepareScratchDirectory: creates/verifies the read-trusted
-                                     # scratch directory (0700, symlink/type/owner checks, mode repair)
-    tools/ToolRegistry.kt            # tool registry + mode filtering (availableForMode/disabledInMode)
-    tools/ToolCatalog.kt             # localTools() + sessionTools(cwd): the production tool list
-                                     # (Main.kt assembles the registries from it; iterated by the
-                                     # schema guard test)
-    tools/ToolSchema.kt              # JSON-schema helpers for tool parameters (jsonSchema, Prop)
-    tools/BashTool.kt                # bash tool (mode-gated shell command via runShellCommand)
-    tools/ProcessRunner.kt           # ProcessRunner: /bin/sh -c, tree-kill, progressive bounded
-                                     # tail (StreamTail) + shared runShellCommand rendering
-                                     # (bash + run tools)
-    tools/WebFetchTool.kt            # web_fetch tool (line-paged HTTP fetch, ToolKind.FETCH)
-    tools/WebFetcher.kt              # fetch pipeline: ktor CIO client, redirects + SSRF guard,
-                                     # gzip/deflate, 20 MB cap, NUL sniff, charset, binary refusal
-    tools/WebContentConverter.kt     # jsoup HTML -> line-based text (block tags, pre, li), pass-through otherwise
-    tools/Containment.kt             # isWithin / resolveAgainstSessionCwd (symlink-safe containment)
-    tools/ToolTarget.kt              # resolveToolTarget: the single path-tool prologue seam
-                                     # (path arg decode -> absoluteToolPath -> exclusion refusal,
-                                     # issue #80); ToolTarget = Resolved path | Rejected error
-    tools/AtomicWrite.kt             # writeAtomically/moveAtomically (temp+move),
-                                     # sweepStaleTempFiles (crash-orphaned *.tmp, issue #20),
-                                     # isSymbolicLink
-    tools/FormatBytes.kt             # shared formatBytes (user-facing size messages)
-    tools/DiffPolicy.kt              # shared tool-diff emission policy (issue #58):
-                                     # emitsToolDiff/toolResultDiff/DiffOutcome +
-                                     # mutationResult notes (issue #57) + TreeDiffCollector
-                                     # (bounded per-file/tree diffs, issue #56)
-    tools/FileStore.kt               # FileStore interface, LocalFileStore (regular-files-only guard),
-                                     # ClientFileStore (fs proxy,
-                                     # windowing: whole-file fallback + EOF probe, fixes #6) +
-                                     # selectFileStore (proxy vs local selection) + the exception types
-    tools/StreamingLineReader.kt     # StreamingLineReader (SourceLine = text + terminator status +
-                                     # truncated; 64 KB per-line accumulation cap + NUL sniff,
-                                     # issue #24) + countVisualLines (newline byte scan for exact totals)
-    tools/VisualLines.kt             # the visual-line convention: visualLines/rawVisualLines,
-                                     # the shared truncateLine line cap and renderNumberedWindow
-                                     # (the single read_file/web_fetch numbered-window renderer,
-                                     # issue #81) + lineWindowStartError/MAX_WINDOW_LINES
-                                     # (trailing newline = terminator, "" = 0 lines)
-    tools/PlanTool.kt                # UpdatePlanTool (emits ACP PlanUpdate, stores plan on session)
-    tools/GetCurrentModeTool.kt      # get_current_mode tool (mode status text via ToolContext)
-    tools/CalcExpression.kt          # safe arithmetic expression evaluator (closed grammar:
-                                     # numbers, + - * / % ^, parens, functions, constants pi/e;
-                                     # CalcException, length/nesting caps) + formatCalcResult
-    tools/CalcTool.kt                # calc tool (evaluate an expression, ToolKind.OTHER)
-    tools/RunTool.kt                 # run tool (static description; configs surfaced in the system
-                                     # prompt; args = argv tokens at the [args] slot → "$@")
-    tools/RunConfigStore.kt          # run-config storage: load/create/update/delete, atomic write
-                                     # (the dedicated tools and the run tool read through this)
-    tools/RunConfigTools.kt          # list_run_configs + create/update/delete_run_config tools
-    tools/ReadFileTool.kt            # read_file tool (via FileStore)
-    tools/WriteFileTool.kt           # write_file tool (via FileStore)
-    tools/EditFileTool.kt            # edit_file tool (via FileStore)
-    tools/ListDirTool.kt             # list_dir tool (local disk)
-    tools/DirectoryWalk.kt           # shared directory-walk infrastructure: walk/globToRegex/
-                                     # searchRootError/formatCappedListing/relativeToRoot +
-                                     # treeFilesSorted (tree-diff walker) + cap constants
-    tools/GlobTool.kt                # glob tool (local disk; via DirectoryWalk)
-    tools/GrepTool.kt                # grep tool (local disk)
-    tools/MoveFileTool.kt            # move_file tool + the shared executeMove flow (MoveKind
-                                     # FILE/DIRECTORY: expected source type, sibling tool, verb)
-                                     # + movePath helper (local disk)
-    tools/MoveDirectoryTool.kt       # move_directory tool (local disk)
-    tools/DeleteFileTool.kt          # delete_file tool + removed-content diff (local disk)
-    tools/DeleteDirectoryTool.kt     # delete_directory tool; symlink-safe recursive delete
-                                     # (containsSymlink/deleteRecursively helpers)
-src/test/kotlin/                              # unit tests + black-box e2e harness
-    net/dontdrinkandroot/acpagent/sandbox/
-        FakeDocker.kt                # fixture docker CLI (resources sandbox/fake-docker)
-                                     # installed into a fixture PATH dir; records every argv
-                                     # losslessly (per-token lines, backslash/newline escaped)
-                                     # and echoes stdin for relay tests
-        SandboxPinSupport.kt         # the pin vocabulary: PinCase, token-level
-                                     # ArgvExpectations, fixture facts
-                                     # (uid=1001, /fixtures/...)
-        SandboxPinRows.kt            # `object SandboxPins` + the rows: ported rows + promoted
-                                     # rows, permission and config mounts, the --env allowlist
-                                     # closure, --profile; coverage invariant in the KDoc
-        FixtureProbes.kt             # HostProbes over a declared fixture tree, so the pin
-                                     # table resolves the plan without host I/O
-        SandboxCompositionPinTest.kt # drives every row through resolveSandboxPlan +
-                                     # composeDockerInvocation
-        SandboxPlanTest.kt           # typed plan level: skip warnings, tiers, ordering
-        SandboxFailLoudlyTest.kt     # every fail-loudly path, before any docker run
-        SandboxSupervisorTest.kt     # installed-supervisor process contract (relay,
-                                     # half-close, signals, exit code, 127, args, profile,
-                                     # uid/gid)
-        DockerfileBuildInputsTest.kt # Dockerfile COPY allowlist + ENTRYPOINT path pin
-    net/dontdrinkandroot/acpagent/e2e/
-        E2eAgentTest.kt              # abstract base: process/stdio transport harness, temp-dir
-                                     # lifecycle (withE2eAgent), connect helpers (connectProcess
-                                     # separates start from connect so a scenario can drain the
-                                     # agent's stderr), prompt helpers, testClasspath/javaBinary
-                                     # accessors for launching the stdio MCP mock
-        MockOpenAiServer.kt          # mock OpenRouter server (SSE chunks, models + endpoints feed)
-                                     # + MockToolCall / pathArgs
-        MockMcpTools.kt              # the tool wire payloads shared by the MCP mocks
-                                     # (initialize result, tools/list, tools/call): annotated
-                                     # (readOnly+title / unannotated / destructive+title) + marker
-                                     # file side effect; inputSchema carries required/$schema/$defs
-                                     # + a $ref property (pins the verbatim MCP schema
-                                     # advertisement, issue #12); optional `read_file` tool for the
-                                     # local-tool-shadowing scenario
-        MockMcpServer.kt             # in-process streamable-HTTP MCP mock (JSON POST responses,
-                                     # 202 initialized, 405 GET/DELETE) serving MockMcpTools
-        MockMcpSseServer.kt          # in-process classic-SSE MCP mock: GET /sse streams the
-                                     # `endpoint` event then JSON-RPC responses, POST /messages
-                                     # answers 202; optional requiredHeader pins header forwarding
-        StdioMcpMockServer.kt        # stdio MCP mock, run as a separate JVM (`main`): NDJSON
-                                     # JSON-RPC on stdin/stdout, echoes the requested
-                                     # protocolVersion, exits on stdin EOF; marker path + shadow
-                                     # mode via env (pins McpServer.Stdio.env forwarding);
-                                     # MOCK_MCP_PROBE=1 records the launch context (cwd, key
-                                     # presence, PATH) into the marker - issues #74/#14
-        ClientOperations.kt          # client session ops doubles: TestClientOperations
-                                     # (records requests/notifications, allow_once) +
-                                     # SuspendingPermissionOperations (stuck permission prompt)
-        E2eWireConformanceTest.kt    # initialize/session/config-option/prompt/tool-call/permission
-                                     # flow + UUIDv7 messageIds, usage_update, attribution headers
-                                     # + the cheap spec MUSTs: stdout hygiene (every stdout line a
-                                     # JSON-RPC 2.0 message), protocolVersion negotiation (incl. an
-                                     # unsupported requested version answered with the latest) and
-                                     # the complete capability advertisement (issue #61)
-        E2eSessionPersistenceTest.kt # session record/list/load(replay)/resume/delete across
-                                     # restarts + update_plan persistence/replay
-        E2eCancelTest.kt             # $/cancel_request dismisses a stuck permission prompt +
-                                     # cancel during a running bash command (no FAILED update);
-                                     # pins the cancelled PromptResponse + StopReason.CANCELLED
-                                     # (fixes #62)
-        E2eToolCallPairingRepairTest.kt # pairing invariant e2e (issue #38): cancelled call closed
-                                     # in the next chat request; poisoned record heals at load
-                                     # (terminal FAILED replay); mid-batch cancel record pin
-                                     # (already pair-complete on disk right after the cancel)
-        E2eShutdownTest.kt           # graceful shutdown (issue #17): a turn interrupted by the
-                                     # client closing stdin and a turn cancelled via session/cancel
-                                     # both reach the session record (user message + pair-complete)
-        E2eModeRestrictionTest.kt    # registered tool disabled in the current mode is refused
-                                     # before permission/execution (bash in build mode)
-        E2eModeIndicationTest.kt     # mode status messages: idle/mid-turn switches coalesce into
-                                     # one latest-mode message at the next prompt start (issue #36)
-        E2eDeferredModeSwitchTest.kt # mid-turn mode switches: one current_mode_update at the
-                                     # turn-end flush, a cancelled turn drops the pending mode
-                                     # (issue #83)
-        E2ePromptCapabilitiesTest.kt # AGENTS.md injection + multimodal prompt conversion
-                                     # (image data URI, inlined text resource, resource_link
-                                     # markdown link)
-        E2eStartupArgumentsTest.kt   # process-level startup contract: strict argument
-                                     # parsing (--profil / --skip-pull -> exit 2) and
-                                     # --profile selecting the file that is read
-        E2eInfoCommandTest.kt        # the /info slash command: advertisement on session
-                                     # setup, one-chunk Markdown reply with the resolved
-                                     # config, zero LLM calls, no record, the discarded-text
-                                     # note, /infofoo staying an ordinary prompt and /info
-                                     # never entering the next request's history
-        E2eFileStoreTest.kt          # client fs proxy (on/off) + the fs-capability negative
-                                     # (no fs capability advertised -> local store, no
-                                     # fs/read_text_file or fs/write_text_file call, issue #61)
-                                     # + out-of-project read permission (incl. the four
-                                     # permission option kinds, issue #61)
-                                     # + allow_always session grant (one prompt for two prompts'
-                                     # out-of-project reads, issue #65) + trusted paths
-                                     # (readable dirs: read prompt-free, write
-                                     # still prompts) + the scratch directory (plan-mode
-                                     # grep prompt-free, a symlinked scratch dir refusing
-                                     # session creation, issue #10) + move/delete tools
-                                     # (in-project without prompt, out-of-project move
-                                     # destination prompts)
-        E2eExcludedFilesTest.kt      # file-access exclusions: read_file on .env.local fails
-                                     # without reading/prompting, list_dir hides the entry,
-                                     # the .ai/run.json rule is hidden too (issue #70)
-        E2eDirectoryTiersTest.kt     # the permissions tiers from config.json (issue #50) end to end:
-                                     # readable-tier read + writable-tier write prompt-free, a write
-                                     # in the readable tier still prompts, unlistedPaths=deny refuses
-                                     # without a prompt naming the config entry
-        E2eProjectConfigTest.kt      # the project permission overlay (issue #85): prompt-free
-                                     # access to its directories (and the merged tier in the
-                                     # system prompt), the same read prompting without it, the
-                                     # overlay refused to the file tools, a session-cwd overlay
-                                     # ignored when the launch cwd differs (the residual)
-        E2eProviderRoutingTest.kt    # auto provider routing: median cap, fail-open, disabled
-        E2eProviderOptionTest.kt     # provider config option (issue #42): advertisement, request
-                                     # wire shape order, fail-open hidden, manual-beats-env,
-                                     # persistence across restart
-        E2eMaxTurnRequestsTest.kt    # agent loop iteration cap + wind-down synthesis pass
-                                     # + the turn-end delivery order (note -> usage_update ->
-                                     # prompt response)
-        E2eRunToolTest.kt            # run tool: prompt-free in every mode, on-disk side effect,
-                                     # unknown config fails loudly, args = literal argv tokens
-        E2eRunConfigCrudTest.kt      # create/update/delete_run_config: .ai/run.json persistence
-                                     # and permission prompts, plus the issue #70 pin that a
-                                     # rejected create cannot be re-applied via edit_file
-        E2eMcpToolPermissionTest.kt  # MCP tool permissions via annotations: readOnly prompt-free
-                                     # (trusted), unannotated prompts + executes,
-                                     # MCP trustAnnotations=false prompts, destructive annotated
-                                     # title, mcpCapabilities.http advertisement
-        E2eMcpStdioTransportTest.kt  # the spec-mandatory stdio transport end-to-end (issue #60)
-                                     # over StdioMcpMockServer: read-only prompt-free, unannotated
-                                     # prompts + executes (marker written by the child process),
-                                     # local-tool shadowing ignored with a warning while the local
-                                     # read_file still runs, unstartable server fails open, and the
-                                     # launch contract (issues #74/#14): the child runs in the
-                                     # session cwd while the agent itself runs elsewhere and sees
-                                     # no agent secret (probe marker)
-        E2eMcpSseTransportTest.kt    # classic SSE transport end-to-end (issue #69) over
-                                     # MockMcpSseServer: read-only prompt-free, unannotated
-                                     # prompts + executes, McpServer.Sse.headers forwarded
-        E2eWebFetchTest.kt           # web_fetch: prompt-free plan-mode fetch with
-                                     # tools.webFetch.allowPrivate=true in config.json,
-                                     # loopback refusal without it
-README.md                               # user-facing readme (install, IDE setup, config,
-                                        # migration from the bash launcher, troubleshooting)
-Dockerfile                              # multi-stage image: temurin-25 builder -> dev base
-bin/acp-agent                           # direct entry point (no sandbox): installDist, then
-                                        # execs the agent; Gradle stdout is redirected to stderr
-bin/acp-agent-sandbox                   # sandbox entry point: installDist, image provisioning
-                                        # (docker image inspect / --rebuild / build-docker),
-                                        # then execs the supervisor
-build-docker                            # local image build script (tags
-                                        # ghcr.io/dontdrinkandroot/acp-agent:latest)
-.github/workflows/build-image.yml        # CI: builds/pushes image to GHCR on push to main, prunes all but the 5 newest versions
-.dockerignore                           # build context exclusions (.git, build/, .gradle/)
-.ai/run.json                            # run configurations (injected into the system prompt
-                                        # each turn; mechanics: Features / Run configurations)
-.ai/scripts/show-test-failures.sh       # failure messages from the latest JUnit XML
-                                        # (run config `show_failures`)
-```
+The package is the map - read `net.dontdrinkandroot/acpagent/<package>` before trusting any
+summary here; behaviour and rationale live under Features below, one-off detail in KDoc.
 
-### Configuration (config.json, file-only)
-
-Resolved once at startup (`Config.load`, no live reload): **built-in defaults <
-`$XDG_CONFIG_HOME/ddr-acp-agent/config.json` < `<launch cwd>/.ai/ddr-acp-agent.json`**. The
-configuration is **file-only** (issue
-#84) - no environment variable supplies, selects or overrides a setting; `--profile <name>`
-(`config/AgentArguments.kt`) is the only startup argument. A profile selects `<name>.json` in
-the config directory (`work` -> `work.json`; bare name, no path, `.json` suffix rejected -
-the convention is `profileFileName`, the single definition the sandbox supervisor reuses), so
-it resolves identically on the host and inside the docker container. A selected profile must
-exist, a missing default file means "all defaults". The parser is **strict**: an unknown
-argument (a mistyped `--profil`, the removed `--skip-pull`) exits with code 2 and names it,
-so a typo can never silently run on the default profile (`AgentArgumentsTest`,
-`E2eStartupArgumentsTest`); a broken config file (base or project overlay) exits with code 2
-and one `acp-agent: <message>` line instead of a stack trace (`main` catches the
-`IllegalArgumentException`, the same shape as the argument error). Everything else in the
-process environment is inert as agent config: `DDR_ACP_AGENT_*` (current and legacy spellings
-such as `OPENROUTER_*`/`FS_PROXY_ENABLED`/`ACP_*`) is not read and produces no warning.
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `TZ`, `HOME` and the tool variables (`UV_CACHE_DIR`,
-`GRADLE_USER_HOME`, `ANDROID_HOME`, ...) remain - they are standard variables, host facts or
-the tools' own configuration, not agent config.
-
-`ConfigFile.parse` (`config/ConfigFile.kt`) is strict: typed values, ranges, no clamping,
-unknown keys ignored, errors name the JSON path (`tools.bash.timeoutSeconds must be between 1
-and 3600, got -5`). Value rules: booleans are JSON booleans in the file, numbers are strict
-with the documented ranges (never clamped), path lists are absolute-only (relative entries
-are an error), never the filesystem root (a `/` tier would make every path prompt-free in a
-direct run while the sandbox cannot mount it - both readers must agree), with trailing
-slashes normalized (so `/srv/` and `/srv` collapse to one entry),
-deduped, and a missing directory only warns.
-
-**Project permission overlay** (issue #85, `config/ProjectConfig.kt`). An optional
-`<launch cwd>/.ai/ddr-acp-agent.json` adds project-specific directories on top of the
-selected base configuration, so a repository that needs one extra directory next to its
-checkout does not have to widen the global lists for every project. Scope is exactly
-`permissions.{readableDirectories, writableDirectories, unlistedPaths}` - nothing else is
-project-overridable (no tool settings, `mcp.*`, `openRouter.*`, `scratchDir`, `sandbox.*`;
-secrets and key-file locations stay in the user's file). Rules:
-
-- **Strict at every level** (the inverse of the base file's leniency): an unknown key at the
-  top level or inside `permissions` aborts startup; a *known* global key gets the more useful
-  message that it cannot be set per project and names `config.json` instead. A newer global
-  file must not kill an older agent, but an ignored key here would silently fail to grant
-  exactly what the file exists to grant, so there is no forward-compat surface.
-- **Merge** (`mergePermissionTiers`, pure): the directory lists are **unioned** (base order
-  first) - a project can add entries but never remove a base entry; `unlistedPaths` is
-  replaced outright in either direction.
-- **Paths**: absolute only, never `/`, and every named directory must **exist** - stricter
-  than `Config.directoryWarnings` (a warning in a direct run) because the overlay is checked
-  in with the repository, while a base entry may name a mount another machine lacks.
-- **Read once at startup from the launch cwd**, not per session: the sandbox supervisor
-  composes the mounts from the same directory, so a per-session decision could trust a path
-  the container does not have. A session opened on a different directory runs under the
-  launch directory's overlay (the launch-cwd == session-cwd assumption, documented residual,
-  pinned by `E2eProjectConfigTest`).
-- **One source step for both readers**: `readConfigSources(env, home, configFileName, cwd)`
-  (key-free) returns the config dir, the base `ConfigFile` and the overlay;
-  `Config.load(cwd)` and `loadSandboxSpec` both project from it, so the agent's decisions and
-  the supervisor's mounts cannot drift apart. The overlay's file path is recorded in
-  `Config.projectConfigFile` and named by `/info` (merged entries carry no provenance marker
-  in the system prompt by design - the model needs the path, not its origin).
-- **Excluded from the file tools** like `.ai/run.json`: a grant file the model could rewrite
-  is not a boundary (see File-access exclusions).
-- **No consent mechanism**: the overlay applies unconditionally - the agent runs on the
-  user's own repositories.
-
-| Config path                        | Default                        | Meaning                                                                                             |
-|------------------------------------|--------------------------------|-----------------------------------------------------------------------------------------------------|
-| `openRouter.apiKeyFile`            | *(see API key)*                | File holding the API key.                                                                           |
-| `openRouter.defaultModel`          | `openrouter/auto`              | Initial model; switchable per session.                                                              |
-| `openRouter.baseUrl`               | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint.                                                                         |
-| `openRouter.autoThroughputSorting` | `true`                         | `false` disables automatic provider routing.                                                        |
-| `tools.maxTurnRequests`            | `100`                          | Tool-calling LLM iterations per prompt (>= 1).                                                      |
-| `tools.fsProxy`                    | `true`                         | `false` forces the local file store.                                                                |
-| `tools.bash.timeoutSeconds`        | `600`                          | Shell command timeout, 1..3600.                                                                     |
-| `tools.webFetch.allowPrivate`      | `false`                        | Allow non-public HTTP targets.                                                                      |
-| `mcp.trustAnnotations`             | `true`                         | `false` treats all MCP tools as untrusted.                                                          |
-| `permissions.readableDirectories`  | *(none)*                       | Prompt-free read roots (unioned with the project overlay's entries).                                |
-| `permissions.writableDirectories`  | *(none)*                       | Prompt-free write roots (implies readable; unioned with the overlay).                               |
-| `permissions.unlistedPaths`        | `prompt`                       | `prompt` or `deny` for uncovered paths (the overlay replaces it outright).                          |
-| `scratchDir`                       | `/tmp/ddr-acp-agent`           | The agent's scratch directory (read-trusted, never cleaned).                                        |
-
-**`sandbox` group (shape only, no agent field).** `ConfigFile.Sandbox` holds the supervisor's
-settings - `network` (default `host`), `stateDir` (nullable: host-resolved default
-`$XDG_STATE_HOME/ddr-acp-agent`), `mountCaches`, `homeVolume`, `extraArgs`, `capAdd`,
-`rwRootfs`. The project overlay cannot carry it (its parser refuses every non-`permissions`
-key). It is validated for **shape only** in the shared parser - types, absolute-path
-form (`stateDir` never `/`, trailing slashes normalized), lists of strings, errors naming the
-JSON path - and the agent's `Config` deliberately carries no sandbox field. The rule: **no
-`sandbox` key is validated against a host fact in the shared parser**; everything needing a
-host fact (creating `stateDir`, probing caches, mount sources existing) belongs to the sandbox
-plan resolution on the host. That is what keeps the group invisible to the containerized
-agent: the host `config.json` is mounted read-only there, so its `sandbox` keys are parseable
-but can never fault the agent with a host path. Pinned by `ConfigFileTest` (shape errors) and
-`ConfigTest` (`sandbox keys parse but cannot fault the agent`, plus the overlay layering:
-union, no removal, `unlistedPaths` both ways, the recorded `projectConfigFile`, "broken
-overlay before missing key") and `ProjectConfigTest` (strict at every level, the
-unscoped-key message pointing at `config.json`, path rules incl. the root refusal and the
-directory-existence check).
-
-**API key: file only.** No variable ever holds the key itself. Resolution order
-`openRouter.apiKeyFile` > `<config dir>/openrouter.key` > fail listing the tried sources.
-Every key file must be a regular, **owner-only** file (`0600`/`0400`); group/other access is
-refused with the path (`requireOwnerOnly` in `Config.kt`). The resolved value is held as a
-`Secret` (`config/Secret.kt`, issue #78): `Config` stays freely loggable - every implicit
-rendering (`toString`, string interpolation, a data-class dump) prints `***` - and only an
-explicit `.value` reaches the key (the single production site is the `LlmClient` hand-off in
-`Main.kt`). Under the docker sandbox the host config directory is mounted read-only at the
-container's own config directory (see Docker sandbox), which is the agent's only key source
-there.
-
-**Directory permission tiers** (`agent/PermissionPolicy.kt`, `permissionDecision`):
-the session cwd is implicitly read+write; `readableDirectories` covers the
-read-only path tools, `writableDirectories` the mutating ones (writable implies
-readable); everything else follows `unlistedPaths` (`prompt` = the
-`session/request_permission` prompt, `deny` = hard refusal naming the config entry,
-`unlistedPathRefusal`). A partially covered call (one target in, one out) is
-unlisted. `bash`, `run` and MCP tools are unaffected. The lists a session applies
-are `mergePermissionTiers(config.json, .ai/ddr-acp-agent.json)` (see Project
-permission overlay). Under the docker sandbox
-the two lists **are the mount list** (readable mounted `:ro`, writable rw, at
-the identical in-container path) - one config file, two readers (agent and
-supervisor), so the trust domain and the mounts cannot drift apart.
-
-- `scratchDir`: the agent's own scratch directory (default
-  `/tmp/ddr-acp-agent`), read-trusted like a readable directory but a separate config field -
-  it is never part of `permissions.readableDirectories`. Must be absolute and must not be `/`.
-  Never cleaned up. The sandbox never mounts it - the agent reads the configured value from
-  the mounted `config.json`, and inside the container the path lives on the ephemeral `/tmp`
-  tmpfs, so scratch content is per-container-session. Creation/verification at session assembly: see Features / Permissions.
+- `Main.kt`, `BuildInfo.kt` - `main` (logging setup, strict argument parsing), `runAgent`
+  (transport, registries, session factory, shutdown flush), build hash + agent version.
+- `config/` - strict `config.json` parsing, `--profile` selection, the project overlay,
+  key-file resolution (`Secret`), the XDG state home.
+- `llm/` - the Responses-API transport (hand-rolled SSE line scan), the owned wire models, the
+  `ChatCompleter` seam.
+- `providerrouting/` - auto routing (throughput sort + median cap) and the provider option's
+  endpoints cache.
+- `agent/` - the session itself: record/store, state, mode machine, prompt runner, tool-call
+  executor, system prompt, permission policy, replay, `/info`.
+- `mcp/` - MCP consumption (stdio, streamable HTTP, classic SSE) and annotation-driven tool
+  bridging.
+- `sandbox/` - the supervisor: host facts -> typed plan -> argv composition, `acp-agent-sandbox`
+  entry point.
+- `tools/` - the tool set + `ToolRegistry`/`ToolCatalog`, `FileStore`, the walkers, output caps,
+  the exclusion and diff policies.
+- `src/test/.../sandbox/` - the argv pin table (`SandboxPinRows`), plan/fail-loudly/supervisor/
+  Dockerfile tests and `FakeDocker`.
+- `src/test/.../e2e/` - the black-box harness (`E2eAgentTest`) and its mocks (`MockOpenAiServer`, `MockMcpServer`,
+  `MockMcpSseServer`, `StdioMcpMockServer`).
+- `bin/`, `build-docker`, `Dockerfile` - the two launch wrappers, the local image build, the
+  multi-stage image (`build-image.yml` pushes it to GHCR).
+- `.ai/run.json`, `.ai/scripts/` - the run configurations and `show-test-failures.sh`.
+- `README.md` - user-facing docs (install, IDE setup, configuration, troubleshooting).
 
 ## Features
 
 ### Sessions & persistence
 
-- **Session cwd gate** (issue #74): the `cwd` of `session/new`/`session/load`/`session/resume`
+- **Session cwd gate**: the `cwd` of `session/new`/`session/load`/`session/resume`
   is validated by `sessionCwdProblem` (`agent/SessionCwd.kt`: absolute, existing, a directory -
   an unparseable path is a clean refusal, not a throw) and refused with `-32602` before a
   session exists, in `AgentSupportImpl` (the same layer that already answers invalid ids and
@@ -674,8 +202,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   (black-box `-32602`, no record left behind).
 - **Lifecycle & persistence**: `initialize` -> `session/new` (random `sess_` + 16 hex digits) ->
   `session/prompt` -> `session/delete` (closes MCP connections + `LlmClient`, removes the
-  record); `session/cancel` is coroutine cancellation. **An ended session refuses work**
-  (issue #21): `session/delete` on an active session ends it (record removed, resources
+  record); `session/cancel` is coroutine cancellation. **An ended session refuses work**:
+  `session/delete` on an active session ends it (record removed, resources
   closed, live-map entry dropped), but the SDK keeps routing `session/prompt`/set-mode/
   set-model/set-config-option to our instance - so `AgentSessionImpl.ensureActive()` refuses
   every one of them with `-32002` (`JsonRpcErrorCode.RESOURCE_NOT_FOUND`, the spec's code for
@@ -689,16 +217,17 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `$XDG_STATE_HOME/ddr-acp-agent/sessions/<sessionId>.json` (fallback `~/.local/state`),
   atomically (temp + move) on every completed turn and mode/config change, **after every
   executed or denied tool call** (`ToolCallExecutor` -> `state.persist()`, so a crash mid-turn
-  keeps the effects-so-far visible in the record; fixes #26's per-turn window), **when a turn
+  keeps the effects-so-far visible in the record), **when a turn
   is interrupted** (`prompt`'s `finally` persists under `NonCancellable` when the turn did not
   complete - `session/cancel` or a closing client, so the user message, the streamed partial
-  reply and the applied tool calls survive; the record is pair-complete via the #38 repair), **on `session/close`**
+  reply and the applied tool calls survive; the record is pair-complete via the pairing
+  repair), **on `session/close`**
   (same `NonCancellable` flush before the resources go away) and **at
   shutdown** (`AgentSupportImpl.persistAllSessions()` after the transport closed, see
-  Building / running; issue #17). **Crash-orphaned temp files are swept** (issue #20): the `finally`
+  Building / running). **Crash-orphaned temp files are swept**: the `finally`
   of the atomic write covers in-process failures only - a SIGKILL between write and move
-  strands `session-*.tmp` files (0600, holding full history, invisible to `list()`, never
-  cleaned before). `save()`/`list()` therefore run `sweepStaleTempFiles`
+  strands `session-*.tmp` files (0600, holding full history, invisible to `list()`).
+  `save()`/`list()` therefore run `sweepStaleTempFiles`
   (`tools/AtomicWrite.kt`) at most once per `STALE_TEMP_AGE_MILLIS` (1h - `save` runs after
   every tool call, an unconditional scan would rescan the same debris on every persist; the
   throttle still self-heals against debris of crashed sibling processes sharing the sessions
@@ -709,18 +238,18 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   its only caller is the rare `.ai/run.json` write, so `run.json*.tmp` debris in the project
   dir is cleaned the same way). The record (`agent/SessionRecord.kt`) holds history (Responses-API
   wire items as raw `JsonObject`s from `llm/models/ResponsesWireModels.kt` via the shared
-  `llmWireJson`; reasoning items are never persisted - live-only, issue #75), mode, title
+  `llmWireJson`), mode, title
   (first user message, 72 code points), model, reasoning, plan and
   `toolOutcomes` (toolCallId -> `"completed"` | `"failed"`, recorded at history-append time in
-  `SessionState.appendToolResult`; lenient at replay - unknown values/legacy records fall back
+  `SessionState.appendToolResult`; lenient at replay - unknown values and absent entries fall back
   to COMPLETED). Persist and delete share a `persistMutex` so a delete never resurrects the
   file; failures log to stderr and never fail the turn. Client-supplied ids are format-checked
   (`isValidSessionId`) so traversal/separators never reach the filesystem. Session creation
   (and restore) closes any already-opened MCP connections and the `LlmClient` when the model
-  feed fetch fails. **Tool-call pairing invariant** (issue #38): a cancelled turn leaves the
+  feed fetch fails. **Tool-call pairing invariant**: a cancelled turn leaves the
   call it was running in the history without a result, and a strict provider (Azure/OpenAI)
-  rejects any later chat request with 400 "No tool output found for function call <id>" —
-  observed on 13 of 172 real sessions. The invariant is therefore enforced at the **observation
+  rejects any later chat request with 400 "No tool output found for function call <id>".
+  The invariant is therefore enforced at the **observation
   boundary, not at the write sites**: `repairToolCallPairing`
   (`agent/ToolCallPairing.kt`, pure + idempotent) closes every assistant tool-call id that has
   no matching `role:"tool"` result with one synthetic FAILED result ("Tool call was
@@ -735,7 +264,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `tool_call` + terminal `tool_call_update` with the persisted real outcome - denied,
   disabled, unknown and failed calls replay as FAILED, successes as COMPLETED - and plan) from
   `AgentSession.replayHistory()`, which the SDK runs **before** the load response - the order
-  the spec requires (issue #59; the hook arrived with `acp` 0.34.0); the pure mapping is
+  the spec requires; the pure mapping is
   `buildReplayUpdates` (`agent/ReplayUpdates.kt`, unit-pinned by `ReplayHistoryTest`), and the
   ordering is pinned black-box by `E2eSessionPersistenceTest`, which asserts the updates are
   already delivered when `loadSession` returns (and therefore uses the SDK's early-delivery
@@ -746,9 +275,9 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `formatSessionUpdatedAt` as `uuuu-MM-dd'T'HH:mm:ss.SSSxxx` in the system zone (`2026-09-23T15:37:02.123+02:00`,
   `+00:00` on a UTC host - never a `Z` suffix, never
   the shortened `toString()` forms that drop seconds/millis), so clients that render it
-  as wall time do not shift it by the local offset (issue #22; `AgentSupportImpl` takes the
+  as wall time do not shift it by the local offset (`AgentSupportImpl` takes the
   `ZoneId` as a constructor parameter, defaulting to `ZoneId.systemDefault()`, so the
-  rendering is unit-pinned with a fixed zone). **Open-session marker** (issue #27):
+  rendering is unit-pinned with a fixed zone). **Open-session marker**:
   `SessionInfo` has no liveness field and the spec forbids adding one at the root of a spec
   type, so `session/list` marks the sessions open in this process with
   `_meta = {"net.dontdrinkandroot/active": true}` (`ACTIVE_SESSION_META` in
@@ -762,11 +291,11 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   the prompt flow emits one `session_info_update` (title only - `updatedAt` changes on every
   persist and would be chatty) right after the user message is appended, i.e. inside the
   turn's own update stream rather than racing the prompt response that closes the client's
-  channel. `SessionState.takeTitleAnnouncement` (issue #73) derives the title exactly like
+  channel. `SessionState.takeTitleAnnouncement` derives the title exactly like
   `buildRecord`, compares it against `announcedTitle` and marks it announced, so each title
   is sent exactly once: a restored record's title counts as already announced (load/resume
   responses and `session/list` carry it, so a loaded session does not re-announce), and a
-  legacy record without a title announces at its next prompt. Unit-pinned by
+  record without a title announces at its next prompt. Unit-pinned by
   `SessionStateTitleTest`, black-box by `E2eSessionPersistenceTest`.
   Cwd mismatch, unknown/invalid ids and
   double-loads are invalid-params; corrupt records are internal errors.
@@ -779,7 +308,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   when the iteration budget is exhausted while the model kept calling tools, streams one final
   text-only synthesis pass (tools omitted from the request) that summarizes what was done and what
   remains, then ends with `MAX_TURN_REQUESTS`. Tool calls run sequentially. **Immediate-repeat
-  guard** (issue #39, intermediate): `ToolCallExecutor` refuses a tool call that is raw-identical (tool name +
+  guard**: `ToolCallExecutor` refuses a tool call that is raw-identical (tool name +
   `function.arguments` string, compared verbatim, not parsed) to the immediately
   preceding *executed* call of the same turn, but only once that identical call has already
   produced the identical result twice in a row (result = error flag + result text, the
@@ -796,7 +325,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `limit=70`) stays unguarded - that needs the full per-signature fix still tracked by #39.
   The session is a thin
   SDK facade over focused components: `SessionState` (mutable state + record lifecycle),
-  `ModeState` (the mode machine incl. deferred switching - issue #83),
+  `ModeState` (the mode machine incl. deferred switching),
   `SystemPromptBuilder`, `SessionConfigOptions` (config option strategies), `ToolCallExecutor`
   (one tool-call lifecycle: mode gate -> unknown tool -> repeat guard -> permission -> execution
   -> updates) and `PromptRunner`
@@ -815,7 +344,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   LLM-internal, never rendered by the client), each stating the mode's semantics ("Mode: ... Read-only /
   Read-write / ...") plus the tools available in it (`ToolRegistry.availableForMode`). **The mode
   status message has a single writer: prompt start** (`SessionState.indicateCurrentMode`, called
-  from the prompt flow before the user message is appended; fixes #36): it appends the message iff
+  from the prompt flow before the user message is appended): it appends the message iff
   the current mode differs from the last *indicated* one, so the model sees exactly one message per
   mode that actually governs a turn. No session-start seed (a fresh session states the mode at its
   first prompt), no message on the switch itself: idle switches only flip `currentMode` (+
@@ -825,7 +354,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   nothing. Restore parses `lastIndicatedMode` from the trail's last `Mode: <id>.` system message
   (`SessionState.lastIndicatedTrailMode`), so a switch applied after the last message (e.g. a
   turn-end flush persisted, then a crash before the next prompt) self-heals at the next prompt
-  start; a legacy record without mode messages (pre-#36) gets one message at its next prompt
+  start; a record without mode messages gets one message at its next prompt
   instead of staying silent forever. **Mode switches are deferred**: a `mode` request while a
   prompt turn is running only records a pending mode in `ModeState`
   (`SessionState.mode.requestMode`, latest wins) and is applied as a single flush when the turn
@@ -839,7 +368,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `create_run_config` / `AGENTS.md` edits apply (it carries
   `cwd`, today's date, the available run configurations (name + command +
   description, re-read from local disk per iteration) and `Agent build: <sha>[-dirty]`).
-  A `mode` config option (`session/set_config_option` + legacy `set_mode`) echoes
+  A `mode` config option (`session/set_config_option` + `set_mode`) echoes
   the *governing* mode until the flush; unknown -> invalid-params.
 
 ### Run configurations & build hash
@@ -853,7 +382,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   parameters** at the command's `[args]` slot (one element = one argv token, never
   shell-interpreted; a raw `{args}` string splice would let a model-controlled
   `args` value execute arbitrary shell prompt-free even in plan mode - hard switch: a config
-  still carrying the legacy `{args}` placeholder does not substitute and must be migrated;
+  still carrying a `{args}` placeholder does not substitute and must be migrated;
   quoting around the slot, e.g. `--tests "[args]"`, silently degrades: the quotes concatenate
   to nothing and the expansion loses its quoting, so `'a b'` word-splits and `*` globs - the
   shipped `test_class` uses `--tests [args]` for exactly this). Every `[args]`
@@ -871,11 +400,11 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   existing names and blank commands; delete/update reject unknown names. All three write
   tools reject a blank name with the same clean error result ("Run configuration name must
   not be blank" via `RunConfigException` -> `runConfigResult`, never a raw
-  `IllegalArgumentException` escaping `execute()`; issue #47). Writes are atomic (temp + move) and refuse to
+  `IllegalArgumentException` escaping `execute()`). Writes are atomic (temp + move) and refuse to
   touch a corrupt/unparseable file; unknown entry fields
   round-trip untouched. These dedicated tools are the **only** writers of the file: `.ai/run.json`
   is a default file-access exclusion, so `read_file`/`edit_file`/`write_file`/`delete_file`
-  refuse it and `list_dir`/`glob`/`grep` hide it (issue #70 - the permission prompt of the
+  refuse it and `list_dir`/`glob`/`grep` hide it (the permission prompt of the
   write tools must not be bypassable by an in-project `edit_file`; see File-access exclusions).
   The repo ships a default `.ai/run.json` with the standard dev loop (the loop itself, the
   `timeout` wrapping and the project wiring are under Building / running).
@@ -890,10 +419,10 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   tool-capable text-output models, sorted; failure fails session creation).
   Per-session `model` (default `openRouter.defaultModel`), `reasoning` effort (`category: thought_level`; empty
   `supported_efforts` -> gateway levels max..minimal;
-  mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`, issue #42)
+  mandatory models drop `none`; `none` omits the request field) and `provider` (category `provider`)
   config options. Model switches reset reasoning and provider; changes emit updates and persist. The request
   carries `reasoning: {effort}` (own wire type `ReasoningRequest` in `ResponsesWireModels.kt`).
-    - **Provider option** (issue #42): flat select with `auto` (real value, default, always re-selectable) +
+  - **Provider option**: flat select with `auto` (real value, default, always re-selectable) +
       the current model's provider slugs from the endpoints feed (value = endpoint `tag`, name = `provider_name`;
       blank tags and a tag literally `auto` are skipped - `auto` always means OpenRouter routing);
       description "Provider used for the selected model (auto = OpenRouter routing)". A manual pick sends
@@ -951,7 +480,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   glob rule are refused to direct-target tools (`read_file`/`edit_file`/
   `write_file`/`delete_file` hard-error before any I/O - no client
   fs proxy round trip, no permission prompt, uniform incl. new-file writes) through the single
-  `resolveToolTarget` seam (`tools/ToolTarget.kt`, issue #80 - the choke point every path-tool
+  `resolveToolTarget` seam (`tools/ToolTarget.kt` - the choke point every path-tool
   prologue calls; `move_*` checks source and destination there, `grep`'s single-file branch
   too) and hidden from
   listings/searches (`list_dir` filters entries before the 500-cap, `glob`/`grep` skip them
@@ -959,8 +488,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   grep `path` is refused like a direct target). The default rule
   set holds three fixed entries: the `.env*.local` secret-file exclusion (bare name, matches
   at any depth) and the two rooted privilege-boundary rules of the `.ai` directory, the
-  `.ai/run.json` command file (issue #70) and the `.ai/ddr-acp-agent.json` permission overlay
-  (issue #85) - both are files the model must not be able to rewrite, since a granted
+  `.ai/run.json` command file and the `.ai/ddr-acp-agent.json` permission overlay
+  - both are files the model must not be able to rewrite, since a granted
   privilege the model could re-apply with an in-project `edit_file` is no boundary at all
   (gitignore-style rooted rules like `secrets/**` match the cwd-relative path). The guard
   also checks the symlink-resolved target name, so an alias link to an excluded file cannot
@@ -980,18 +509,18 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   and the search/list roots need validating as well: `list_dir`/`glob`/`grep` only filter
   the children they visit, so an excluded directory named as `path` would still be walked.
   Not excluded on purpose: `bash`/`run` commands (not inspected) and
-  `delete_directory` - the delete itself may remove an excluded file (issue #71's
+    `delete_directory` - the delete itself may remove an excluded file (the
   containing-directory residual), but its content never flows: the tree diff evidence (`TreeDiffCollector` in
   `tools/DiffPolicy.kt`) skips exclusion-matched files without
   emitting their bytes (warned to stderr, counted in the `(original content reported for
   M of N files)` note), and the result text carries no file content (`move_file`/`move_directory`
-  do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded (
-  issue #70)**: it is not a secret but a privilege
+    do check exclusion rules because a move away is a delete of the original path). **Why `.ai/run.json` is excluded**:
+    it is not a secret but a privilege
   boundary. Permissions are path-scoped (`permissionDecision` allows every in-project target
-  outright), so the permission prompt of the dedicated write tools was
-  cosmetically bypassable - an observed session rejected `create_run_config`, and the model
-  re-applied the same entry with an in-project `edit_file`, prompt-free (because `run` is
-  non-mutating and prompt-free in every mode, that also re-opened a prompt-free execution
+    outright), so the permission prompt of the dedicated write tools would be
+    cosmetically bypassable - a rejected `create_run_config` can be
+    re-applied with an in-project `edit_file`, prompt-free (because `run` is
+    non-mutating and prompt-free in every mode, that also re-opens a prompt-free execution
   path for arbitrary command strings). The generic file tools therefore refuse/hide the
   file, and `move_file`/`move_directory` refuse it as source **and** destination in the
   shared `executeMove` (moving it away would delete it just like `delete_file`);
@@ -1001,7 +530,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   cannot be re-applied through edit_file on ai run json` scenario (E2eRunConfigCrudTest) and
   the per-tool exclusion tests. **Residual (issue #71)**: a *containing* directory can still
   be moved or deleted (`.ai` itself does not match the rooted rule, its child does) - a
-  subtree walk for `move_directory`/`delete_directory` is deliberately not part of this fix.
+    subtree walk for `move_directory`/`delete_directory` is deliberately not implemented.
 - **Tools**: `read/write/edit/move_file/move_directory/delete_file/delete_directory/list/glob/grep`
   (kotlinx-io) + `bash` (killed after
   `tools.bash.timeoutSeconds`, whole process tree) + `web_fetch` (HTTP (S) GET via a
@@ -1028,8 +557,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   (jsoup 1.23.2: block tags flush lines, `pre` verbatim, `li` bulleted, script/style
   stripped) so read_file-style `startLine`/`maxLines` paging works; numbered `│`
   lines, 2000-char line cap, continue footer; `ToolKind.FETCH`, non-mutating, no
-  filesystem targets -> prompt-free in every mode; kind is the SDK enum value added
-  for fetch tools) + `update_plan` + `get_current_mode`
+  filesystem targets -> prompt-free in every mode; kind is the SDK enum value for
+  fetch tools) + `update_plan` + `get_current_mode`
   (`tools/GetCurrentModeTool.kt`; returns the turn-captured mode status text — mode,
   semantics and the tools available in it, the same text the modal status messages
   carry — threaded through `ToolContext.modeStatusText` so the model can verify the
@@ -1062,19 +591,19 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   matches raw content, so the model must strip the `number│` prefix; through the client fs
   proxy the footer total is `?` unless the window was resolved via the whole-file fallback,
   which knows the real line count). Line counting follows the shared visual-line convention (`visualLines` in
-  `tools/VisualLines.kt`, fixes #48/#49): a trailing newline is a line *terminator*, `""` is
+  `tools/VisualLines.kt`): a trailing newline is a line *terminator*, `""` is
   zero lines, a blank line between terminators is real — an empty file/window renders the
   explicit `(empty content)` instead of a phantom `   1│`. That numbering, the CRLF strip,
   the per-line clamp and the continue footer are one implementation (`renderNumberedWindow` in
-  `tools/VisualLines.kt`, issue #81) shared by `read_file` and
+  `tools/VisualLines.kt`) shared by `read_file` and
   `web_fetch` (which passes its own `startLine`/`maxLines` labels), so the two renderings
   cannot diverge; `MAX_WINDOW_LINES` is the shared 2000-line paging cap and
-  `lineWindowStartError` the shared start-line bounds guard (issue #45). `grep` match
+  `lineWindowStartError` the shared start-line bounds guard. `grep` match
   numbers (both search paths) and `web_fetch`'s non-HTML pass-through share the convention so
   all line numbers agree with `read_file`; `LocalFileStore` therefore keeps each line's own
   terminator in the window text (the `ClientFileStore` passthrough shape), making a single
-  empty line `"\n"`, not `""`. **Client fs proxy windowing** (`ClientFileStore.readFile`,
-  fixes #6): the ACP spec does not define whether a `fs/read_text_file` window keeps the last
+  empty line `"\n"`, not `""`. **Client fs proxy windowing** (`ClientFileStore.readFile`):
+  the ACP spec does not define whether a `fs/read_text_file` window keeps the last
   line's terminator (and the TS reference client ignores `line`/`limit` and returns the whole
   file), so completeness is never inferred from the response shape: a response with more
   lines than `limit` means a limit-ignoring client and is resolved by the whole-file fallback (`wholeFileWindow`: full
@@ -1090,12 +619,12 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   written into files or run as a shell command), an absent key stays
   `Missing 'x'`. Tool-call diffs describe the **whole file** (a fragment-only diff is what
   clients like Zed misrender). The emission rule is the shared policy in
-  `tools/DiffPolicy.kt` (issue #58): diffs are suppressed **only** for changes the client
+  `tools/DiffPolicy.kt`: diffs are suppressed **only** for changes the client
   fs proxy renders itself (`write_file`/`edit_file` written through `ClientFileStore` -
   avoids a stale duplicate and the pre-read round-trip); every local-only mutation (`delete_file`, `delete_directory`,
   `move_file`, `move_directory` - ACP has no fs
   move/delete, so the proxy renders nothing for them) **always** carries its diffs, which
-  are then the client's only rollback baseline (issue #56). listing/search always use the local disk (ACP
+  are then the client's only rollback baseline. listing/search always use the local disk (ACP
   has no client-side search), and so
   do the move/delete tools (`tools/MoveFileTool.kt`/`MoveDirectoryTool.kt`/`DeleteFileTool.kt`/
   `DeleteDirectoryTool.kt` - ACP has no fs move/delete): `move_file`/
@@ -1116,7 +645,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   skipped too - all skips are warned and counted; the
   result text states the rename fact (`(content unchanged)`) and, when the evidence is
   partial, `(original content reported for M of N files)`. `.git` entries are not evidence
-  either (issue #79): the tree-diff walker skips them with the search walker's name-based
+  either: the tree-diff walker skips them with the search walker's name-based
   policy, because VCS metadata is not rollback material and it sorts before the source files,
   which would let it consume the bounded budget. That skip is **evidence only** - the
   deletion's symlink scan and the recursive delete/move still cover `.git`, so a symlink
@@ -1130,9 +659,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
 - **Search/list path validation** (`searchRootError` in `tools/DirectoryWalk.kt`): the three
   directory-consuming tools fail loudly on a wrong root instead of silently returning an
   empty result (`No matches`/empty listing) — `Path not found` (missing), `Not a directory`
-  (file as root; fixes the silent `No matches` of #31), `Not readable` (chmod-000 root,
-  fixes #32's silent empty `list_dir` listing). The parameter is `path` (not `root`:
-  a directory is not a root, and `list_dir`/`read_file` already used `path`; #41).
+  (file as root), `Not readable` (chmod-000 root). The parameter is `path` (not `root`:
+  a directory is not a root, and `list_dir`/`read_file` already use `path`).
   Out-of-scope residual (documented here so it stays visible): an unlistable subdirectory
   mid-walk still silently prunes its whole subtree (`File.list()` returns null on I/O
   error - the walk-time swallow is deliberate for unreadable dirs, only the root is
@@ -1153,9 +681,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `renderNumberedWindow` at the render boundary, so the client fs-proxy path clamps
   identically), and errors with
   `line N is past the end of the file (M lines)` when `line` is beyond EOF. There is **no
-  whole-file size cap on `read_file`** (issue #24): the local store streams via the
-  byte-level `StreamingLineReader` (a chunked `InputStreamReader` was
-  observed to spin forever on zero-char reads under JDK 25) and early-exits once the window
+  whole-file size cap on `read_file`**: the local store streams via the
+  byte-level `StreamingLineReader` and early-exits once the window
   is complete, so a windowed read of a huge file is cheap; the footer's exact `total` and
   the past-EOF count come from a newline byte scan (`countVisualLines`, no decoding).
   Per-line accumulation is capped at **64 KB** (`MAX_LINE_ACCUMULATION_BYTES`: the kept
@@ -1164,7 +691,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   the file caps off `read_file`/`grep`; the kept prefix is always >= 16384 chars, so the
   2000/500-char display caps always mark a clamped line visibly (never silent truncation).
   `read_file`'s `line` and
-  `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE` (issue #45): a larger value
+  `web_fetch`'s `startLine` are bounded above at `Int.MAX_VALUE`: a larger value
   would overflow at the `toInt()` narrowing to a negative start line,
   defeating the window/past-EOF guards, so it is refused with the
   clean `'line'`/`'startLine'` validation message
@@ -1182,7 +709,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   discarded on the binary verdict) and excluded files (see File-access exclusions),
   reporting skips as
   `...(N binary or excluded files skipped)`. `grep` streams its lines (no whole-file
-  `split`, issue #24) and skips no file for its size; matching runs on each
+  `split`) and skips no file for its size; matching runs on each
   line's kept 64 KB prefix, so a match past the accumulation cap *inside one line* is the
   documented trade-off (pinned by `GrepToolTest`).
   `FileStore.readRaw` (exact bytes, size-capped, no per-line truncation) is the store
@@ -1198,7 +725,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   call (`MAX_DIFF_TOTAL_LENGTH`, the caps compose) - the reported prefix is deterministic (sorted path order,
   `TreeDiffCollector` in `tools/DiffPolicy.kt`), skips are counted in
   the `(original content reported for M of N files)` note and every dropped diff is
-  visible in the result text and on stderr (issue #57). MCP tool results are intentionally uncapped.
+  visible in the result text and on stderr. MCP tool results are intentionally uncapped.
 
 ### Permissions
 
@@ -1211,8 +738,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   against the session cwd so a symlink escape still gates); writes/moves/deletes under it
   always prompt. **The agent's own scratch directory is
   read-trusted like a readable directory**
-  (`Config.scratchDir`, config key `scratchDir`, default `/tmp/ddr-acp-agent`,
-  issue #10): `AgentSessionImpl` merges `config.readableDirectories + scratchDir` into one
+  (`Config.scratchDir`, config key `scratchDir`, default `/tmp/ddr-acp-agent`):
+  `AgentSessionImpl` merges `config.readableDirectories + scratchDir` into one
   `permissionPolicy.readableDirectories` - the single merge point, consumed by
   `permissionDecision` and the
   system prompt - so the config surface keeps the two apart (the scratch dir is never part of
@@ -1258,13 +785,13 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   restart) - deliberately pinned so the over-grant redesign (issue #3, per-path
   keys) must change these pins explicitly rather than silently regress the
   contract. `SessionState` owns them behind `grantAlways`/`rejectAlways`/
-  `permissionDecisionFor` (issue #83) and exposes a read-only view, so
+  `permissionDecisionFor` and exposes a read-only view, so
   `ToolCallExecutor` never mutates the map directly. **Tool-call titles**: the JetBrains ACP client
   renders only the `title` of a tool call in permission prompts and progress and ignores the
   `rawInput` field that carries the arguments, so a bare `run`/`bash` title would leave the user
-  confirming blind. Observed (JetBrains, 2026-09): the permission dialog showed the bare
-  `command` argument instead of the `bash(command: ...)` title, so keep titles argument-bearing
-  anyway (other clients render them) and make commands self-describing; re-verify against a
+  confirming blind (a permission dialog can show the bare
+  `command` argument instead of the `bash(command: ...)` title); keep titles argument-bearing
+  anyway (other clients render them) and make commands self-describing, and re-verify against a
   concrete client rather than assuming. Tools with meaningful arguments therefore override
   `AgentTool.title(arguments)` (hook in `tools/Tool.kt`, default `null` = bare tool name):
   `bash`, `write_file` (path + content size), `web_fetch`, `calc`, the `run` tool, the
@@ -1288,13 +815,13 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   the full old/new content (a fragment-only diff is what
   Zed-style clients misrender), `write_file` best-effort pre-reads the old
   content (`oldText = null` **only** for a genuinely absent file - `FileAbsentException`, so an
-  existing-but-unreadable file never claims to be new, issue #55), `delete_file`/`delete_directory`
+  existing-but-unreadable file never claims to be new), `delete_file`/`delete_directory`
   carry the removed content as `newText = ""` and every moved file is reported as a
-  delete+add pair (`move_file`/`move_directory`, issue #56). Diff blocks are suppressed **only** for changes the client
+  delete+add pair (`move_file`/`move_directory`). Diff blocks are suppressed **only** for changes the client
   fs proxy renders itself (write/edit through the proxy -
   avoids a stale duplicate and the pre-read round-trip); local-only mutations always carry
   theirs, since the proxy renders nothing for them (the shared rule in
-  `tools/DiffPolicy.kt`, issue #58). **A dropped diff is never silent** (issue #57): every
+  `tools/DiffPolicy.kt`). **A dropped diff is never silent**: every
   skip (size cap, pre-read failure, binary tree file) appends a fact-based
   `(diff omitted: <reason>)` note to the result text and logs a `warn` with path and
   reason, and tree mutations state `(original content reported for M of N files)` when
@@ -1335,8 +862,8 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   responses, `POST /messages` answers 202 - both required by `SseClientTransport`). The
   transport-specific scenarios pin one thing beyond the shared permission behavior each:
   `McpServer.Stdio.env` reaching the child environment (stdio) and
-  `McpServer.Sse.headers` reaching the server on the SSE request (SSE). **A stdio child is started like every other
-  session-scoped child** (issues #74, #14):
+  `McpServer.Sse.headers` reaching the server on the SSE request (SSE). **A stdio
+  child is started like every other session-scoped child**:
   its working directory is the session `cwd` (`ProcessBuilder.directory`, the same
   workspace `bash`/`run` get - never the directory the IDE happened to spawn the agent in,
   which only coincides in the single-project case), and its environment is **built, not
@@ -1358,15 +885,15 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   The advertised tool schema is the server's `inputSchema` serialized **verbatim**
   via the SDK's own `McpJson` (`mcp/McpBridge.kt`), so `required`, `$defs` and
   `$schema` round-trip losslessly and the LLM knows which MCP arguments are
-  mandatory (issue #12: a `type`+`properties` rebuild dropped all three; the
+  mandatory (a `type`+`properties` rebuild would drop all three; the
   `type = "object"` pin is the SDK's own `@EncodeDefault`, not a loss). Pinned at
   the unit level (`McpBridgeTest`) and at the wire level (e2e: the schema
   reaches the chat request's `function.parameters`).
 
 ### LLM streaming & auto provider routing
 
-- **LLM streaming** (Responses API dialect, issue #75): a hand-rolled SSE line scan
-  (`data:` events, `[DONE]` terminator, see Boundaries) that relays **raw event objects**;
+- **LLM streaming** (Responses API dialect): a hand-rolled SSE line scan (`data:` events, `[DONE]` terminator) that
+  relays **raw event objects**;
   the runner switches on `type` and skips unknown event types, so a new upstream event cannot
   fail a stream. `response.reasoning*.delta` (and `response.reasoning_text.delta`, the name
   the live endpoint uses) relay as `agent_thought_chunk`, `response.content_part.delta` /
@@ -1389,7 +916,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   "content_filter"` ends immediately with a "blocked by content filtering" note (never
   retried) - it is **not** an `error.code`, which carries transport categories
   (`invalid_prompt`, `server_error`, ...) only. An undocumented status (outside the API's
-  set, issue #16) is classified by usable output: with text or complete tool calls it is a
+  set) is classified by usable output: with text or complete tool calls it is a
   natural completion (the tool calls execute, no continuation retry), with empty output it
   retries conservatively as empty. Both abnormal cases log to stderr (`warn` on first,
   `error` when still broken) so the problem stays visible. Replay renders the synthetic
@@ -1404,7 +931,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `messageId` mandatory and keys whole `agent_message`/`agent_thought` messages by it, so
   this **must change** on v2 (distinct ids per message). Re-verify against v2 when the agent
   runtime is upgraded - the v1 equivalence is pinned **v1-only** by the labelled assertion in
-  `E2eWireConformanceTest` (finding the mandatory v2 flip, issue #63).
+  `E2eWireConformanceTest` (the marker for the mandatory v2 flip).
   Requests carry app attribution headers (`HTTP-Referer` + `X-OpenRouter-Title`).
 - **Auto provider routing**: by default (`openRouter.autoThroughputSorting: false`
   disables) every chat request carries `provider: {sort: "throughput", max_price.completion =
@@ -1443,14 +970,14 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   advertised description, default + session model, the reasoning/provider values the config
   surface states, the behaviour switches, and the trusted paths incl. the API key *file* - never
   the key - and the session's *prepared* scratch directory, which is the path the trust checks
-  actually use) followed by `END_TURN`. **Verified in the JetBrains ACP client (2026-11): the advertised
-  command shows up in the client's slash-command list and autocompletion**, so the advertisement is
+  actually use) followed by `END_TURN`. **The JetBrains ACP client lists and autocompletes
+  the advertised command**, so the advertisement is
   the discovery path; a manually typed `/info` reaches the same interception, so a client that
   ignores the notification still works (re-verify client-side rendering by hand, the e2e harness
   cannot pin it - see Manual validation). It is answered **before any state is touched**: no history
   entry, no record, no LLM call, no tokens - a diagnostic must not become context for later
   turns, so a `/info`-only session stays untitled and the dump is never stored; a record
-  written at close/shutdown (standard for any open session, issue #17) carries an empty history.
+  written at close/shutdown (standard for any open session) carries an empty history.
   Text after the command word is
   discarded and the reply leads with a note naming it (`**Note:** … discarded: "<text>"`,
   flattened and capped at 200 chars), so a user's words are never dropped silently.
@@ -1490,14 +1017,14 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   end-to-end symptom is latent, not observed.
   A cancelled turn is **persisted**: `prompt`'s `finally` writes the record under
   `NonCancellable` when the turn did not complete, so the user message, the streamed partial
-  reply and every applied tool call survive the cancel (issue #17; the dangling call is closed
-  by the #38 repair).
+  reply and every applied tool call survive the cancel (the dangling call is closed
+  by the pairing repair).
 
 ### Docker sandbox
 
 - **Docker sandbox**: CI-built (`build-image.yml`) image on
-  `ghcr.io/dontdrinkandroot/acp-agent:latest` (the old `acp-agent.kotlin` package is
-  abandoned; the workflow's prune step follows the new name in both API paths); multi-stage
+  `ghcr.io/dontdrinkandroot/acp-agent:latest` (the workflow's prune step follows the name in
+  both API paths); multi-stage
   Dockerfile (temurin-25 builder with BuildKit cache mount, installDist perms normalized ->
   toolchain base `dev`). The builder stage copies an explicit build-input allowlist (wrapper
   scripts, wrapper jars, `gradle/libs.versions.toml`, the build scripts, `gradle.properties`,
@@ -1509,7 +1036,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   `docker image inspect` and builds the image via `build-docker` when it is missing or when
   `--rebuild` is given - **it never pulls**: updating the upstream image is a manual
   `docker pull`, after which the inspect succeeds and the build is skipped (README states
-  "profiles need `--rebuild` once" next to it, since a pre-change image ignores argv). The
+  "profiles need `--rebuild` once" next to it). The
   wrapper is deliberately untested (its remaining logic is a handful of lines and a bug
   surfaces at first launch; tests would nest `installDist`).
 - **The supervisor** (`sandbox/SandboxMain.kt`, the `acp-agent-sandbox` entry point):
@@ -1519,7 +1046,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   forwards SIGTERM/SIGINT with a bounded wait, `--rm` reaps, the mask temp file is removed,
   the child's exit code is propagated. It **never parses ACP** and every byte it produces
   goes to stderr. Docker is resolved from `PATH`; an unresolvable CLI exits 127 with a named
-  message instead of a raw `IOException`. Strict arguments: the removed `--skip-pull` is not
+  message instead of a raw `IOException`. Strict arguments: an unknown argument is not
   special-cased (exit 2). `--profile <name>` is parsed by both sides (the supervisor needs the
   same file to compose the mounts) and forwarded verbatim into the agent argv. **The launch cwd
   is assumed to equal the session cwd** (nothing enforces it): the project bind and
@@ -1530,7 +1057,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   (`sandbox/DockerInvocation.kt`) renders the argv - no string concatenation, no word
   splitting (`extraArgs`/`capAdd` are typed lists). Pinned by the 49-row table (see Testing),
   rows against fixture facts only.
-- **Hardening** (unchanged from the script): `--cap-drop=ALL` + `no-new-privileges`,
+- **Hardening**: `--cap-drop=ALL` + `no-new-privileges`,
   read-only rootfs (`sandbox.rwRootfs: true` relaxes), tmpfs `/tmp`, `--user host-uid:gid`
   (the *real* ids via `UnixSystem`; `id -u`/`id -g` coincide for a normally launched JVM and
   are pinned once by the process test). **`--network host` by default**
@@ -1555,7 +1082,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   mounts in that order, so CLI argv order is irrelevant - the composer still emits them in
   argv order).
 - **Host tool caches** (`sandbox.mountCaches: false` disables the whole cache composition - no
-  mounts, no cache env, not even validation; issue #51). Two cases: an explicitly configured
+  mounts, no cache env, not even validation). Two cases: an explicitly configured
   cache (the tool's env var set, e.g. `UV_CACHE_DIR`) is **identity-bound at the identical
   in-container path with the env value forwarded verbatim** (the tool's own config already
   points there and host-created symlinks into the cache keep resolving); set-but-unusable
@@ -1577,7 +1104,7 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   "Shared caches" / "Version-specific caches") is shared rw at its in-container path:
   `caches/modules-2`, `caches/jars-*`, `caches/build-cache-*`, legacy `caches/transforms-*`,
   the version-bound `caches/<ver>/transforms` + `caches/<ver>/generated-gradle-jars`,
-  `wrapper/dists` and `jdks` (fixes #67 - AGP transform output alone filled the 1 GB caches
+  `wrapper/dists` and `jdks` (AGP transform output alone would fill the 1 GB caches
   tmpfs). Everything else stays on the private tmpfs: absolute-path-keyed execution state
   (`journal-1`/`file-access.bin`, `caches/<ver>/fileHashes`, `jvms`), JVM-sensitive compiled
   scripts (`kotlin-dsl`, `scripts`) and `caches/<ver>/cc-keystore` - the configuration-cache
@@ -1586,12 +1113,12 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   the digit-named `caches/<ver>` dirs **and** the shared wrapper dists
   (`gradle-<version>-<bin|all>`), so a wrapper upgrade is shared from the first session. The
   `caches/` and `wrapper/` intermediate depths get their own per-depth uid tmpfs (runc creates
-  missing mountpoint parents root-owned; observed as `Could not open cache directory ...
+  missing mountpoint parents root-owned, which surfaces as `Could not open cache directory ...
   caches/<ver>/jvms`). All home-side tmpfs mounts (`/home/dev` and the `.gradle` depths incl.
   the per-version ones) are **exec-allowed** (`exec` appended, overriding docker's `noexec`
   default): toolchains execute native binaries extracted into those caches - AGP's AAPT2, the
   compiled Kotlin DSL scripts, Kotlin/Native under `~/.konan` - which surfaces as
-  `AAPT2 ... Daemon startup failed` under noexec (issue #33). `~/.cache` and `~/.local` keep
+  `AAPT2 ... Daemon startup failed` under noexec. `~/.cache` and `~/.local` keep
   the noexec default. `GRADLE_USER_HOME` is always pinned to the private root, independent of
   `sandbox.mountCaches`; the leaf binds are gated by it. A relative or `/` `GRADLE_USER_HOME`
   is ignored in favour of `$HOME/.gradle` (Gradle's own resolution has no such value; unlike
@@ -1612,11 +1139,11 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   *inside the project directory* is skipped with a typed warning: the project bind only exposes
   the host path, while the agent writes/reads the container's XDG paths, so a silent skip would
   lose the sessions (or leave the agent without its config).
-- **Permission lists are the mount list** (issue #50, one config file, two readers):
+- **Permission lists are the mount list** (one config file, two readers):
   `permissions.readableDirectories` mounts each path `:ro`, `…writableDirectories` mounts it
   rw (a path in both is mounted rw once), at the identical in-container path (src == dst like
   the CWD). The lists are the **merged** ones (`mergePermissionTiers(config.json,
-  .ai/ddr-acp-agent.json)`, issue #85), read through the shared key-free source step
+  .ai/ddr-acp-agent.json)`, read through the shared key-free source step
   (`readConfigSources`) - the supervisor mounts exactly what the containerized agent trusts.
   Absolute only, `/` is rejected in the parser, host existence is required only for paths
   actually mounted - paths under the covered roots (project dir/container home/`tmpfs`) are
@@ -1630,11 +1157,11 @@ supervisor), so the trust domain and the mounts cannot drift apart.
   mounted (a container path; the container's `/tmp` is a private tmpfs, so scratch content is
   per-container-session).
 - **Also forwarded**: `TZ` (the container wall clock follows the host zone; the read-only
-  rootfs has no `/etc/localtime` and the agent renders local-offset timestamps - issue #22),
+  rootfs has no `/etc/localtime` and the agent renders local-offset timestamps),
   the host git identity (`GIT_AUTHOR_*`/`GIT_COMMITTER_*` when `git config user.name` and
   `user.email` are both set), `HOME`/`TERM`/`XDG_*` container pins, and host `.env.local`
-  masked with an empty read-only file (temp file created by the supervisor, deleted on exit).
-  **No agent-config environment is forwarded at all** - `DDR_ACP_AGENT_*` is dead (issue #84),
+  masked with an empty read-only file (temp file created by the supervisor, deleted on exit). **No agent-config
+  environment is forwarded at all** - `DDR_ACP_AGENT_*` is dead,
   and the `--env` allowlist pin is the negative closure.
 - Local builds via `./build-docker`; supervisor input is typed config (no env knobs), read
   from the **same `config.json`** the agent reads (strict parser, no API key required). A
@@ -1653,7 +1180,7 @@ The e2e scenarios run the linked `installDist` agent as a separate OS process
 with the **real ACP SDK client** and a local mock OpenRouter server, and pin the
 agent's **wire contract**:
 
-The harness configures the agent **exclusively through `config.json`** (issue #84): each
+The harness configures the agent **exclusively through `config.json`**: each
 launched agent gets an isolated `$XDG_CONFIG_HOME/ddr-acp-agent` with the 0600
 `openrouter.key` at the agent's default location and a `config.json` built from the harness
 base (LLM endpoint + model) with the scenario's JSON fragment deep-merged over it
@@ -1661,7 +1188,7 @@ base (LLM endpoint + model) with the scenario's JSON fragment deep-merged over i
 scenario input; a harness-owned sentinel (`ACP_E2E_AGENT_SENTINEL`) is planted in the agent
 env to pin the MCP child-env allowlist (`StdioMcpMockServer` probe, `McpConnectorTest`).
 `E2eStartupArgumentsTest` pins the process-level argument contract (unknown argument ->
-exit 2, the removed `--skip-pull` not special-cased, a selected profile really is the file
+exit 2, a selected profile really is the file
 read).
 
 Two system properties wire the harness (`tasks.test` in `build.gradle.kts`):
@@ -1672,13 +1199,13 @@ own classloader), and the stdio MCP mock must be launched as a separate JVM
 (`java -cp <testClasspath> ...StdioMcpMockServer`). It is injected through a
 `CommandLineArgumentProvider` with a `@get:Classpath` property, so the classpath
 stays a task input instead of a stale constant. The harness strips the whole
-`DDR_ACP_AGENT_*` family from the spawned agent's environment (it is inert since issue #84,
+`DDR_ACP_AGENT_*` family from the spawned agent's environment (it is inert,
 and a leaked value must not look like configuration), so scenarios are fully determined by
 their `config.json` (`E2eAgentTest`).
 
 - **Wire flow** — initialize/session/config-option/prompt/tool-call/permission,
   model/reasoning switches, the chat request's `reasoning` effort, `usage_update`,
-  UUIDv7 messageIds, attribution headers; plus the cheap spec MUSTs (issue #61):
+  UUIDv7 messageIds, attribution headers; plus the cheap spec MUSTs:
   **stdout hygiene** (every line the harness consumed on stdout parses strictly as a
   JSON-RPC 2.0 message - a stray `println` is invisible otherwise, the SDK logs
   undecodable lines at trace only), **version negotiation** (the requested v1 is
@@ -1696,12 +1223,12 @@ their `config.json` (`E2eAgentTest`).
   model while `/info` never enters the next request's history.
 - **Security & permissions** — path-aware permissions + client fs proxy (in-project
   prompt-free, out-of-project read prompts, the `allow_always` session grant prompting once for
-  two prompts' out-of-project reads (issue #65 pin of the tool-name-keyed semantics)),
-  `tools.fsProxy=false` in `config.json` and the **fs-capability negative** (issue #61: with the
+  two prompts' out-of-project reads (the tool-name-keyed semantics)),
+  `tools.fsProxy=false` in `config.json` and the **fs-capability negative** (with the
   default `ClientCapabilities()` - `fs` absent - `read_file` + `write_file` run through the
   local store and never call `fs/read_text_file`/`fs/write_text_file`, the spec's "MUST NOT
   attempt to call the corresponding filesystem method" local-store fallback), the **permission
-  option contract** (issue #61: all four `PermissionOptionKind`s offered, distinct non-blank
+  option contract** (all four `PermissionOptionKind`s offered, distinct non-blank
   ids and names, id/kind pairing via `TestClientOperations.permissionOptions`), run tool
   prompt-free in every mode, run-config tools (build-mode permission prompt, plan-mode absence
   of write tools), move/delete tools (out-of-project move destination prompts), MCP tool
@@ -1726,7 +1253,7 @@ their `config.json` (`E2eAgentTest`).
   an unknown tool call, then `session/load` pins both replayed `tool_call_update`s
   as FAILED with their denial text (never blanket-COMPLETED) and
   the `update_plan` scenario pins the successful call replaying COMPLETED.
-  The **cwd gate** (issue #74) is pinned at the unit level (`SessionCwdTest`:
+  The **cwd gate** is pinned at the unit level (`SessionCwdTest`:
   absolute/existing/directory, plus the unparseable-path refusal;
   `SessionLifecycleTest`: `createSession` refuses and leaves no record; `loadSession`/
   `resumeSession` refuse while the record survives, and an unknown id keeps its own
@@ -1734,31 +1261,31 @@ their `config.json` (`E2eAgentTest`).
   with a regular file as cwd both fail with invalid params, no record appears).
   The `session/list` `updatedAt` shape is pinned twice: unit-level in
   `SessionLifecycleTest` (a fixed `Europe/Berlin` zone renders summer/winter offsets,
-  `+00:00` on a UTC zone, the parsed instant always round-trips - issue #22) and
+  `+00:00` on a UTC zone, the parsed instant always round-trips) and
   black-box in `E2eSessionPersistenceTest` (regex for a numeric offset +
   `OffsetDateTime.parse(...).toEpochMilli() == record.updatedAt`, timezone-independent
-  so it holds on a UTC CI box and in the docker container). The open-session marker (issue #27) is pinned in
+  so it holds on a UTC CI box and in the docker container). The open-session marker is pinned in
   `SessionLifecycleTest` (only live ids carry `_meta`,
   `session/close` clears it and frees the id for a later load, a late
   `onSessionReleased` registration still fires) and black-box in
   `E2eSessionPersistenceTest` (two open sessions marked, `close()` unmarks one and its
   id loads again); `sessionCapabilities.close` is advertised and pinned in
-  `E2eWireConformanceTest`. The zombie-prompt contract (issue #21) is pinned unit-level
+  `E2eWireConformanceTest`. The zombie-prompt contract is pinned unit-level
   in `SessionLifecycleTest` (`prompt`/`setMode` after `delete()` or `close()` fail with
   `-32002`, closing twice stays idempotent, a refused call never resurrects the record)
   and black-box in `E2eSessionPersistenceTest` (the resumed - i.e. active - session is
   deleted, then a prompt is refused with `-32002`, reaches no LLM and leaves no record).
-  The graceful-shutdown contract (issue #17) is pinned by `E2eShutdownTest`: a turn
+  The graceful-shutdown contract is pinned by `E2eShutdownTest`: a turn
   interrupted by the client closing stdin and a turn ended by `session/cancel` both reach
   the record (user message + pair-complete history, asserted without a follow-up turn), and
   by `SessionLifecycleTest` (an interrupted turn persists what it did; `persistAllSessions`
   flushes live sessions only).
-  The title announcement (issue #73) is unit-pinned by
+  The title announcement is unit-pinned by
   `SessionStateTitleTest` (announced exactly once, restored
-  titles not re-announced, legacy empty-title records announce at the next turn, 72-code-point
+  titles not re-announced, empty-title records announce at the next turn, 72-code-point
   cap) and black-box in `E2eSessionPersistenceTest` (one `session_info_update` with the
   derived title on the first prompt, none on the loaded session's continuation).
-  Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. legacy fail-open; a captured
+  Unit-pinned: `ReplayHistoryTest` (outcome mapping incl. fail-open on unknown values; a captured
   user/tool item - one the lossless parse kept verbatim - replays like its typed
   counterpart), `ToolCallPairingRepairTest` (the pairing repair itself: dangling/answered/batch
   semantics, idempotence, duplicate ids count as answered; the round-trip identity rule -
@@ -1769,17 +1296,19 @@ their `config.json` (`E2eAgentTest`).
   `ToolCallExecutorTest` (outcome recording + immediate persistence, the repeat
   guard: third raw-identical call with the same result refused without execution/prompt,
   a single identical repeat executes, a changed result resets the streak, formatting variants
-  pass, reset by an intervening call, denied calls not tracked; permanent permissions (issue #65):
+  pass, reset by an intervening call, denied calls not tracked; permanent permissions:
   allow_always/reject_always arm the map and spare later prompts, allow_once does not,
   restored sessions start without grants) and `PromptRunnerTest` (guard
   integration: the refused third repeat fails the turn's third iteration and the turn continues;
   identical call in a new turn executes again; abnormal-end note chunks: content_filter
   and truncated/wind-down ends always emit their note to the client, streamed partial
-  text is never re-emitted - issue #30),
-  `SessionStoreTest` (outcome round-trip + legacy decode; the issue #20 stale-temp sweep:
-  a crashed save's temp file is swept while a concurrent save's in-flight temp stays, the
-  sweep is throttled to once per interval and resets after it), `SessionStateProviderSelectionTest`
-  (provider selection round-trip/legacy-restore incl. a wire-level legacy decode),
+  text is never re-emitted),
+  `SessionStoreTest` (outcome round-trip + decoding a record without outcomes; the
+  stale-temp sweep: a crashed save's temp file is swept while a concurrent save's
+  in-flight temp stays, the sweep is throttled to once per interval and resets after
+  it), `SessionStateProviderSelectionTest`
+  (provider selection round-trip/restore, incl. a wire-level decode of a record without
+  the field),
   `SessionConfigOptionsTest` (provider option
   listing/validation/reset/self-heal, manual pick survives an outage, blank/`auto` tag exclusion),
   `ProviderRoutingTest` (provider lookup + median price filtering), `LlmResponseGoldensTest`
@@ -1806,22 +1335,22 @@ their `config.json` (`E2eAgentTest`).
 
 The **output caps** (bash/run tail truncation + progressive capture through a drain
 timeout, `read_file` limit requirement, bounds incl. the `line`/`startLine` upper bound at
-`Int.MAX_VALUE` (issue #45), no size refusal on windowed reads with `readRaw`'s kept 20 MB
+`Int.MAX_VALUE`, no size refusal on windowed reads with `readRaw`'s kept 20 MB
 cap, the 64 KB per-line accumulation cap + NUL sniff of `StreamingLineReader` and the
-`countVisualLines` byte scan (issue #24), 2000-char-per-line
+`countVisualLines` byte scan, 2000-char-per-line
 truncation and past-EOF error, listing caps, grep match/line caps and the
-binary/excluded skips, the `.git` walker skip, the tree-diff walker's `.git` evidence skip (issue #79)) are unit-tested
+binary/excluded skips, the `.git` walker skip, the tree-diff walker's `.git` evidence skip) are unit-tested
 in
 `BashToolTest`/`ReadFileToolTest`/`FileStoreTest`/`ListDirToolTest`/`GrepToolTest`; the
 shared numbered-window renderer and the start-line bounds guard are pinned directly in
-`VisualLinesTest` (issue #81: width, CR strip, clamp, `(empty content)`, footer with both
+`VisualLinesTest` (width, CR strip, clamp, `(empty content)`, footer with both
 argument label pairs and an unknown total); move/delete
 semantics (destination-exists refusal, symlink refusal, dir/file type mismatches, diff
-payloads, local-disk-only), the whole-file diff convention and the shared diff policy (issue #58: store-rendered
+payloads, local-disk-only), the whole-file diff convention and the shared diff policy (store-rendered
 write/edit suppressed, local-only ops always emit - pinned by
-the `delete_file` fs-proxy flip in `DeleteFileToolTest`), the omitted-diff notes (issue #57:
-cap sizes and pre-read errors named in the result text, in
-`WriteFileToolTest`/`EditFileToolTest`/`DeleteFileToolTest`), the tree/move diff evidence (issue #56: delete+add rename
+the `delete_file` fs-proxy flip in `DeleteFileToolTest`), the omitted-diff notes (cap sizes and pre-read errors named in
+the result text, in
+`WriteFileToolTest`/`EditFileToolTest`/`DeleteFileToolTest`), the tree/move diff evidence (delete+add rename
 pairs, the bounded tree caps and the `M of N` note, in
 `DeleteDirectoryToolTest`/`MoveFileToolTest`/`MoveDirectoryToolTest` (incl. the 50-file and
 aggregate-budget caps and the excluded-file content skip), multi-diff emission
@@ -1832,16 +1361,16 @@ the strict JSON-null argument rejections, and the MCP annotation mapping (truste
 the per-tool `*ToolTest` classes (`ReadFileToolTest`, `WriteFileToolTest`,
 `EditFileToolTest`, `MoveFileToolTest`, `MoveDirectoryToolTest`, `DeleteFileToolTest`,
 `DeleteDirectoryToolTest`)/`PermissionAndFileStoreTest`/`McpBridgeTest` — one test file
-per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`; issue #55's
+per tool source file (`tools/`), shared doubles/helpers in `ToolTestSupport.kt`; the
 absent-vs-unreadable split is pinned in `WriteFileToolTest`, the store's regular-files-only
 guard in `FileStoreTest`, and the stdio MCP launch contract (env allowlist + client entries
-winning) in `McpConnectorTest`. The client fs-proxy windowing contract (issue #6: no phantom
+winning) in `McpConnectorTest`. The client fs-proxy windowing contract (no phantom
 footer past EOF, whole-file fallback for limit-ignoring clients, EOF-probe arguments +
 conservative probe-failure fallback) is pinned in `PermissionAndFileStoreTest` (strict
 `SlicingFsClient` / `FailingProbeFsClient` doubles) and `ReadFileToolTest` (rendering). The
 calc expression language (operator precedence incl. right-associative `^`,
 functions/constants, positional error messages, length/nesting caps) is unit-tested in
-`CalcExpressionTest`/`CalcToolTest`. The stale-temp sweep of crashed atomic writes (issue #20)
+`CalcExpressionTest`/`CalcToolTest`. The stale-temp sweep of crashed atomic writes
 is pinned in `AtomicWriteTest` (stale temps of the name prefix deleted, fresh
 temps and unrelated names kept, symlinks/directories never touched, and the
 `writeAtomically` sweep of the target's temp naming).
@@ -1862,20 +1391,18 @@ The registry-wide guard test
 **structure only**: a tool newly added to `ToolCatalog.kt` will pass it until its
 schema pin is added, so treat touching the catalog list as the reminder to add the
 pin in the same change. The schema builder itself is pinned at the raw-string level by
-`ToolSchemaWireTest` (`ToolSchemaWireTest.kt` - the file name freed the `ToolSchemaTest`
-class name for the guard test).
+`ToolSchemaWireTest` (separate from the registry-wide `ToolSchemaTest` guard).
 
-**Sandbox launcher pin table (issue #84)**: the `docker run` composition is a pure function
+**Sandbox launcher pin table**: the `docker run` composition is a pure function
 (`sandbox/DockerInvocation.kt`) over a resolved plan (`sandbox/SandboxPlanResolution.kt`), so
 the whole argv is pinned by `SandboxCompositionPinTest`: rows assert composed argv **tokens**
 against fixture facts (`uid=1001`, `/fixtures/...`), never host-derived values - the plan is
 resolved with `FixtureProbes` (a declared fixture tree), so the test performs no host I/O.
 Every `sandbox.*` key, every shared flag (`--profile`) and every forwarded host fact (TZ, tool
 caches, git identity) has a named row, and the `--env` allowlist row is the negative closure
-of the environment retirement. The table encodes parity with the bash launcher the supervisor
-replaced: its expected argv is the launcher's, minus the deliberately retired
-`DDR_ACP_AGENT_*` and `DDR_ACP_AGENT_DOCKER_*` forwardings - keep that parity when touching
-the composition (a deliberate argv change is a feature, not a test fix).
+of the environment surface (a newly forwarded variable fails a pin instead of slipping
+through). Keep the rows in step when touching the composition (a deliberate argv change is a
+feature, not a test fix).
 
 **Sandbox test suite** (`src/test/kotlin/.../sandbox/`): the composition, the plan level and
 the exec surface.
@@ -1891,7 +1418,7 @@ the exec surface.
   stdout/stderr separation, stdin-EOF half-close (the child must finish), signal forwarding,
   exit-code propagation, mask-file cleanup, docker-from-`PATH` (127), strict arguments,
   fail-loudly config, `--profile` forwarding, uid/gid against `id -u`/`id -g`, and the
-  project overlay (issue #85): its directories reach the `--mount` list, a broken overlay or
+  project overlay: its directories reach the `--mount` list, a broken overlay or
   one naming a missing directory refuses before any `docker run`.
 - `DockerfileBuildInputsTest`: the builder-stage COPY allowlist against the real build inputs
   and the `ENTRYPOINT` path pin.
@@ -1908,7 +1435,7 @@ call counts, mock filler text, delta chunk splits). A behavioral change
 failure without a behavioral change is a test-design smell: fix the test by
 asserting the effect/shape, not the feature. Favor effect-based over exact-count
 assertions (e.g. "load/resume make no LLM calls" rather than `equals(2, requestCount)`).
-The shared harness therefore offers `assertPairComplete(body, context)` (the #38 pairing
+The shared harness therefore offers `assertPairComplete(body, context)` (the pairing
 invariant as observed in a chat request) and `collapseConsecutiveDuplicates()`
 (streamed deltas -> one entry per contiguous id run) so scenarios pin shapes instead of
 chunk counts or positions.
@@ -1930,8 +1457,8 @@ Manual validation (the run configurations cannot do this):
   request — closing it immediately races the transport teardown and swallows the response).
 - Client UI: the e2e harness sees the wire but not the IDE, so anything rendered
   client-side is verified by hand in the JetBrains client (session setup, type `/` and
-  look for the agent's advertised command). `/info` was confirmed this way (2026-11:
-  listed and autocompleted); tool-call titles are the other surface with no automated pin.
+  look for the agent's advertised command). `/info` is the confirmed case (listed and
+  autocompleted); tool-call titles are the other surface with no automated pin.
 
 **ACP SDK upgrade checklist**: on every `com.agentclientprotocol:acp` bump, read the
 release notes (github.com/agentclientprotocol/kotlin-sdk/releases) and re-verify against
@@ -1953,106 +1480,18 @@ for renames.
 **Definition of done**: a change is done when the `build` run configuration passes
 (compile + all tests incl. the black-box e2e).
 
-## Boundaries (do not silently change)
-
-If you think a boundary is contra-productive, not valid anymore, overcomplicates or blocks necessary steps, clearly
-communicate that with the user so we can review them.
-
-- **Runtime**: the agent is an ACP **agent**, never the client/IDE, and never an MCP server.
-- **stdout is reserved for ACP protocol (NDJSON)**. All logging goes to **stderr** (via
-  kotlin-logging/SLF4J). Never `println`/log to stdout, or you corrupt the protocol (see
-  Pitfalls). The ACP transport is the official SDK's `StdioTransport` over a
-  `Flow<String>` from `System.in` and an output lambda writing to `System.out.println`
-  (`Main.kt`).
-- **`terminal/*` is deliberately skipped** - the agent runs its own local processes (`ProcessBuilder`), it does not
-  delegate terminals to the client; the `terminal`
-  client capability is ignored. This is a design decision, not a deferred feature.
-- **Permissions are path-aware and tiered**: anything outside the session working
-  directory - reads and writes alike - requires the user decision unless a configured
-  directory tier covers it (`permissions.readableDirectories` / `writableDirectories`,
-  mechanics under Features); with `permissions.unlistedPaths = deny` an uncovered path
-  is refused without any prompt. Do not execute a path-scoped file tool or mutating
-  tool without the permission decision.
-- **LLM provider**: OpenRouter, spoken through its **Responses API** (`POST /responses`,
-  issue #75). The **wire types in `llm/models/ResponsesWireModels.kt` are the internal LLM
-  contract** - a deliberate single-provider design decision; do not wrap them in
-  domain/anti-corruption types. `LlmClient` in
-  `net.dontdrinkandroot.acpagent.llm` owns only the transport (HTTP/SSE/JSON).
-  - **Raw-item transport**: conversation items travel as `JsonObject`s, not a polymorphic
-    type hierarchy. Reasoning items must be replayed byte-verbatim (OpenRouter normalizes
-    provider-native reasoning - Anthropic thinking, Gemini thought signatures, OpenAI
-    reasoning items - and their `summary`/`content` shapes differ per provider), and raw
-    events let the transport **skip unknown event types** instead of failing on an unknown
-    discriminator. Typed where the agent constructs or reads fields: `InputMessage`,
-    `FunctionCallOutput`, `ResponseContentPart`, `FunctionTool`, `ResponsesRequest`,
-    `ResponsesResponse`, `ResponsesUsage`.
-  - **Lossless history parse (round-trip identity)**: `historyItemFromWire` re-types an item
-    only if re-encoding the typed value reproduces the raw item exactly
-    (`HistoryItem.retypedOrCaptured`); anything the typed model would lose - a prompt
-    `input_image` part, a multimodal `function_call_output.output` array, an unmodeled member
-    - stays `HistoryItem.Captured` and replays byte-for-byte. So a restored session can never
-    rewrite or drop wire data, and adding a wire feature never means patching the parser
-    branches. `JsonObject` equality is order-insensitive, so member order does not matter.
-    Consumers therefore read an item's **meaning**, not its variant
-    (`userTextOrNull`/`systemTextOrNull`/`toolCallIdOrNull`/`toolOutputTextOrNull`/
-    `assistantTextOrNull`), so a captured item still drives title derivation, the mode trail,
-      the pairing repair and load replay. `Captured` means "we did not build it", not
-      "we failed to understand it". Pinned by `ToolCallPairingRepairTest`
-    (re-typing vs. capture) and `SessionStateRepairTest` (restore -> record reproduces the
-    wire items exactly), `ReplayHistoryTest` (a captured user/tool item replays like its typed
-    counterpart).
-  - **Assistant message items are captured, not rebuilt**: in a tool-continuation
-    iteration the provider's `message` item from `response.output_item.done` is what
-    enters the history - `id` and `status` are required on assistant items in the
-    Responses input, and `annotations` and friends round-trip. Every iteration that
-    *ends* the turn synthesizes its item instead (the terminal text, continue note,
-    wind-down summary, interrupted/content-filter note), with a generated
-    `msg_<uuidv7>` id and `status: "completed"` - the history mirrors what the client
-    saw. Pinned by `PromptRunnerTest` ("the assistant message item replayed ... is
-    the provider's own item").
-  - **Reasoning continuity (the point of #75)**: every output item of an iteration
-    (reasoning, assistant message, function calls) is appended to the history in production
-    order, so the next iteration's request - built 1:1 from `historyWireSnapshot` - carries
-    the reasoning that produced the previous calls. **Live-only**: `PromptRunner.run` drops the
-    items in a `finally` (`SessionState.dropLiveReasoning`), so **every** exit path clears
-    them - including cancellation, where no terminal branch runs (a leak there would replay
-    one turn's reasoning into the next prompt) - and `buildRecord` filters them out of the
-    persisted record as well, so no chain-of-thought ever reaches disk and the next prompt
-    starts clean. Pinned by `PromptRunnerTest` (replay to iteration n+1, dropped at turn
-    end, dropped when a cancelled turn ends, absent from the record).
-  - **No `temperature` and no `max_output_tokens`** are sent (providers default them; a cap
-    interacts badly with Anthropic's reasoning budget). No `store`/`previous_response_id`
-    (the API is stateless-only and rejects them), no `include`, and no `reasoning.context`
-    (an OpenAI GPT-5.6+ extension open-weight models do not understand; under live-only
-    accumulation every request carries current-turn reasoning only, so the model default is
-    already correct). All pinned by `LlmResponseGoldensTest`.
-  - Streaming is a hand-rolled line scan via `preparePost` + `bodyAsChannel().readLine()`
-    (`data:` events, `[DONE]` terminator). **Terminal events are `response.completed`,
-    `response.incomplete` and `response.failed`** - the documented `response.done` name
-    does not occur on the live endpoint (verified 2026-11-06); missing them silently
-    kills the `usage_update` indicator and blind-folds truncation detection, so the mock
-    server and the goldens emit the real names. `response.failed` and top-level
-    `{"error":…}` events raise `LlmException`. Every wire-shaped byte round-trips through
-    the shared `llmWireJson`.
-  - **Pre-dialect session records: assumed gone, no compat shim.** `history` is
-    `List<JsonObject>`, so an old Chat-Completions record still *decodes* - deliberately
-    unmigrated (an item the typed model cannot reproduce is kept verbatim, see below). It is
-    also deliberately unguarded: a legacy record's `role:"tool"`/`tool_calls` items are not
-    valid Responses input, so a restored old session that used a tool fails on its first
-    turn with a provider `invalid_prompt` instead of at load time. Accepted because the agent
-    is the only writer of records (`SessionState.buildRecord` -> `HistoryItem.toWire`), so
-    such a record can only predate this dialect change; `session/delete` still cleans it up.
-    Do not add a migration - that is the compat shim this decision rules out.
-
 ## Pitfalls and learnings
 
-- **Anything on stdout corrupts the ACP NDJSON stream.** The only legitimate stdout write
-  is the transport output lambda in `Main.kt`. A stray `println`, a chatty dependency, or
-  a startup banner breaks the protocol. kotlin-logging 8.x prints an "initializing..."
-  banner on first logger creation unless `KotlinLoggingConfiguration.logStartupMessage =
-  false` is set first - `main()` in `Main.kt` does this (together with
-  `org.slf4j.simpleLogger.logFile=System.err`) before `runAgent` creates the first
-  logger; do not move a top-level `val logger = KotlinLogging.logger {}` ahead of it.
+- **stdout is the protocol stream** (see Boundaries): the only legitimate stdout write is the
+  transport output lambda in `Main.kt`. kotlin-logging 8.x prints an "initializing..." banner on
+  first logger creation unless `KotlinLoggingConfiguration.logStartupMessage = false` is set
+  first - `main()` in `Main.kt` does this (together with
+  `org.slf4j.simpleLogger.logFile=System.err`) before `runAgent` creates the first logger; do not
+  move a top-level `val logger = KotlinLogging.logger {}` ahead of it.
+- **Assistant history items need `id` and `status`.** The Responses input rejects an assistant
+  `message` without them, so a provider item is captured verbatim and never rebuilt, while a
+  synthesized one (continue note, wind-down summary, interrupted/content-filter note) carries a
+  generated `msg_<uuidv7>` id and `status: "completed"`. Pinned by `PromptRunnerTest`.
 - **LLM wire JSON settings are load-bearing.** The shared `llmWireJson` (`llm/LlmWire.kt`)
   must keep `namingStrategy = JsonNamingStrategy.SnakeCase` (without it `call_id` /
   `output_tokens` silently fail to parse) plus `ignoreUnknownKeys = true`,
@@ -2083,13 +1522,12 @@ communicate that with the user so we can review them.
 - **ktor client-side redirect plugin vs. the manual redirect loop**: any client
   used with `WebFetcher` (production `defaultClient` and every test client) must
   set `followRedirects = false`. The plugin is on by default, consumes 30x
-  responses itself, and silently bypasses the per-hop SSRF re-validation under
-  test (a MockEngine test without it followed the redirect and the loop never
-  saw the `Location` header).
+  responses itself, and silently bypasses the per-hop SSRF re-validation (a MockEngine test without it follows the
+  redirect and the loop never
+  sees the `Location` header).
 - **JDK chunked `InputStreamReader` can spin forever**: a read-loop that calls
-  `reader.read(chunk)` and processes chars incrementally (the first
-  `StreamingLineReader` implementation) was observed to burn 100% CPU forever on
-  zero-char reads under JDK 25 (`jstack` on the Gradle test worker showed
+  `reader.read(chunk)` and processes chars incrementally burns 100% CPU forever on
+  zero-char reads under JDK 25 (`jstack` on the Gradle test worker shows
   `RUNNABLE` in `StreamDecoder.read`), non-deterministically. The file line
   reader therefore splits on `\n` at the **byte** level and decodes per line -
   avoid incremental `InputStreamReader` decode loops in this repo; if a test
@@ -2114,8 +1552,8 @@ communicate that with the user so we can review them.
   held - the blocker is real contention, not the lock file's existence: idle daemons keep
   `modules-2.lock` open without holding it (`fuser` lists them although the lock is free),
   and every lock file keeps the last owner's PID as a record after release, so neither
-  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. **Root cause (issue #68, proven by
-  repro)**: Gradle hands a held lock over only when the
+  `fuser` nor the recorded PID proves contention; `flock -n <lock> true` does. **Root cause**:
+  Gradle hands a held lock over only when the
   waiter *asks*: the waiter pings the owner over **loopback UDP** (`FileLockCommunicator`),
   the owner releases and the waiter proceeds. That ping cannot cross network namespaces,
   so a container on a bridge/named network (a different netns than the host) waits out the
@@ -2138,7 +1576,7 @@ communicate that with the user so we can review them.
 
 ## Recipes
 
-- **Connect an MCP server** - all three transports are verified on JVM (`mcp/McpConnector.kt`): stdio via
+- **Connect an MCP server** - all three transports work on JVM (`mcp/McpConnector.kt`): stdio via
   `ProcessBuilder` + kotlinx-io
   `asSource()/asSink().buffered()`; streamable HTTP and classic SSE via
   `HttpClient(CIO){ install(SSE) }`. Each has an e2e mock to copy from when
@@ -2163,15 +1601,20 @@ This guidelines file is a living document and MUST be actively maintained by the
 
 * **Trigger:** Whenever significant changes are made to the project that are related to any information provided here,
   the LLM Agent MUST immediately update this file (`AGENTS.md`) to reflect the current state of the project.
+* **Budget:** Keep the file below 500 lines / 24 KiB. Review this budget after every change of this file.
 * **Content:**
   * Add any information that could have helped the agent to solve the task more efficiently or in fewer steps.
   * Remove outdated, obsolete, or incorrect information.
   * Ensure all tech stack versions and library names are accurate.
-  * Make sure the most important features are clearly documented.
-  * Keep the project structure up to date so that the most important files and directories are visible at a glance.
+  * Make sure the most important features are clearly documented, but in a compact and concise manner.
+  * Keep the project structure up to date so that the most important files and directories are visible at a glance, no
+    need to document every file and directory, rather give the Agent a hint of the general project structure and where
+    it will find things.
 * **No history:** this file documents the current state, not how it came about. Git holds the history, so do not keep
   changelog-style narration (what was removed/renamed/fixed, "previously", "used to", upgrade logs, closed-issue
   recaps). Keep only what still guides a decision: the rationale ("why") of a design choice, boundaries, and the
   constraints a future change must respect. When you touch a paragraph, prune its history in the same edit.
+* **Protected:** Never update the "Conventions" or "Self-Update Instruction" section without being explicitly instructed
+  to do so.
 * **Proactivity:** Do not wait for explicit instructions to update these guidelines if you identify a discrepancy
   between the guidelines and the actual codebase.
