@@ -45,3 +45,7 @@ out/
 
 /.ai/mcp/mcp.json
 /system-customizations.json
+
+# Archived OpenSpec changes stay local: what they decided is already merged into
+# openspec/specs/, so the folder is working material, not a record.
+/openspec/changes/archive/

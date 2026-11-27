@@ -11,6 +11,12 @@ context: |
   class or function names, library choices, or step-by-step implementation; those belong
   in AGENTS.md and KDoc.
 
-  Each scenario should name the test that pins it (a unit test class, or an e2e scenario
-  in net.dontdrinkandroot.acpagent.e2e) where such a pin exists, so spec and suite cannot
-  drift apart.
+  Each requirement is pinned by a test, so spec and suite cannot drift apart. A requirement's
+  scenarios name their tests in `- **Pinned by**` lines until it is converted; a converted
+  requirement carries no pin lines and its test classes anchor it with
+  `@Pins("<capability>", "<requirement>")`. Never author a new pin line - convert the requirement
+  when work touches it. A scenario no test can pin says why instead: it relies on an upstream
+  SDK, needs an environment the suite does not have, or rests on a judgement. `SpecPinsTest`
+  enforces both modes: a scenario without a pin line in an unconverted requirement, a pin naming
+  a class the test suite does not have or that runs no test, or a converted requirement without
+  an annotation fails the build.

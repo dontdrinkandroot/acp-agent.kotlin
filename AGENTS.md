@@ -54,6 +54,10 @@ around it. Each names the capability spec that owns it (`openspec/specs/<name>/s
   persisted (`agent-turn`).
 - **The request shape is a negative contract:** no `temperature`, `max_output_tokens`, `store`,
   `previous_response_id`, `include`, `reasoning.context` (`llm-streaming`).
+- **The system prompt is a cached prefix.** Caches match a prefix, so a head change re-bills the
+  conversation and can re-route OpenRouter's sticky provider (no `session_id` is sent). Durable
+  inputs only - build, cwd, date, AGENTS.md, `.ai/run.json`, tiers - in stable order; per-turn
+  facts (mode, tools, plan) go into the conversation (`system-prompt`).
 - **No session-record migration.** An old-dialect record decodes but fails at its first turn; do
   not add a compat shim (`session-lifecycle`).
 
@@ -120,10 +124,9 @@ not driven from the transport's `onClose` (`agent-process`).
 
 ## Tool Usage
 
-* **Web research**: use the `web_search_exa` and `web_fetch_exa` tools for research, validating information and
-  looking things up when unsure — do not guess. Search first with `web_search_exa`, then fetch the full page with
-  `web_fetch_exa` when highlights are insufficient. Verify API contracts, library versions, spec details and
-  upstream behavior against primary sources before relying on them; cite the sources you checked in your summary.
+* **Web research**: use `web_search_exa` then `web_fetch_exa` for anything you are unsure about -
+do not guess, and verify API contracts, library versions and upstream behavior against primary
+sources (cite what you checked).
 * **GitHub issues**
   * Always set the **issue type** (`Bug` / `Feature` / `Task`).
   * Every **bug** additionally gets the **`Priority`** field (`Low`, `Medium`, `High`, `Urgent`)
@@ -150,7 +153,8 @@ summary here; observable behaviour is under `openspec/specs/`, one-off detail in
 - `tools/` - the tool set + `ToolRegistry`/`ToolCatalog`, `FileStore`, walkers, caps, exclusion
   and diff policies.
 - `src/test/.../sandbox/` - argv pin table (`SandboxPinRows`), plan/fail-loudly/supervisor/
-  Dockerfile tests, `FakeDocker`; `src/test/.../e2e/` - the black-box harness and its mocks.
+  Dockerfile tests, `FakeDocker`; `src/test/.../e2e/` - the black-box harness and its mocks;
+  `src/test/.../spec/` - `SpecPinsTest`, the gate over the OpenSpec pin index.
 - `bin/`, `build-docker`, `Dockerfile` - launch wrappers, local image build, multi-stage image.
 - `.ai/run.json`, `.ai/scripts/` - run configurations and `show-test-failures.sh`.
 - `README.md` - user-facing docs; `openspec/` - the behaviour specs and in-flight changes.
@@ -166,6 +170,9 @@ change, and never restate unchanged requirements in a delta.
 Drive the CLI through the `spec_*` run configurations (`spec_list`, `spec_status`,
 `spec_instructions`, `spec_validate` read; `spec_new_change`, `spec_archive` mutate); the folder
 is plain Markdown, so `list_dir`/`read_file` also answer "which artifact is next".
+`openspec/changes/archive/` is gitignored - an archived change stays local: what it decided is
+merged into `openspec/specs/`, so the folder is working material, not a record. Durable reasoning
+belongs in the open change's `design.md`, in a boundary here, or in KDoc.
 
 Workflow: GitHub issue -> *propose* writes the change folder, no source code -> user reviews ->
 *apply* works `tasks.md`, ticking each box -> archive, close the issue with a comment on the
@@ -175,8 +182,14 @@ mirrors only the current task group.
 `spec_validate` enforces the shape: `#### Scenario:` (four hashes) with a WHEN/GIVEN trigger and
 a THEN outcome, requirement text under 500 characters, exact MODIFIED/REMOVED names,
 `skip_specs: true` for a change without spec-level effect; in `tasks.md` only a checkbox counts.
-Each scenario names its pin (`- **Pinned by** <TestClass>`), or says only manual validation
-covers it; a behaviour change updates spec and test together.
+
+Each requirement is pinned by a test: its scenarios carry `- **Pinned by**` lines until the
+requirement is converted, after which `@Pins("<capability>", "<requirement>")` on the test class
+is the only anchor. **Never author a new pin line** - convert whenever work touches the
+requirement. A scenario no test can pin says why instead (upstream SDK, missing environment,
+human judgement). `SpecPinsTest` gates both modes: every pin resolves to a compiled class that
+runs a test, every requirement has one, and the index lands in `build/reports/spec-coverage.md`.
+It checks that a pin *resolves*, never that it asserts; `openspec/**` is a declared `test` input.
 
 ## Behaviour map
 
@@ -208,43 +221,39 @@ classpath** - not a worker's `java.class.path`; the stdio MCP mock runs as a sep
 
 **Tool schema pins**: each local tool pins its `parameters` schema as an encoded string
 (`llmWireJson.encodeToString(tool.parameters)`, order-sensitive) in its own test class.
-`ToolSchemaTest` iterates `ToolCatalog.kt`'s `localTools()` + `sessionTools(cwd)` and checks
-structure only - add a new tool's pin in the same change; `ToolSchemaWireTest` pins the builder.
+`ToolSchemaTest` checks structure over `ToolCatalog.kt`'s tool lists - pin a new tool in the same
+change; `ToolSchemaWireTest` pins the builder.
 
 **Sandbox pin table**: the `docker run` argv is a pure function (`sandbox/DockerInvocation.kt`
 over `sandbox/SandboxPlanResolution.kt`), pinned by `SandboxCompositionPinTest` in named rows
 against fixture facts (`uid=1001`, `/fixtures/...`; `FixtureProbes`, no host I/O). Every
 `sandbox.*` key, flag and forwarded host fact has a row; the `--env` row is the negative closure
-of the environment surface - keep the rows in step (argv changes are features, not test fixes).
-Around it: `SandboxPlanTest`, `SandboxFailLoudlyTest`, `SandboxSupervisorTest`,
-`DockerfileBuildInputsTest`.
+of the environment surface - argv changes are features, not test fixes (`SandboxPlanTest`,
+`SandboxFailLoudlyTest`, `SandboxSupervisorTest`, `DockerfileBuildInputsTest` around it).
 
 **e2e change policy**: e2e scenarios pin the **wire contract** - protocol flow, security
-boundaries, session/replay semantics - not internal orchestration (LLM call counts, mock filler,
-delta chunk splits). A behavioral change may require updating an assertion: do it in the **same
-commit** with a one-line comment, preferring a pin of equal strength; an e2e failure without a
-behavioral change is a test-design smell (assert the effect, not the feature). Prefer
-effect-based over exact-count assertions ("load makes no LLM calls", not `equals(2,
-requestCount)`); `assertPairComplete(body, context)` and `collapseConsecutiveDuplicates()` help.
+boundaries, session/replay semantics - not internal orchestration (call counts, mock filler, chunk
+splits). A behavioral change may need an assertion update: same commit, one-line comment, a pin of
+equal strength; an e2e failure without a behavioral change is a test-design smell. Prefer
+effect-based assertions ("load makes no LLM calls") over exact counts.
 
-**Manual validation** (not covered by run configurations): `bash -n` + `shellcheck` on the
-wrappers and `build-docker` (run config `lint_scripts`); `./build-docker`, then smoke-test by
-piping an `initialize` request into `./bin/acp-agent-sandbox` and `./bin/acp-agent` (keep stdin
-open briefly) with `~/.config/ddr-acp-agent/openrouter.key` in place. Client-side rendering
-(`/info`, tool-call titles) is verified by hand in the JetBrains client.
+**Manual validation** (outside the run configurations): `lint_scripts` for `bash -n` +
+`shellcheck` on the wrappers and `build-docker`; then smoke-test both launch paths by piping an
+`initialize` request into them (keep stdin open briefly) with the key file in place. Client-side
+rendering (`/info`, tool-call titles) is verified by hand in the JetBrains client.
 
 **ACP SDK upgrade checklist** (`com.agentclientprotocol:acp`): read the release notes and
 re-verify against the resolved sources (`sources` unpacks `acp-jvm-<version>/`): (1)
 `model/SessionUpdate.kt` - the v1 `SessionUpdate.ToolCall` has no programmatic `name` member, so
 that absence is pinned on the raw wire only (issue #64); once the model carries it, emit it
 (`ToolCallExecutor`, `ReplayUpdates`), drop the rule from `tool-call-presentation` and close #64;
-(2) cancellation (`agent/Agent.kt`
-`SessionWrapper.prompt`) - a cancelled turn must answer `PromptResponse(StopReason.CANCELLED)`
-(`E2eCancelTest`); watch `protocol/Exceptions.kt` (`AcpRequestCancelledException` is deliberately
-*not* a `CancellationException`); (3) `AgentSupport` - `deleteSession` must keep succeeding for
-unknown ids (`AgentSupportImplTest`), `session/list` paging over our `Sequence` (10 +
-`nextCursor`, unexercised); (4) symbol stability of the JSON-RPC error helpers (`AcpExpectedError`,
-`JsonRpcException`, `acpFail`, `jsonRpcInvalidParams`, `ACPJson`).
+(2) cancellation (`agent/Agent.kt` `SessionWrapper.prompt`) - a cancelled turn must answer
+`PromptResponse(StopReason.CANCELLED)` (`E2eCancelTest`); watch `protocol/Exceptions.kt`
+(`AcpRequestCancelledException` is deliberately *not* a `CancellationException`); (3)
+`AgentSupport` - `deleteSession` must keep succeeding for unknown ids (`AgentSupportImplTest`),
+`session/list` paging over our `Sequence` (10 + `nextCursor`, unexercised); (4) symbol stability
+of the JSON-RPC helpers (`AcpExpectedError`, `JsonRpcException`, `acpFail`,
+`jsonRpcInvalidParams`, `ACPJson`).
 
 ## Pitfalls and learnings
 
@@ -262,25 +271,21 @@ unknown ids (`AgentSupportImplTest`), `session/list` paging over our `Sequence` 
   fail to parse), `ignoreUnknownKeys`, `explicitNulls = false`, `encodeDefaults = true`. Do not
   create a second `Json` for LLM wire data: `LlmResponseGoldensTest` pins the request shape and
   the session store reuses the instance.
-- **Stale e2e binary**: the harness drives the installed agent and `test` depends on
-  `installDist`; running a single test from the IDE against an old install validates stale
-  sources - re-link first.
-- **A test reading a checkout file at runtime is not rerun when that file changes** (the `test`
-  inputs are classes/classpath, not files the code opens). Rerun with `--rerun-tasks` (run config
-  `test_fresh`), or declare the file as a task input.
+- **Stale e2e binary**: a single test run from the IDE against an old `installDist` validates
+  stale sources - re-link first.
+- **A file read at test runtime is not an input by default** - a spec or `Dockerfile` edit would
+  leave `test` UP-TO-DATE. `test_fresh` reruns everything; declare the file as an input (as the
+  `Dockerfile` and `openspec/**` do).
 - **Sandbox test fixtures live under `build/`** (never `/tmp` or `/home/dev` - covered roots the
   mount skip policy prunes, and `/home/dev` exists only in the container).
-- **Gradle build cache can report a false green**: a run that just changed test sources or the
-  classpath may come back `FROM-CACHE`/`UP-TO-DATE` and hide failures. When no `:test` execution
-  line appears, distrust it: rerun with `./gradlew clean test --tests <Class>` or `test_fresh`.
+- **Gradle build cache can report a false green**: a `FROM-CACHE`/`UP-TO-DATE` run right after a
+  test edit can hide failures - distrust a run without a `:test` execution line, use `test_fresh`.
 - **ktor client redirect plugin vs. the manual redirect loop**: any client used with `WebFetcher`
   must set `followRedirects = false`; the plugin is on by default, consumes 30x responses itself
   and silently bypasses the per-hop SSRF re-validation.
-- **JDK chunked `InputStreamReader` can spin forever**: a read-loop calling `reader.read(chunk)`
-  burns 100% CPU on zero-char reads under JDK 25 (`jstack` shows `RUNNABLE` in
-  `StreamDecoder.read`). The file line reader splits on `\n` at the **byte** level and decodes
-  per line - avoid incremental decode loops; if a test "hangs", take a `jstack` before blaming
-  Gradle.
+- **JDK chunked `InputStreamReader` can spin forever**: `reader.read(chunk)` burns 100% CPU on
+  zero-char reads (JDK 25; `jstack` shows `RUNNABLE` in `StreamDecoder.read`). The file line
+  reader splits on `\n` bytes and decodes per line; take a `jstack` before blaming Gradle.
 - **CIO engine request timeout**: the ktor CIO engine applies a default **15s aggregate
   `requestTimeout`** unless disabled (`engine { requestTimeout = 0 }`), silently killing any
   completion that streams longer (`Request timeout has expired [url=..., request_timeout=unknown
