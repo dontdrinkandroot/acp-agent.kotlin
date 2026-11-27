@@ -3,7 +3,10 @@ package net.dontdrinkandroot.acpagent.config
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("agent-process", "Startup arguments are strict")
+@Pins("configuration", "A profile selects another configuration file")
 class AgentArgumentsTest {
 
     @Test

@@ -4,7 +4,9 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("permissions", "Every target must lie inside the cwd to run without asking")
 class ContainmentTest {
 
     @Test

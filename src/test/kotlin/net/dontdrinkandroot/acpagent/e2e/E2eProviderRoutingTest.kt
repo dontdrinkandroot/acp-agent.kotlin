@@ -2,14 +2,15 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.model.ContentBlock
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Black-box auto provider routing: by default every chat request carries a
@@ -18,6 +19,9 @@ import kotlin.test.assertTrue
  * `"openRouter": {"autoThroughputSorting": false}` disables routing entirely.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("provider-routing", "Automatic routing sorts by throughput and caps at the median price")
+@Pins("provider-routing", "Disabling auto routing removes the preference")
+@Pins("provider-routing", "Routing fails open")
 class E2eProviderRoutingTest : E2eAgentTest() {
 
     @Test

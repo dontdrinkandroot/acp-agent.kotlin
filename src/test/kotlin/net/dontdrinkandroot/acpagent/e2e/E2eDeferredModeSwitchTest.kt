@@ -2,18 +2,19 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box deferred mode switching wire contract: a mode switch requested
@@ -22,6 +23,7 @@ import kotlin.test.assertTrue
  * only when the turn hands control back; a cancelled turn drops the request.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("agent-turn", "A mode requested during a turn applies when the turn ends")
 class E2eDeferredModeSwitchTest : E2eAgentTest() {
 
     @Test

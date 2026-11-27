@@ -4,14 +4,17 @@ import com.agentclientprotocol.model.PlanEntry
 import com.agentclientprotocol.model.PlanEntryPriority
 import com.agentclientprotocol.model.PlanEntryStatus
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.spec.Pins
+import kotlinx.serialization.json.*
 
+@Pins("plan-tracking", "Plan entries are validated strictly")
+@Pins("plan-tracking", "update_plan replaces the whole plan")
 class UpdatePlanToolTest {
 
     private val tool = UpdatePlanTool()

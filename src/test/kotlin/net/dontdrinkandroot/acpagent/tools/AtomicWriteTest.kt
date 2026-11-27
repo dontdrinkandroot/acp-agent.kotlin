@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Pins the stale-temp sweep for crashed atomic writes (issue #20): a crash
@@ -13,6 +14,8 @@ import kotlin.test.assertTrue
  * forever and are invisible to every listing. Only stale temps of the writer's
  * own naming may be swept - a concurrent writer's fresh temp must survive.
  */
+@Pins("run-configurations", "Run-configuration writes need build or bash mode")
+@Pins("session-lifecycle", "Record writes are atomic and sweep crash orphans")
 class AtomicWriteTest {
 
     @Test

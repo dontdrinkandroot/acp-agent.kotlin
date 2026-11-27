@@ -1,11 +1,14 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import kotlinx.serialization.SerializationException
-import net.dontdrinkandroot.acpagent.tools.STALE_TEMP_AGE_MILLIS
 import java.nio.file.Files
 import java.nio.file.attribute.FileTime
+import kotlinx.serialization.SerializationException
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.tools.STALE_TEMP_AGE_MILLIS
 import kotlin.test.*
 
+@Pins("session-lifecycle", "Record writes are atomic and sweep crash orphans")
+@Pins("session-lifecycle", "The session record holds the conversation's durable state")
 class SessionStoreTest {
 
     private fun store(): Pair<SessionStore, java.nio.file.Path> {

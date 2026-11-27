@@ -1,15 +1,21 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("file-tools", "Client proxy reads never claim a completeness they cannot know")
+@Pins("file-tools", "Line-based reads share one line-counting convention")
+@Pins("file-tools", "Path arguments are decoded strictly")
+@Pins("file-tools", "Relative paths resolve against the session cwd")
+@Pins("file-tools", "read_file renders numbered lines and pages explicitly")
 class ReadFileToolTest {
 
     @Test

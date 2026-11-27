@@ -4,8 +4,10 @@ import com.agentclientprotocol.model.ContentBlock
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.config.UnlistedPaths
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
+@Pins("agent-process", "/info is advertised and answered locally")
 class InfoCommandTest {
 
     private fun config() = Config(

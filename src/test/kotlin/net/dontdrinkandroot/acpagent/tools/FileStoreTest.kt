@@ -5,6 +5,7 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.writeString
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
 /**
@@ -14,6 +15,7 @@ import kotlin.test.*
  * without end, hanging the turn. A directory is the cheap stand-in for the
  * same guard in a test.
  */
+@Pins("file-tools", "read_file renders numbered lines and pages explicitly")
 class FileStoreTest {
 
     @Test

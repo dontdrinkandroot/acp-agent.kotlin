@@ -2,15 +2,16 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box file-access exclusions (the fixed `.env*.local` secret rule and the
@@ -20,6 +21,10 @@ import kotlin.test.assertTrue
  * hide excluded entries instead of surfacing their existence.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("configuration", "The project overlay may only extend permissions")
+@Pins("file-tools", "Excluded files are unreachable through the file tools")
+@Pins("file-tools", "Listing and searching bound their results and hide excluded files")
+@Pins("system-prompt", "Excluded files are announced with their escape hatch")
 class E2eExcludedFilesTest : E2eAgentTest() {
 
     @Test

@@ -4,17 +4,25 @@ import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
 import com.sun.net.httpserver.HttpServer
+import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
+import java.util.concurrent.Executors
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import java.io.ByteArrayOutputStream
-import java.net.InetSocketAddress
-import java.util.concurrent.Executors
-import java.util.zip.GZIPOutputStream
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
+@Pins("web-fetch", "Every redirect hop is re-validated")
+@Pins("web-fetch", "HTML is converted to line-based text and paged like a file")
+@Pins("web-fetch", "HTTP errors fail loudly")
+@Pins("web-fetch", "Non-public hosts are blocked by default")
+@Pins("web-fetch", "The body is bounded and must be text")
+@Pins("web-fetch", "web_fetch never asks for permission")
+@Pins("web-fetch", "web_fetch retrieves http and https only, without writing to disk")
 class WebFetchToolTest {
 
     private lateinit var server: HttpServer

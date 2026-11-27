@@ -2,17 +2,18 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box mode enforcement: a tool that is registered but disabled in the
@@ -27,6 +28,11 @@ import kotlin.test.assertTrue
  * from tool availability.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("command-execution", "bash exists only in bash mode and always asks")
+@Pins("permissions", "The mode gate runs before permission and execution")
+@Pins("plan-tracking", "update_plan is available in every mode and needs no permission")
+@Pins("utility-tools", "Utility tools are available everywhere and never ask")
+@Pins("utility-tools", "get_current_mode answers with the governing mode's status text")
 class E2eModeRestrictionTest : E2eAgentTest() {
 
     @Test

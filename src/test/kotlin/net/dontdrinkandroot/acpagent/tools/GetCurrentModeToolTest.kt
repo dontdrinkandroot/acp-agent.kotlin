@@ -3,15 +3,17 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("utility-tools", "get_current_mode answers with the governing mode's status text")
 class GetCurrentModeToolTest {
 
     private val tool = GetCurrentModeTool()

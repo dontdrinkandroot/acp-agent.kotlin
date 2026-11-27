@@ -3,17 +3,18 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.dontdrinkandroot.acpagent.agent.SessionStore
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box `provider` config option (issue #42): the option advertises
@@ -25,6 +26,10 @@ import kotlin.test.assertNull
  * the selection survives restarts.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("model-configuration", "A manual provider pick restricts routing to that provider")
+@Pins("model-configuration", "The manual pick outlives an unavailable provider feed")
+@Pins("model-configuration", "The provider option offers auto and the model's providers")
+@Pins("provider-routing", "Disabling auto routing removes the preference")
 class E2eProviderOptionTest : E2eAgentTest() {
 
     private fun providerOption(options: List<SessionConfigOption>) =

@@ -2,7 +2,7 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
-import kotlinx.coroutines.*
+import java.nio.file.Files
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -11,9 +11,16 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
+import kotlinx.coroutines.*
 
+@Pins("agent-turn", "Cancellation ends the turn as cancelled and reaches the running tool")
+@Pins("command-execution", "A command is killed with its whole process tree after the timeout")
+@Pins("command-execution", "Cancellation terminates the running command")
+@Pins("command-execution", "Output is captured progressively with bounded tails")
+@Pins("command-execution", "The command runs through a shell in the session cwd")
+@Pins("tool-call-presentation", "Completion reports status and the result text")
 class BashToolTest {
 
     private val context = ToolContext(

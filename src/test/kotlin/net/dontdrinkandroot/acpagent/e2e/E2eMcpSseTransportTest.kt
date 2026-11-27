@@ -4,14 +4,15 @@ import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box MCP coverage of the **classic SSE** transport (issue #69) - the one
@@ -24,6 +25,8 @@ import kotlin.test.assertTrue
  * agent as its counterparts, only over a stream-plus-POST transport.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("mcp-consumption", "All three transports are supported")
+@Pins("mcp-consumption", "Server-declared headers are forwarded")
 class E2eMcpSseTransportTest : E2eAgentTest() {
 
     private fun E2eContext.sseServer(

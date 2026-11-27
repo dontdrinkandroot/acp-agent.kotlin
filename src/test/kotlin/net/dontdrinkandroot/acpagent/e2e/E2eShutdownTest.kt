@@ -5,17 +5,18 @@ import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.SessionConfigId
 import com.agentclientprotocol.model.SessionConfigOptionValue
 import com.agentclientprotocol.model.SessionId
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import net.dontdrinkandroot.acpagent.agent.*
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.agent.*
 
 /**
  * Black-box graceful-shutdown contract (issue #17): a turn that is interrupted
@@ -26,6 +27,8 @@ import kotlin.test.assertTrue
  * partial turn itself).
  */
 @OptIn(UnstableApi::class)
+@Pins("agent-process", "Shutdown flushes the live sessions")
+@Pins("session-lifecycle", "The record is persisted at every durable point")
 class E2eShutdownTest : E2eAgentTest() {
 
     @Test

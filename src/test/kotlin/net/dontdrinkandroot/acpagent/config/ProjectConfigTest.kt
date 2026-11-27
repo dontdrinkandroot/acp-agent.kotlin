@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
 /**
@@ -12,6 +13,8 @@ import kotlin.test.*
  * fails loudly, because this file's only job is to widen (or narrow) one trust domain and a
  * silently ignored key would look like a grant that is not there.
  */
+@Pins("configuration", "The project overlay may only extend permissions")
+@Pins("configuration", "The sandbox group is not agent configuration")
 class ProjectConfigTest {
 
     private val cwd: Path = Files.createTempDirectory("acp-project-cwd")

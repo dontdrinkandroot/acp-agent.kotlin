@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Pins the shared numbered-window rendering (issue #81): the one
@@ -11,6 +12,8 @@ import kotlin.test.assertTrue
  * continue footer that read_file and web_fetch both render through, plus the
  * shared start-line bounds guard (issue #45).
  */
+@Pins("file-tools", "Line-based reads share one line-counting convention")
+@Pins("file-tools", "read_file renders numbered lines and pages explicitly")
 class VisualLinesTest {
 
     private fun render(

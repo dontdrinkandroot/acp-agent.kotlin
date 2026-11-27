@@ -1,10 +1,11 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import java.net.InetAddress
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.spec.Pins
 import io.ktor.client.*
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
-import kotlinx.coroutines.runBlocking
-import java.net.InetAddress
 import kotlin.test.*
 
 /**
@@ -15,6 +16,8 @@ import kotlin.test.*
  * in-process). `1.1.1.1` is a public IP literal, so the guard's name check and
  * `getAllByName` resolve it locally without a real DNS query.
  */
+@Pins("web-fetch", "Every redirect hop is re-validated")
+@Pins("web-fetch", "Non-public hosts are blocked by default")
 class WebFetcherTest {
 
     private val requests = mutableListOf<Url>()

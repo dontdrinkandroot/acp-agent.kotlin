@@ -3,14 +3,18 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.spec.Pins
+import kotlinx.serialization.json.*
 
+@Pins("utility-tools", "calc errors name the position")
+@Pins("utility-tools", "calc is pure math with an advertised language")
+@Pins("utility-tools", "calc renders integral results without a decimal point")
 class CalcToolTest {
 
     private val tool = CalcTool()

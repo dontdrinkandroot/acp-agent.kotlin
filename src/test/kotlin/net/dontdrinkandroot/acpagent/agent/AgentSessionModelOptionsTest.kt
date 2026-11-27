@@ -1,20 +1,23 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
 import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ReasoningCapability
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
+import com.agentclientprotocol.model.*
 
+@Pins("model-configuration", "Session setup loads the model feed")
+@Pins("model-configuration", "The model selection is per session and persisted")
 class AgentSessionModelOptionsTest {
 
     private fun model(reasoning: ReasoningCapability? = null) = OpenRouterModel(

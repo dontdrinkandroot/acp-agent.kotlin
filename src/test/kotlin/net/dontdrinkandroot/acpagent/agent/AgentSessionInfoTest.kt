@@ -1,22 +1,24 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import java.nio.file.Files
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.LlmClient
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import java.nio.file.Files
+import com.agentclientprotocol.model.*
 import kotlin.test.*
 
 /**
  * The `/info` slash command at the session level: answered from the session's
  * own state, never through the LLM, never persisted.
  */
+@Pins("agent-process", "/info is advertised and answered locally")
 class AgentSessionInfoTest {
 
     private val key = "sk-super-secret-value"

@@ -1,14 +1,16 @@
 package net.dontdrinkandroot.acpagent.tools
 
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("tool-call-presentation", "A call's title names what it acts on")
 class FormatToolTitleTest {
 
     @Test

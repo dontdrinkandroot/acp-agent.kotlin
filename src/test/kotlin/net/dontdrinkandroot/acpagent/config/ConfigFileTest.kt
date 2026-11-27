@@ -3,7 +3,12 @@ package net.dontdrinkandroot.acpagent.config
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("agent-process", "A broken configuration ends startup with a readable error")
+@Pins("configuration", "Configuration comes from files only")
+@Pins("configuration", "The behaviour switches have validated defaults")
+@Pins("configuration", "The parser is strict about values and lenient about unknown keys")
 class ConfigFileTest {
 
     @Test

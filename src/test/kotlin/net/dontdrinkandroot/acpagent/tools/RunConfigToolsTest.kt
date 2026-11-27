@@ -3,14 +3,21 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.SessionModeId
+import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
+@Pins("run-configurations", "Run configurations live in a project file")
+@Pins("run-configurations", "Run-configuration writes need build or bash mode")
+@Pins("run-configurations", "The create tool validates name and command")
+@Pins("run-configurations", "The delete tool removes one entry")
+@Pins("run-configurations", "The generic file tools cannot write the configuration file")
+@Pins("run-configurations", "The update tool is field-level")
 class RunConfigToolsTest {
 
     private fun tempDir(): String = Files.createTempDirectory("acp-run-cfg").toString()

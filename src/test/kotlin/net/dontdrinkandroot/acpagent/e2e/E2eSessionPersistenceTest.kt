@@ -4,10 +4,11 @@ import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.AcpExpectedError
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import java.nio.file.Files
+import java.time.OffsetDateTime
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -15,14 +16,27 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.agent.ACTIVE_SESSION_META
 import net.dontdrinkandroot.acpagent.agent.SessionStore
-import java.nio.file.Files
-import java.time.OffsetDateTime
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 import kotlin.test.*
 
 /**
  * Black-box session lifecycle flows across agent processes sharing one XDG state dir.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("mcp-consumption", "A session's server connections end with it")
+@Pins("model-configuration", "The model selection is per session and persisted")
+@Pins("plan-tracking", "The plan is persisted and replayed")
+@Pins("session-lifecycle", "A new session has a minted id and is tracked as open")
+@Pins("session-lifecycle", "An ended session refuses further work")
+@Pins("session-lifecycle", "Delete removes the record and closes the session's resources")
+@Pins("session-lifecycle", "Load replays the conversation before the response, resume does not")
+@Pins("session-lifecycle", "Replay reproduces the conversation and its real outcomes")
+@Pins("session-lifecycle", "The open-session marker tracks liveness only")
+@Pins("session-lifecycle", "The session cwd must be a usable directory")
+@Pins("session-lifecycle", "The session list filters, sorts and formats")
+@Pins("session-lifecycle", "The title is derived once and announced once")
+@Pins("system-prompt", "The indicated mode is restored from the trail")
 class E2eSessionPersistenceTest : E2eAgentTest() {
 
     /**

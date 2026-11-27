@@ -1,11 +1,12 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Pins the tool-call pairing repair (issue #38): a `function_call` item whose
@@ -14,6 +15,7 @@ import kotlin.test.assertIs
  * its call dangling, because strict providers reject the whole request with
  * 400 "No tool output found for function call <id>".
  */
+@Pins("session-lifecycle", "Every assistant tool call is paired with a tool result")
 class ToolCallPairingRepairTest {
 
     @Test

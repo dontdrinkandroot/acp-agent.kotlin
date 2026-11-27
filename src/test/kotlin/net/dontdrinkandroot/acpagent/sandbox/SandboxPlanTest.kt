@@ -4,12 +4,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The typed plan level: which directories are skipped and why. The "skipped with a warning"
  * contract is pinned here (typed warnings), not on stderr text - the argv composition is
  * covered by the pin table, the warnings by this test.
  */
+@Pins("docker-sandbox", "Session state and configuration are shared the same way the agent reads them")
+@Pins("docker-sandbox", "The permission lists are the mount list")
 class SandboxPlanTest {
 
     private fun plan(

@@ -1,12 +1,13 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionId
+import kotlin.test.Test
+import kotlin.test.assertEquals
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import kotlin.test.Test
-import kotlin.test.assertEquals
 
 /**
  * Pins the persisted lifecycle of the `provider` selection ("auto" default,
@@ -14,6 +15,9 @@ import kotlin.test.assertEquals
  * model's endpoints feed is pinned in [SessionConfigOptionsTest]; here the
  * selection is a plain string, "" meaning auto.
  */
+@Pins("model-configuration", "The manual pick outlives an unavailable provider feed")
+@Pins("model-configuration", "The model selection is per session and persisted")
+@Pins("session-lifecycle", "The session record holds the conversation's durable state")
 class SessionStateProviderSelectionTest {
 
     private fun state(restored: SessionRecord? = null) = SessionState(

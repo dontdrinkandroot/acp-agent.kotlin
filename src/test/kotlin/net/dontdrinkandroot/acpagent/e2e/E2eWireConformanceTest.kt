@@ -5,19 +5,20 @@ import com.agentclientprotocol.client.Client
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
-import kotlinx.coroutines.*
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.*
-import java.io.File
-import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 import java.util.*
 import kotlin.test.*
+import kotlinx.coroutines.*
+import kotlinx.serialization.json.*
 
 /**
  * Black-box wire conformance:
@@ -28,6 +29,29 @@ import kotlin.test.*
  * and the attribution headers.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("agent-process", "The agent reports its build")
+@Pins("agent-process", "The process speaks ACP on stdout and logs on stderr")
+@Pins("agent-process", "Version negotiation answers with the supported version")
+@Pins("agent-process", "initialize advertises the agent's capabilities")
+@Pins("agent-turn", "A prompt turn runs at most the configured number of tool iterations")
+@Pins("agent-turn", "Every streamed chunk of one iteration shares one message id")
+@Pins("agent-turn", "The turn end delivers content, then usage, then the response")
+@Pins("agent-turn", "The usage indicator reports the model's context window")
+@Pins("llm-streaming", "Output items and tool-call arguments are accumulated")
+@Pins("llm-streaming", "Reasoning and reply deltas are relayed live")
+@Pins("llm-streaming", "Requests identify the application")
+@Pins("model-configuration", "Session setup loads the model feed")
+@Pins("model-configuration", "The effective reasoning effort is applied or omitted")
+@Pins("model-configuration", "The model selection is per session and persisted")
+@Pins("plan-tracking", "Plan entries are validated strictly")
+@Pins("plan-tracking", "update_plan replaces the whole plan")
+@Pins("system-prompt", "Project instructions are injected as a dedicated section")
+@Pins("system-prompt", "The system prompt carries the session facts")
+@Pins("system-prompt", "The system prompt is rebuilt for every iteration")
+@Pins("tool-call-presentation", "A file change is shown as a whole-file diff")
+@Pins("tool-call-presentation", "A tool call is announced before it runs")
+@Pins("tool-call-presentation", "Completion reports status and the result text")
+@Pins("tool-call-presentation", "The programmatic tool name member is not sent")
 class E2eWireConformanceTest : E2eAgentTest() {
 
     @Test

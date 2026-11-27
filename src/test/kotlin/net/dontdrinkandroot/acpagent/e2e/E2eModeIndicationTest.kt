@@ -2,7 +2,11 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
+import java.io.File
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -10,11 +14,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.io.File
-import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box wire contract of the coalesced mode indication (issue #36): mode
@@ -24,6 +25,7 @@ import kotlin.test.assertTrue
  * a mode that did not govern a turn.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("system-prompt", "The mode status message is written once per governing mode")
 class E2eModeIndicationTest : E2eAgentTest() {
 
     private fun systemTexts(llmMock: MockOpenAiServer, body: String): List<String> =

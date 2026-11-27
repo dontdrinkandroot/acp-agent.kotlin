@@ -1,16 +1,21 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("file-tools", "Deleting a file refuses directories and symlinks")
+@Pins("tool-call-presentation", "A call's title names what it acts on")
+@Pins("tool-call-presentation", "A file change is shown as a whole-file diff")
+@Pins("tool-call-presentation", "Only proxy-rendered changes suppress the diff")
 class DeleteFileToolTest {
 
     @Test

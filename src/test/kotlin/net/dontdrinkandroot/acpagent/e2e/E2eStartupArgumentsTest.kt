@@ -9,6 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The process-level startup contract (issue #84): the agent's argument parser is strict, and
@@ -18,6 +19,9 @@ import net.dontdrinkandroot.acpagent.config.Config
  * These cases cannot go through the ACP client (the process exits before `initialize`), so
  * they launch the installed binary directly and inspect its exit code and stderr.
  */
+@Pins("agent-process", "Startup arguments are strict")
+@Pins("configuration", "A profile selects another configuration file")
+@Pins("docker-sandbox", "The sandbox has its own entry point")
 class E2eStartupArgumentsTest {
 
     private val binaryPath: String

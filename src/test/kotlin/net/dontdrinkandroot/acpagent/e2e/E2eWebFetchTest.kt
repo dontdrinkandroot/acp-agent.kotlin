@@ -7,14 +7,15 @@ import com.agentclientprotocol.model.SessionUpdate
 import com.agentclientprotocol.model.ToolCallStatus
 import com.agentclientprotocol.model.ToolKind
 import com.sun.net.httpserver.HttpServer
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.util.concurrent.Executors
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Black-box web_fetch: available and prompt-free in plan mode (read-only, no
@@ -23,6 +24,11 @@ import kotlin.test.assertTrue
  * `"tools": {"webFetch": {"allowPrivate": true}}` (the local mock server is the fixture).
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("permissions", "Tools without a path use their kind to decide")
+@Pins("web-fetch", "HTML is converted to line-based text and paged like a file")
+@Pins("web-fetch", "Non-public hosts are blocked by default")
+@Pins("web-fetch", "web_fetch never asks for permission")
+@Pins("web-fetch", "web_fetch retrieves http and https only, without writing to disk")
 class E2eWebFetchTest : E2eAgentTest() {
 
     /** Starts a loopback HTTP server serving one HTML page; stops it in [finally]. */

@@ -1,16 +1,17 @@
 package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.io.File
-import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 import kotlin.test.*
 
 /**
@@ -20,6 +21,16 @@ import kotlin.test.*
  * reads ask the user for permission.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("command-execution", "bash exists only in bash mode and always asks")
+@Pins("file-tools", "File access uses the client proxy when the client offers it")
+@Pins("permissions", "A path outside every tier follows the configured policy")
+@Pins("permissions", "Every target must lie inside the cwd to run without asking")
+@Pins("permissions", "Permanent decisions are per tool and per session")
+@Pins("permissions", "The agent's scratch directory is read-trusted")
+@Pins("permissions", "The permission prompt offers the four standard options")
+@Pins("permissions", "Tools without a path use their kind to decide")
+@Pins("tool-call-presentation", "A tool call is announced before it runs")
+@Pins("tool-call-presentation", "Completion reports status and the result text")
 class E2eFileStoreTest : E2eAgentTest() {
 
     @Test

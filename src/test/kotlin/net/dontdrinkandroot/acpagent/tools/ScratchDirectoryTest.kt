@@ -3,8 +3,10 @@ package net.dontdrinkandroot.acpagent.tools
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
+@Pins("permissions", "The agent's scratch directory is read-trusted")
 class ScratchDirectoryTest {
 
     private lateinit var base: Path

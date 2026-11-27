@@ -2,12 +2,6 @@ package net.dontdrinkandroot.acpagent.llm
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
@@ -15,7 +9,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("llm-streaming", "Terminal and error events are classified")
+@Pins("llm-streaming", "The stream is read as an SSE event scan")
 internal class LlmClientErrorTest {
 
     private fun server(handler: (HttpExchange) -> Unit): HttpServer =

@@ -1,8 +1,6 @@
 package net.dontdrinkandroot.acpagent.providerrouting
 
 import com.sun.net.httpserver.HttpServer
-import kotlinx.coroutines.runBlocking
-import net.dontdrinkandroot.acpagent.llm.LlmClient
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
@@ -10,7 +8,13 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.llm.LlmClient
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("provider-routing", "Automatic routing sorts by throughput and caps at the median price")
+@Pins("provider-routing", "Disabling auto routing removes the preference")
+@Pins("provider-routing", "Routing fails open")
 class ProviderRoutingTest {
 
     private class EndpointsServer(private val endpointPrices: String, private var failures: Int = 0) {

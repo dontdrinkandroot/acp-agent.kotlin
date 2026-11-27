@@ -3,16 +3,22 @@ package net.dontdrinkandroot.acpagent.tools
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
 import com.agentclientprotocol.model.ToolKind
-import kotlinx.coroutines.*
+import java.nio.file.Files
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
-import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import java.nio.file.Files
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
+import kotlinx.coroutines.*
+import kotlinx.serialization.json.*
 
+@Pins("command-execution", "Cancellation terminates the running command")
+@Pins("run-configurations", "Arguments reach the command as positional parameters")
+@Pins("run-configurations", "Run configurations live in a project file")
+@Pins("run-configurations", "run executes a configuration prompt-free in every mode")
+@Pins("tool-call-presentation", "A call's title names what it acts on")
 class RunToolTest {
 
     private fun tempDir(): String = Files.createTempDirectory("acp-run-tool").toString()

@@ -2,20 +2,32 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.client.ClientInfo
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
-import kotlinx.coroutines.runBlocking
-import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.config.Secret
-import net.dontdrinkandroot.acpagent.llm.LlmClient
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.llm.LlmClient
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
+import com.agentclientprotocol.model.*
 import kotlin.test.*
 
+@Pins("agent-process", "Shutdown flushes the live sessions")
+@Pins("mcp-consumption", "A session's server connections end with it")
+@Pins("session-lifecycle", "A new session has a minted id and is tracked as open")
+@Pins("session-lifecycle", "An ended session refuses further work")
+@Pins("session-lifecycle", "Client-supplied session ids are validated before any file access")
+@Pins("session-lifecycle", "Delete removes the record and closes the session's resources")
+@Pins("session-lifecycle", "Restore refusals are distinct")
+@Pins("session-lifecycle", "The open-session marker tracks liveness only")
+@Pins("session-lifecycle", "The record is persisted at every durable point")
+@Pins("session-lifecycle", "The session cwd must be a usable directory")
+@Pins("session-lifecycle", "The session list filters, sorts and formats")
 class SessionLifecycleTest {
 
     private val storeDir = Files.createTempDirectory("acp-agent-lifecycle-test")

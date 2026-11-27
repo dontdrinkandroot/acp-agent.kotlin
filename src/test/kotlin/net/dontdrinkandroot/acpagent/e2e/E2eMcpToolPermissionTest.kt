@@ -8,12 +8,13 @@ import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.McpServer
 import com.agentclientprotocol.model.SessionUpdate
 import com.agentclientprotocol.model.ToolCallStatus
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.spec.Pins
+import kotlinx.serialization.json.*
 
 /**
  * Black-box MCP tool permissions: a server-annotated `readOnlyHint: true` tool
@@ -23,6 +24,10 @@ import kotlin.test.assertTrue
  * MCP mock, which also pins the `mcpCapabilities.http` advertisement.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("mcp-consumption", "All three transports are supported")
+@Pins("mcp-consumption", "Server tools become agent tools with the server's schema")
+@Pins("mcp-consumption", "Servers come only from the client's session request")
+@Pins("permissions", "MCP tools ask unless a trusted annotation says they are read-only")
 class E2eMcpToolPermissionTest : E2eAgentTest() {
 
     private fun E2eContext.mcpServer(mcp: MockMcpServer): McpServer.Http =

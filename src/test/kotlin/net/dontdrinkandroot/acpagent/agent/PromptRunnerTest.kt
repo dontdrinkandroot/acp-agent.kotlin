@@ -1,8 +1,10 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
@@ -17,14 +19,13 @@ import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ProviderPreferences
 import net.dontdrinkandroot.acpagent.llm.models.FunctionTool
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.ToolResult
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import com.agentclientprotocol.model.*
+import kotlinx.coroutines.*
 
 /** Collects emitted events for assertions. */
 private class PromptRecordingEmitter : FlowCollector<Event> {
@@ -180,6 +181,23 @@ private class FakeCompleter(
     }
 }
 
+@Pins("agent-turn", "A filtered completion ends the turn without retry")
+@Pins("agent-turn", "A prompt turn runs at most the configured number of tool iterations")
+@Pins("agent-turn", "A third raw-identical tool call with an identical result is refused")
+@Pins("agent-turn", "A truncated or empty completion gets one continuation pass")
+@Pins("agent-turn", "An exhausted budget ends with a text-only synthesis pass")
+@Pins("agent-turn", "An undocumented completion status is judged by its output")
+@Pins("agent-turn", "Reasoning is replayed within a turn and dropped at its end")
+@Pins("agent-turn", "The turn end delivers content, then usage, then the response")
+@Pins("agent-turn", "The usage indicator reports the model's context window")
+@Pins("llm-streaming", "Output items and tool-call arguments are accumulated")
+@Pins("llm-streaming", "Reasoning and reply deltas are relayed live")
+@Pins("llm-streaming", "Terminal and error events are classified")
+@Pins("llm-streaming", "The request shape is a closed contract")
+@Pins("llm-streaming", "The stream is read as an SSE event scan")
+@Pins("model-configuration", "A manual provider pick restricts routing to that provider")
+@Pins("model-configuration", "The effective reasoning effort is applied or omitted")
+@Pins("provider-routing", "Disabling auto routing removes the preference")
 class PromptRunnerTest {
 
     private val testModel = OpenRouterModel(

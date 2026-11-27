@@ -2,16 +2,17 @@ package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.ClientCapabilities
 import com.agentclientprotocol.model.SessionId
-import kotlinx.coroutines.*
-import kotlinx.io.files.Path
-import kotlinx.io.files.SystemFileSystem
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.io.files.Path
+import kotlinx.io.files.SystemFileSystem
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
+import kotlinx.coroutines.*
 
 /**
  * A [FileStore] double whose suspending calls park until the coroutine is
@@ -64,6 +65,7 @@ private class SuspendingStore(val entered: CompletableDeferred<Unit>) : FileStor
  * handshake fails fast (5s) when the tool completes without entering a
  * suspending store call, so a test-design slip errors instead of hanging.
  */
+@Pins("agent-turn", "Cancellation ends the turn as cancelled and reaches the running tool")
 class FileToolCancelTest {
 
     private fun tmpDir(): String {

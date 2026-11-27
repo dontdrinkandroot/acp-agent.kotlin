@@ -1,18 +1,20 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Pins the shared path-tool target resolution seam: the argument decoding,
  * the absolutization against the session cwd and the file-access exclusion
  * refusal, with the exact error texts the per-tool tests assert.
  */
+@Pins("permissions", "Every target must lie inside the cwd to run without asking")
 class ToolTargetTest {
 
     private val cwd = tmpDir()

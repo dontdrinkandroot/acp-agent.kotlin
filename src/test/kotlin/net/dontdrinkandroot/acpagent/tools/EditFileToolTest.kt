@@ -1,5 +1,9 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
@@ -9,11 +13,12 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("file-tools", "edit_file applies a delta and both writes report the whole file")
+@Pins("tool-call-presentation", "A dropped diff is never silent")
+@Pins("tool-call-presentation", "A file change is shown as a whole-file diff")
+@Pins("tool-call-presentation", "Only proxy-rendered changes suppress the diff")
 class EditFileToolTest {
 
     @Test

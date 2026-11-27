@@ -1,14 +1,20 @@
 package net.dontdrinkandroot.acpagent.tools
 
 import com.agentclientprotocol.model.SessionModeId
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("command-execution", "bash exists only in bash mode and always asks")
+@Pins("permissions", "The mode gate runs before permission and execution")
+@Pins("plan-tracking", "update_plan is available in every mode and needs no permission")
+@Pins("run-configurations", "Run-configuration writes need build or bash mode")
+@Pins("utility-tools", "Utility tools are available everywhere and never ask")
 class ToolRegistryTest {
     @Test
     fun `register get all and override`() = runBlocking {

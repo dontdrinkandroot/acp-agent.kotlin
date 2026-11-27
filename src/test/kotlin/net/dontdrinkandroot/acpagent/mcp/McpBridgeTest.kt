@@ -6,9 +6,13 @@ import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
-import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
+import kotlinx.serialization.json.*
 
+@Pins("mcp-consumption", "A name collision never shadows a local tool")
+@Pins("mcp-consumption", "Server tools become agent tools with the server's schema")
+@Pins("permissions", "MCP tools ask unless a trusted annotation says they are read-only")
 class McpBridgeTest {
 
     @Test

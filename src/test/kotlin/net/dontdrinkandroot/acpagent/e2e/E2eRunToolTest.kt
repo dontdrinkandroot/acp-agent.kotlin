@@ -2,16 +2,17 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box run configurations: the `run` tool is available and prompt-free in
@@ -19,6 +20,10 @@ import kotlin.test.assertTrue
  * loudly for unknown configs.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("run-configurations", "Arguments reach the command as positional parameters")
+@Pins("run-configurations", "Run configurations live in a project file")
+@Pins("run-configurations", "run executes a configuration prompt-free in every mode")
+@Pins("system-prompt", "Run configurations are listed with name, command and description")
 class E2eRunToolTest : E2eAgentTest() {
 
     @Test

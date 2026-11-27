@@ -2,7 +2,11 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
+import java.nio.file.Files
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
@@ -11,12 +15,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 import net.dontdrinkandroot.acpagent.tools.*
-import java.nio.file.Files
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 /** Collects emitted events for assertions. */
 private class RecordingEmitter : FlowCollector<Event> {
@@ -41,6 +42,15 @@ private class SelectingClient(private val optionId: String = "allow_once") : Cli
     override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) = Unit
 }
 
+@Pins("agent-turn", "A third raw-identical tool call with an identical result is refused")
+@Pins("command-execution", "bash exists only in bash mode and always asks")
+@Pins("permissions", "Permanent decisions are per tool and per session")
+@Pins("permissions", "The mode gate runs before permission and execution")
+@Pins("permissions", "The permission prompt offers the four standard options")
+@Pins("permissions", "Tools without a path use their kind to decide")
+@Pins("session-lifecycle", "The record is persisted at every durable point")
+@Pins("tool-call-presentation", "A tool call is announced before it runs")
+@Pins("tool-call-presentation", "Completion reports status and the result text")
 class ToolCallExecutorTest {
 
     private open class RecordingTool(

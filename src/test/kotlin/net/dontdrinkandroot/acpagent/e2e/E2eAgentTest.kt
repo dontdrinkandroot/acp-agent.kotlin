@@ -8,24 +8,24 @@ import com.agentclientprotocol.client.ClientSession
 import com.agentclientprotocol.common.ClientSessionOperations
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
-import kotlinx.coroutines.*
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.*
 import net.dontdrinkandroot.acpagent.config.APP_STATE_DIR
 import net.dontdrinkandroot.acpagent.config.Config
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.Path
+import com.agentclientprotocol.model.*
 import java.util.*
-import java.util.concurrent.TimeUnit
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import kotlinx.coroutines.*
+import kotlinx.serialization.json.*
 
 /**
  * The variable the harness plants in the agent's own environment to pin the MCP child env

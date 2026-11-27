@@ -2,14 +2,20 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.EmbeddedResourceResource
-import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart
-import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputImage
-import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputImage
+import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("prompt-content", "An empty prompt is represented explicitly")
+@Pins("prompt-content", "Embedded resources are inlined, binary and audio content degrade")
+@Pins("prompt-content", "Image blocks are forwarded only to image-capable models")
+@Pins("prompt-content", "Resource links render as markdown links")
+@Pins("prompt-content", "Text content reaches the model unchanged")
 class AgentSessionPromptContentTest {
 
     private fun text(parts: List<ResponseContentPart>): String =

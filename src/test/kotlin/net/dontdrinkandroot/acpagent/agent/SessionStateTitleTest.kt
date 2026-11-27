@@ -3,6 +3,7 @@ package net.dontdrinkandroot.acpagent.agent
 import com.agentclientprotocol.model.SessionId
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import kotlin.test.*
 
@@ -14,6 +15,7 @@ import kotlin.test.*
  * `session/resume` and `session/list` carry it - so only a title that is new
  * to the client is announced.
  */
+@Pins("session-lifecycle", "The title is derived once and announced once")
 class SessionStateTitleTest {
 
     private fun state(restored: SessionRecord? = null) = SessionState(

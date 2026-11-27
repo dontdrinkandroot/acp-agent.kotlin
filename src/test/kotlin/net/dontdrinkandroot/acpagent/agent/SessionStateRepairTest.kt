@@ -1,15 +1,16 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionId
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertIs
 
 /**
  * Pins the view-boundary wiring of the pairing repair (issue #38): every
@@ -18,6 +19,9 @@ import kotlin.test.assertIs
  * [SessionState.buildRecord] - must see dangling tool calls closed by the
  * synthetic failed result, while the in-memory history itself stays untouched.
  */
+@Pins("plan-tracking", "The plan is persisted and replayed")
+@Pins("session-lifecycle", "Every assistant tool call is paired with a tool result")
+@Pins("session-lifecycle", "The session record holds the conversation's durable state")
 class SessionStateRepairTest {
 
     private fun danglingHistory() = listOf(

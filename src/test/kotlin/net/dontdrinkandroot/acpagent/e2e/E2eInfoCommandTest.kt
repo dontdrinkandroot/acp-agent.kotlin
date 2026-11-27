@@ -3,12 +3,13 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.SessionUpdate
+import java.nio.file.Files
+import java.nio.file.Path
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.nio.file.Files
-import java.nio.file.Path
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
 /**
@@ -16,6 +17,9 @@ import kotlin.test.*
  * session setup, answered from the agent's own state (no LLM call, no history,
  * no record) and strict about what counts as an invocation.
  */
+@Pins("agent-process", "/info is advertised and answered locally")
+@Pins("configuration", "Session state lives in the XDG state home")
+@Pins("configuration", "The API key is read from a file only")
 class E2eInfoCommandTest : E2eAgentTest() {
 
     /** The reply text, pinning that the dump is one client message. */

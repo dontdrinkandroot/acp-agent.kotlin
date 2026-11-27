@@ -3,10 +3,11 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.EmbeddedResourceResource
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * Black-box AGENTS.md injection and multimodal prompt conversion: the session
@@ -15,6 +16,10 @@ import kotlin.test.assertTrue
  * text resource is inlined and a resource link renders as a markdown link.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("prompt-content", "Embedded resources are inlined, binary and audio content degrade")
+@Pins("prompt-content", "Image blocks are forwarded only to image-capable models")
+@Pins("prompt-content", "Resource links render as markdown links")
+@Pins("prompt-content", "Text content reaches the model unchanged")
 class E2ePromptCapabilitiesTest : E2eAgentTest() {
 
     @Test

@@ -4,7 +4,9 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("session-lifecycle", "The session cwd must be a usable directory")
 class SessionCwdTest {
 
     @Test

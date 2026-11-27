@@ -2,7 +2,9 @@ package net.dontdrinkandroot.acpagent
 
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("agent-process", "The agent reports its build")
 class BuildInfoTest {
 
     @Test

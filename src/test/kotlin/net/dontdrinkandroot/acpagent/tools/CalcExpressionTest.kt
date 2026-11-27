@@ -3,7 +3,13 @@ package net.dontdrinkandroot.acpagent.tools
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("utility-tools", "calc errors name the position")
+@Pins("utility-tools", "calc evaluates arithmetic with standard precedence")
+@Pins("utility-tools", "calc is pure math with an advertised language")
+@Pins("utility-tools", "calc offers the documented functions and constants")
+@Pins("utility-tools", "calc refuses unsafe or meaningless evaluation")
 class CalcExpressionTest {
 
     @Test

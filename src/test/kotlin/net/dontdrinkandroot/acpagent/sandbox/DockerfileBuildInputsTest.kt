@@ -5,6 +5,7 @@ import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The Dockerfile composition pins (Kotlin port of `tests/bash/test_dockerfile.bash`):
@@ -15,6 +16,7 @@ import kotlin.test.assertTrue
  * - the `ENTRYPOINT` names the renamed agent script. A stale entrypoint path is the rename's
  *   only untested failure mode: it dies at container start, invisible to `build`.
  */
+@Pins("docker-sandbox", "The wrapper never pulls the image")
 class DockerfileBuildInputsTest {
 
     private val dockerfile = Path.of("Dockerfile").toFile().readText()

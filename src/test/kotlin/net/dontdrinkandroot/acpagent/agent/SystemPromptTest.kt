@@ -1,10 +1,23 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import net.dontdrinkandroot.acpagent.config.UnlistedPaths
-import net.dontdrinkandroot.acpagent.tools.RunConfig
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.config.UnlistedPaths
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.tools.RunConfig
 
+@Pins("system-prompt", "Excluded files are announced with their escape hatch")
+@Pins("system-prompt", "Project instructions are injected as a dedicated section")
+@Pins("system-prompt", "Run configurations are listed with name, command and description")
+@Pins("system-prompt", "The mode status message is written once per governing mode")
+@Pins("system-prompt", "The prompt carries plan guidance in every mode")
+@Pins("system-prompt", "The prompt forbids restating a plan it already sent")
+@Pins("system-prompt", "The prompt guides the plan's lifecycle")
+@Pins("system-prompt", "The prompt states that the plan has no blocked status")
+@Pins("system-prompt", "The system prompt carries the session facts")
+@Pins("system-prompt", "The system prompt is mode-invariant")
+@Pins("system-prompt", "The system prompt is rebuilt for every iteration")
+@Pins("system-prompt", "Trusted paths are rendered from the access tiers")
 class SystemPromptTest {
 
     private val builder = SystemPromptBuilder("/project", { "2026-09-03" })

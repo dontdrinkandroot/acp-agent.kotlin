@@ -1,5 +1,9 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
@@ -8,11 +12,10 @@ import kotlinx.io.readString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("file-tools", "Excluded files are unreachable through the file tools")
+@Pins("file-tools", "move_file renames without overwriting")
 class MoveFileToolTest {
 
     @Test

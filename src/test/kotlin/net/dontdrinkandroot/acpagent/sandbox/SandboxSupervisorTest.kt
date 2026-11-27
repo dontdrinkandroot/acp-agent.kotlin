@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The supervisor's process-level contract, exercised through the **installed** entry point
@@ -14,6 +15,12 @@ import kotlin.test.assertTrue
  * relay, stdout/stderr separation, stdin-EOF half-close, signal forwarding, exit-code
  * propagation, fail-loudly paths) cannot be unit-tested.
  */
+@Pins("docker-sandbox", "Only host facts, never agent configuration, are forwarded")
+@Pins("docker-sandbox", "The container is hardened")
+@Pins("docker-sandbox", "The sandbox has its own entry point")
+@Pins("docker-sandbox", "The supervisor relays bytes and never parses the protocol")
+@Pins("docker-sandbox", "The wrapper never pulls the image")
+@Pins("docker-sandbox", "stdin EOF is a half-close, not a kill")
 class SandboxSupervisorTest {
 
     private val sandboxBinary: String

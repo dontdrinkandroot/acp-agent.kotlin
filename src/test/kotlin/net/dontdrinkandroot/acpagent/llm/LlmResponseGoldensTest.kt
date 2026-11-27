@@ -1,10 +1,11 @@
 package net.dontdrinkandroot.acpagent.llm
 
-import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.llm.models.*
 import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputImage
 import net.dontdrinkandroot.acpagent.llm.models.ResponseContentPart.InputText
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
+import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.llm.models.*
 
 /**
  * Golden wire pins for the OpenRouter Responses API traffic. The expected
@@ -12,6 +13,10 @@ import kotlin.test.*
  * Like the wire pins before them they are byte-exact, do not "fix" them by hand -
  * regenerate from a failing run and sanity-check the shape against the docs.
  */
+@Pins("agent-turn", "Reasoning is replayed within a turn and dropped at its end")
+@Pins("llm-streaming", "Terminal and error events are classified")
+@Pins("llm-streaming", "The request shape is a closed contract")
+@Pins("model-configuration", "The effective reasoning effort is applied or omitted")
 internal class LlmResponseGoldensTest {
 
     private val reasoningItem = buildJsonObject {

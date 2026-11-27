@@ -2,13 +2,14 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box coverage of the per-prompt tool iteration cap and its wind-down
@@ -18,6 +19,9 @@ import kotlin.test.assertTrue
  * then streams one final text-only summary and ends with `MAX_TURN_REQUESTS`.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("agent-turn", "A prompt turn runs at most the configured number of tool iterations")
+@Pins("agent-turn", "An exhausted budget ends with a text-only synthesis pass")
+@Pins("agent-turn", "The turn end delivers content, then usage, then the response")
 class E2eMaxTurnRequestsTest : E2eAgentTest() {
 
     @Test

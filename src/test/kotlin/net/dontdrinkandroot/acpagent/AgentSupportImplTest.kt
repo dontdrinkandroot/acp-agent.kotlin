@@ -4,17 +4,21 @@ import com.agentclientprotocol.client.ClientInfo
 import com.agentclientprotocol.common.SessionCreationParameters
 import com.agentclientprotocol.model.Implementation
 import com.agentclientprotocol.model.SessionId
-import kotlinx.coroutines.runBlocking
-import net.dontdrinkandroot.acpagent.config.Config
-import net.dontdrinkandroot.acpagent.config.Secret
-import net.dontdrinkandroot.acpagent.llm.LlmClient
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.config.Config
+import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.llm.LlmClient
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 
+@Pins("session-lifecycle", "Client-supplied session ids are validated before any file access")
+@Pins("session-lifecycle", "Restore refusals are distinct")
+@Pins("session-lifecycle", "The session list filters, sorts and formats")
 class AgentSupportImplTest {
 
     @Test

@@ -164,6 +164,9 @@ tasks.test {
     // DockerfileBuildInputsTest reads the Dockerfile from the checkout at runtime; without
     // this input a Dockerfile edit would leave the test UP-TO-DATE (stale pin).
     inputs.file("Dockerfile")
+    // SpecPinsTest reads the OpenSpec corpus at runtime; without this input a spec edit would
+    // leave the pin gate UP-TO-DATE and let a broken pin through.
+    inputs.files(fileTree("openspec") { include("**/*.md") })
 }
 
 // Dependency updates: informational report only (run config dependency_updates),

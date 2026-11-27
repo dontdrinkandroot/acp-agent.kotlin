@@ -3,14 +3,15 @@ package net.dontdrinkandroot.acpagent.e2e
 import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.SessionConfigId
 import com.agentclientprotocol.model.SessionConfigOptionValue
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The directory permission tiers of `config.json` (issue #50), end to end:
@@ -26,6 +27,9 @@ import kotlin.test.assertTrue
  * `$XDG_CONFIG_HOME/ddr-acp-agent/config.json` (the agent's only configuration
  * surface since issue #84); the tier rendering in the system prompt is pinned too.
  */
+@Pins("permissions", "A path outside every tier follows the configured policy")
+@Pins("permissions", "The readable and writable tiers grant prompt-free access")
+@Pins("system-prompt", "Trusted paths are rendered from the access tiers")
 class E2eDirectoryTiersTest : E2eAgentTest() {
 
     private fun directoryConfig(readable: File, writable: File): String =

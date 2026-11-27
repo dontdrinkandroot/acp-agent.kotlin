@@ -3,7 +3,10 @@ package net.dontdrinkandroot.acpagent.mcp
 import com.agentclientprotocol.model.EnvVariable
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("mcp-consumption", "A stdio server starts in the session cwd with a built environment")
+@Pins("mcp-consumption", "All three transports are supported")
 class McpConnectorTest {
 
     private val agentEnv = mapOf(

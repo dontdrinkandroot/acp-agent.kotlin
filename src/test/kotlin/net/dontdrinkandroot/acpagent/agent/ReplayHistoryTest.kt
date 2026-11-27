@@ -1,20 +1,23 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.*
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import net.dontdrinkandroot.acpagent.tools.ToolRegistry
-import net.dontdrinkandroot.acpagent.tools.WriteFileTool
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
+import net.dontdrinkandroot.acpagent.tools.ToolRegistry
+import net.dontdrinkandroot.acpagent.tools.WriteFileTool
+import com.agentclientprotocol.model.*
 
 /**
  * Pins the `session/load` replay mapping ([buildReplayUpdates]): tool results
  * must replay the outcome they had live (denied/disabled/unknown/failed ->
  * FAILED, successes -> COMPLETED) instead of the historical blanket COMPLETED.
  */
+@Pins("plan-tracking", "The plan is persisted and replayed")
+@Pins("session-lifecycle", "Replay reproduces the conversation and its real outcomes")
 class ReplayHistoryTest {
 
     private fun toolCallHistory(toolName: String) = listOf(

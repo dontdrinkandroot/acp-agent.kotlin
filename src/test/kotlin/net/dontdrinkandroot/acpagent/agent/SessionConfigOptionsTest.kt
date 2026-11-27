@@ -1,8 +1,11 @@
 package net.dontdrinkandroot.acpagent.agent
 
-import com.agentclientprotocol.model.*
 import com.agentclientprotocol.protocol.JsonRpcException
 import com.agentclientprotocol.rpc.JsonRpcErrorCode
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -14,14 +17,19 @@ import net.dontdrinkandroot.acpagent.llm.OpenRouterModel
 import net.dontdrinkandroot.acpagent.llm.ReasoningCapability
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderOption
 import net.dontdrinkandroot.acpagent.providerrouting.ProviderRouting
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolResult
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
+import com.agentclientprotocol.model.*
 
+@Pins("model-configuration", "Invalid option values are refused as invalid params")
+@Pins("model-configuration", "Session setup loads the model feed")
+@Pins("model-configuration", "The effective reasoning effort is applied or omitted")
+@Pins("model-configuration", "The manual pick outlives an unavailable provider feed")
+@Pins("model-configuration", "The model switch resets reasoning and provider")
+@Pins("model-configuration", "The provider option offers auto and the model's providers")
+@Pins("model-configuration", "The reasoning option follows the model's capability")
 class SessionConfigOptionsTest {
 
     private val modes = listOf(

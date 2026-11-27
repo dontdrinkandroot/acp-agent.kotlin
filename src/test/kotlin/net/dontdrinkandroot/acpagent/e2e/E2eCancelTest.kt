@@ -8,6 +8,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
@@ -26,6 +27,8 @@ import kotlin.test.assertTrue
  * PromptResponse carrying StopReason.CANCELLED (fixes #62).
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("agent-turn", "Cancellation ends the turn as cancelled and reaches the running tool")
+@Pins("permissions", "Cancellation of a permission prompt cancels the turn")
 class E2eCancelTest : E2eAgentTest() {
 
     @Test

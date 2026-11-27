@@ -1,14 +1,23 @@
 package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.common.ClientSessionOperations
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.config.UnlistedPaths
-import net.dontdrinkandroot.acpagent.tools.*
 import java.nio.file.Files
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.config.UnlistedPaths
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 import kotlin.test.*
+import kotlinx.serialization.json.*
+import net.dontdrinkandroot.acpagent.tools.*
 
+@Pins("file-tools", "Client proxy reads never claim a completeness they cannot know")
+@Pins("file-tools", "File access uses the client proxy when the client offers it")
+@Pins("file-tools", "Relative paths resolve against the session cwd")
+@Pins("file-tools", "Walks never follow discovered symlinks or enter .git")
+@Pins("permissions", "A path outside every tier follows the configured policy")
+@Pins("permissions", "Every target must lie inside the cwd to run without asking")
+@Pins("permissions", "The agent's scratch directory is read-trusted")
+@Pins("permissions", "The readable and writable tiers grant prompt-free access")
 class PermissionAndFileStoreTest {
 
     private fun pathArgs(path: String): JsonObject = buildJsonObject { put("path", path) }

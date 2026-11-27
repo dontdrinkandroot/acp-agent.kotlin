@@ -2,16 +2,17 @@ package net.dontdrinkandroot.acpagent.e2e
 
 import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.common.Event
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.*
-import net.dontdrinkandroot.acpagent.llm.llmWireJson
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import net.dontdrinkandroot.acpagent.llm.llmWireJson
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
+import kotlinx.serialization.json.*
 
 /**
  * Black-box run-configuration management: `create_run_config` is mutating and
@@ -20,6 +21,10 @@ import kotlin.test.assertTrue
  * with the write tools absent there.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("run-configurations", "Run-configuration writes need build or bash mode")
+@Pins("run-configurations", "The delete tool removes one entry")
+@Pins("run-configurations", "The generic file tools cannot write the configuration file")
+@Pins("system-prompt", "The system prompt is rebuilt for every iteration")
 class E2eRunConfigCrudTest : E2eAgentTest() {
 
     private fun toolNamesIn(body: String?): Set<String> {

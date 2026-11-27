@@ -5,8 +5,19 @@ import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
+import net.dontdrinkandroot.acpagent.spec.Pins
 import kotlin.test.*
 
+@Pins("agent-process", "A broken configuration ends startup with a readable error")
+@Pins("agent-process", "Startup arguments are strict")
+@Pins("configuration", "A profile selects another configuration file")
+@Pins("configuration", "Configuration comes from files only")
+@Pins("configuration", "The API key is read from a file only")
+@Pins("configuration", "The behaviour switches have validated defaults")
+@Pins("configuration", "The configuration file lives in the XDG config home")
+@Pins("configuration", "The parser is strict about values and lenient about unknown keys")
+@Pins("configuration", "The permission tiers are configuration")
+@Pins("configuration", "The sandbox group is not agent configuration")
 class ConfigTest {
 
     private val home: Path = Files.createTempDirectory("acp-home")

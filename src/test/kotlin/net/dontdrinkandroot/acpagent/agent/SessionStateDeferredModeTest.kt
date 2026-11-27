@@ -2,17 +2,18 @@ package net.dontdrinkandroot.acpagent.agent
 
 import com.agentclientprotocol.model.SessionModeId
 import com.agentclientprotocol.model.ToolKind
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import net.dontdrinkandroot.acpagent.config.Config
 import net.dontdrinkandroot.acpagent.config.Secret
+import net.dontdrinkandroot.acpagent.spec.Pins
 import net.dontdrinkandroot.acpagent.tools.AgentTool
 import net.dontdrinkandroot.acpagent.tools.ToolContext
 import net.dontdrinkandroot.acpagent.tools.ToolRegistry
 import net.dontdrinkandroot.acpagent.tools.ToolResult
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * Mode status messages are written exclusively at prompt start: a mode
@@ -27,6 +28,8 @@ import kotlin.test.assertTrue
  * for the next prompt start. The machine lives in [SessionState.mode]
  * (issue #83); the trail stays on [SessionState].
  */
+@Pins("agent-turn", "A mode requested during a turn applies when the turn ends")
+@Pins("system-prompt", "The indicated mode is restored from the trail")
 class SessionStateDeferredModeTest {
 
     private fun stateAndRegistry(): Triple<SessionState, ToolRegistry, List<String>> {

@@ -1,16 +1,21 @@
 package net.dontdrinkandroot.acpagent.tools
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.dontdrinkandroot.acpagent.llm.llmWireJson
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("file-tools", "Deleting a directory is refused when it contains a symlink")
+@Pins("file-tools", "Excluded files are unreachable through the file tools")
+@Pins("tool-call-presentation", "A dropped diff is never silent")
+@Pins("tool-call-presentation", "Diff payloads are bounded per call")
 class DeleteDirectoryToolTest {
 
     @Test

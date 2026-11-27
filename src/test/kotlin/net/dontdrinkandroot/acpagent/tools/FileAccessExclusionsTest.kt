@@ -4,7 +4,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
+@Pins("configuration", "The project overlay may only extend permissions")
+@Pins("file-tools", "Excluded files are unreachable through the file tools")
+@Pins("run-configurations", "The generic file tools cannot write the configuration file")
 class FileAccessExclusionsTest {
 
     @Test

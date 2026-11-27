@@ -4,16 +4,17 @@ import com.agentclientprotocol.annotations.UnstableApi
 import com.agentclientprotocol.client.ClientOperationsFactory
 import com.agentclientprotocol.common.Event
 import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.*
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.dontdrinkandroot.acpagent.spec.Pins
+import com.agentclientprotocol.model.*
 
 /**
  * Black-box MCP coverage of the **stdio** transport - the one the ACP spec makes
@@ -23,6 +24,11 @@ import kotlin.test.assertTrue
  * behavior as its HTTP counterpart, only over a pipe to a real child process.
  */
 @OptIn(ExperimentalCoroutinesApi::class, UnstableApi::class)
+@Pins("mcp-consumption", "A failing server fails open")
+@Pins("mcp-consumption", "A name collision never shadows a local tool")
+@Pins("mcp-consumption", "A stdio server starts in the session cwd with a built environment")
+@Pins("mcp-consumption", "All three transports are supported")
+@Pins("mcp-consumption", "Servers come only from the client's session request")
 class E2eMcpStdioTransportTest : E2eAgentTest() {
 
     /**

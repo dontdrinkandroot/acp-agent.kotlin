@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import net.dontdrinkandroot.acpagent.spec.Pins
 
 /**
  * The fail-loudly contract of the plan resolution: an input the host cannot honor refuses the
@@ -11,6 +12,9 @@ import kotlin.test.assertTrue
  * different trust domain. Ported from `tests/bash/test_error_paths.bash`; the missing-docker
  * case is a supervisor pin (a `PATH` lookup), not a plan input.
  */
+@Pins("docker-sandbox", "Host tool caches are shared at their own paths")
+@Pins("docker-sandbox", "The Android SDK is mounted only when it is real")
+@Pins("docker-sandbox", "The permission lists are the mount list")
 class SandboxFailLoudlyTest {
 
     private fun spec(
