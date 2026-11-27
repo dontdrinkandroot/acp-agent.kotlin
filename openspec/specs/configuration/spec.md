@@ -188,4 +188,3 @@ Session records SHALL live under `$XDG_STATE_HOME/ddr-acp-agent/sessions/`, fall
 #### Scenario: The state home is honoured
 - **WHEN** `XDG_STATE_HOME` points at a directory
 - **THEN** records are written below it
-- **Pinned by** `E2eInfoCommandTest` (e2e), `E2eAgentTest` (e2e harness isolation), nothing unit-level
